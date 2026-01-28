@@ -1,0 +1,23 @@
+<!-- API Key Section -->
+{% if not has_api_key %}
+<div class="alert alert-warning" role="alert">
+    <strong>⚠️ TomTom API Key Required</strong>
+    <p class="mb-2">Get your free API key at <a href="https://developer.tomtom.com/"
+            target="_blank">developer.tomtom.com</a></p>
+    <p class="mb-2 small text-muted">Make sure your key has <strong>Traffic Flow API</strong> enabled</p>
+    <div class="input-group">
+        <input type="password" class="form-control" id="api-key-input" placeholder="Paste API key here">
+        <button class="btn btn-primary" type="button" id="save-api-key-btn">Save
+            Key</button>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-success" role="alert">
+    <div class="d-flex justify-content-between align-items-center">
+        <span>✓ TomTom API key configured</span>
+        <button class="btn btn-sm btn-outline-secondary" type="button" id="change-api-key-btn">
+            Change Key
+        </button>
+    </div>
+</div>
+{% endif %}

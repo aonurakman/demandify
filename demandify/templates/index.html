@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>demandify - SUMO Traffic Demand Calibration</title>
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+    <div class="container-fluid">
+        <!-- Header with Banner -->
+        <div class="row py-2 bg-white shadow-sm">
+            <div class="col-12 text-center">
+                <img src="/static/banner.png" alt="demandify" class="header-logo">
+            </div>
+        </div>
+
+        <div class="row mt-4 g-4">
+            <!-- Left Column: Map and Configuration -->
+            <div class="col-lg-6">
+                <!-- Map Card -->
+                <div class="card mb-3 shadow-sm">
+                    <div class="card-header bg-white">
+                        <h5 class="mb-0"><i class="bi bi-map"></i> Select Area</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="map" style="height: 400px;"></div>
+                    </div>
+                    <div class="card-footer bg-white">
+                        <small class="text-muted">Draw a rectangle on the map to select your calibration area</small>
+                        <span id="bbox-area" class="float-end fw-bold text-primary"></span>
+                    </div>
+                </div>
+
+                <!-- Configuration Card -->
+                <div class="card shadow-sm">
+                    <div class="card-header bg-white">
+                        <h5 class="mb-0"><i class="bi bi-gear"></i> Configuration</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="run-form">
+                            <!-- Bounding Box Manual Input -->
+                            <div class="mb-3">
+                                <label class="form-label">
+                                    <i class="bi bi-bounding-box-circles"></i> Region Bounds
+                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                        title="Draw rectangle on map or enter coordinates manually.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">W</span>
+                                            <input type="number" class="form-control bbox-input" id="bbox_west"
+                                                name="bbox_west" step="0.0001" placeholder="West">
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">N</span>
+                                            <input type="number" class="form-control bbox-input" id="bbox_north"
+                                                name="bbox_north" step="0.0001" placeholder="North">
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">S</span>
+                                            <input type="number" class="form-control bbox-input" id="bbox_south"
+                                                name="bbox_south" step="0.0001" placeholder="South">
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">E</span>
+                                            <input type="number" class="form-control bbox-input" id="bbox_east"
+                                                name="bbox_east" step="0.0001" placeholder="East">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- API Key Section -->
+                            {% if not has_api_key %}
+                            <div class="alert alert-warning" role="alert">
+                                <strong><i class="bi bi-exclamation-triangle"></i> TomTom API Key Required</strong>
+                                <p class="mb-2 small">Get your free API key at <a href="https://developer.tomtom.com/"
+                                        target="_blank" class="alert-link">developer.tomtom.com</a></p>
+                                <p class="mb-2 small text-muted">Make sure your key has <strong>Traffic Flow
+                                        API</strong> enabled</p>
+                                <div class="input-group">
+                                    <input type="password" class="form-control" id="api-key-input"
+                                        placeholder="Paste your API key here">
+                                    <button class="btn btn-primary" type="button" id="save-api-key-btn">
+                                        <i class="bi bi-shield-check"></i> Save Key
+                                    </button>
+                                </div>
+                            </div>
+                            {% else %}
+                            <div class="alert alert-success" role="alert">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-check-circle"></i> TomTom API key configured</span>
+                                    <button class="btn btn-sm btn-outline-secondary" type="button"
+                                        id="change-api-key-btn">
+                                        <i class="bi bi-pencil"></i> Change Key
+                                    </button>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Time Window -->
+                            <div class="mb-3">
+                                <label for="window_minutes" class="form-label">
+                                    <i class="bi bi-clock"></i> Time Window
+                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                        title="Duration of simulation. TomTom provides real-time data (NOW). 15 min recommended for faster calibration.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <select class="form-select" id="window_minutes" name="window_minutes">
+                                    <option value="15" selected>15 minutes</option>
+                                    <option value="30">30 minutes</option>
+                                    <option value="60">1 hour</option>
+                                </select>
+                            </div>
+
+                            <!-- Seed -->
+                            <div class="mb-3">
+                                <label for="seed" class="form-label">
+                                    <i class="bi bi-dice-5"></i> Random Seed
+                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                        title="For reproducibility. Same seed = same output.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="number" class="form-control" id="seed" name="seed" value="42" min="0">
+                            </div>
+
+                            <!-- Advanced Parameters -->
+                            <div class="mb-3">
+                                <a class="btn btn-link p-0 text-decoration-none" data-bs-toggle="collapse"
+                                    href="#advanced-params" role="button">
+                                    <i class="bi bi-chevron-down"></i> Advanced Parameters
+                                </a>
+                                <div class="collapse" id="advanced-params">
+                                    <div class="card card-body mt-2 bg-light">
+                                        <div class="row mb-3">
+                                            <div class="col-6">
+                                                <label for="ga_population" class="form-label small">
+                                                    Population
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Number of candidate solutions per generation. Higher = better search but slower.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_population" name="ga_population"
+                                                    value="{{ config.default_ga_population }}" min="10">
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="ga_generations" class="form-label small">
+                                                    Generations
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Number of evolution iterations. Higher = better convergence but slower.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_generations" name="ga_generations"
+                                                    value="{{ config.default_ga_generations }}" min="5">
+                                            </div>
+                                        </div>
+                                        <div class="row mb-3">
+                                            <div class="col-6">
+                                                <label for="parallel_workers" class="form-label small">
+                                                    Workers (CPU)
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Number of parallel SUMO simulations. Set to your CPU core count.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="parallel_workers" name="parallel_workers"
+                                                    value="{{ config.default_parallel_workers }}" min="1" max="32">
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="ga_elitism" class="form-label small">
+                                                    Elitism
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Number of best individuals to keep unchanged for next generation.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_elitism" name="ga_elitism" value="2" min="0">
+                                            </div>
+                                        </div>
+                                        <div class="row mb-3">
+                                            <div class="col-6">
+                                                <label for="ga_mutation_rate" class="form-label small">
+                                                    Mutation Rate
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Probability (0.0-1.0) that an offspring will undergo mutation.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_mutation_rate" name="ga_mutation_rate" value="0.5"
+                                                    step="0.05" min="0" max="1">
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="ga_crossover_rate" class="form-label small">
+                                                    Crossover Rate
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Probability (0.0-1.0) that two individuals will swap genes.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_crossover_rate" name="ga_crossover_rate" value="0.7"
+                                                    step="0.05" min="0" max="1">
+                                            </div>
+                                        </div>
+                                        <div class="row mb-0 border-top pt-2">
+                                            <div class="col-12 mb-2"><small class="text-muted fw-bold">Advanced Mutation
+                                                    Tuning</small></div>
+                                            <div class="col-6">
+                                                <label for="ga_mutation_sigma" class="form-label small">
+                                                    Sigma
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Mutation magnitude (step size). Higher = larger changes to values.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_mutation_sigma" name="ga_mutation_sigma" value="20" min="1">
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="ga_mutation_indpb" class="form-label small">
+                                                    Gene Prob.
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Probability (0.0-1.0) of mutating a specific gene within an individual.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="ga_mutation_indpb" name="ga_mutation_indpb" value="0.3"
+                                                    step="0.05" min="0" max="1">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Run Button -->
+                            <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn" {% if not
+                                has_api_key %}disabled{% endif %}>
+                                <i class="bi bi-rocket-takeoff"></i> Start Calibration
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Pipeline Progress -->
+            <div class="col-lg-6">
+                <!-- Info Panel (before run) -->
+                <div id="info-panel">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-white">
+                            <h5 class="mb-0"><i class="bi bi-info-circle"></i> How it Works</h5>
+                        </div>
+                        <div class="card-body">
+                            <ol class="mb-3">
+                                <li>Select a location by drawing a bounding box on the map</li>
+                                <li>Configure calibration parameters (defaults work well)</li>
+                                <li>Provide your TomTom API key (one-time setup)</li>
+                                <li>Click "Start Calibration" and watch the progress</li>
+                                <li>Download your calibrated SUMO scenario when complete</li>
+                            </ol>
+                            <div class="alert alert-info mb-0">
+                                <small>
+                                    <strong><i class="bi bi-lightbulb"></i> Note:</strong> demandify fetches real-time
+                                    traffic data from TomTom and generates synthetic demand that reproduces the observed
+                                    congestion patterns. Results are fully reproducible via the seed parameter.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress Panel (during run) -->
+                <div id="progress-panel" style="display: none;">
+                    <div class="card shadow-sm mb-3">
+                        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-activity"></i> Pipeline Progress</h5>
+                            <button class="btn btn-sm btn-outline-danger" id="cancel-btn">
+                                <i class="bi bi-x-circle"></i> Cancel
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <!-- Progress Stepper -->
+                            <div class="progress-stepper">
+                                <div class="step" data-step="0">
+                                    <div class="step-number">1</div>
+                                    <div class="step-label">Fetch Traffic</div>
+                                </div>
+                                <div class="step" data-step="1">
+                                    <div class="step-number">2</div>
+                                    <div class="step-label">Download OSM</div>
+                                </div>
+                                <div class="step" data-step="2">
+                                    <div class="step-number">3</div>
+                                    <div class="step-label">Build Network</div>
+                                </div>
+                                <div class="step" data-step="3">
+                                    <div class="step-number">4</div>
+                                    <div class="step-label">Match Edges</div>
+                                </div>
+                                <div class="step" data-step="4">
+                                    <div class="step-number">5</div>
+                                    <div class="step-label">Init Demand</div>
+                                </div>
+                                <div class="step" data-step="5">
+                                    <div class="step-number">6</div>
+                                    <div class="step-label">Calibrate GA</div>
+                                </div>
+                                <div class="step" data-step="6">
+                                    <div class="step-number">7</div>
+                                    <div class="step-label">Generate</div>
+                                </div>
+                                <div class="step" data-step="7">
+                                    <div class="step-number">8</div>
+                                    <div class="step-label">Export</div>
+                                </div>
+                            </div>
+
+                            <div class="text-center mb-3">
+                                <h6 class="text-primary" id="current-stage-name">Initializing...</h6>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CLI Console -->
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0"><i class="bi bi-terminal"></i> Console Output</h6>
+                            <button class="btn btn-sm btn-link p-0" id="toggle-details">
+                                <i class="bi bi-arrows-angle-expand"></i> Expand
+                            </button>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="log-console" id="log-console"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script src="/static/js/app.js"></script>
+
+    <script>
+        // Initialize tooltips
+        document.addEventListener('DOMContentLoaded', function () {
+            var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+            var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+                return new bootstrap.Tooltip(tooltipTriggerEl);
+            });
+        });
+    </script>
+</body>
+
+</html>
