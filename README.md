@@ -2,6 +2,10 @@
 
 # Welcome to demandify!
 
+> [!CAUTION]
+> **BETA VERSION**: This project is currently in early beta (0.0.1). Expect frequent breaking changes and instability.
+> Use at your own risk.
+
 **Turn real-world traffic data into accurate SUMO simulations.**
 
 Have you ever wanted to create a realistic traffic simulation but got stuck figuring out where the cars should go? **demandify** solves that.
@@ -113,6 +117,7 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 | `--destinations` | Int | 10 | Number of destination candidates |
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
 | `--bin-size` | Int | 5 | Time bin size in minutes |
+| `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
 
 ## How It Works
 
@@ -127,23 +132,20 @@ demandify follows an 8-stage pipeline:
 7. **Calibrate demand** - Run GA to optimize vehicle counts
 8. **Export scenario** - Generate `demand.csv`, routes, config, and report
 
-### Reproducibility
-
-All stochastic operations are seeded:
-- OD pair selection
-- Demand generation (departure times)
-- Genetic algorithm evolution
-
-**Same bbox + seed + parameters = identical `demand.csv`**
-
+### Variability & Consistency
+      
+While demandify uses seeding (random seed) for all internal stochastic operations (OD selection, GA evolution), **perfect reproducibility is not guaranteed** due to the inherently chaotic nature of traffic microsimulation (SUMO) and real-time data inputs.
+      
+Seeding ensures *consistency* (runs look similar), but small timing differences in OS scheduling or dynamic routing decisions can lead to divergent outcomes.
+      
 ### Caching
-
+      
 demandify caches:
 - OSM extracts (by bbox)
 - SUMO networks (by bbox + conversion params)
 - Traffic snapshots (by bbox + timestamp bucket)
 - Map matching results
-
+      
 Cache location: `~/.demandify/cache/`
 
 Clear cache: `demandify cache clear`
