@@ -85,6 +85,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             num_destinations=params.get("num_destinations", 10),
             max_od_pairs=params.get("max_od_pairs", 50),
             bin_minutes=params.get("bin_minutes", 5),
+            initial_population=params.get("initial_population", 1000),
             run_id=run_id,
             output_dir=output_dir,
             progress_callback=update_progress

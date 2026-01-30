@@ -251,6 +251,23 @@
                                         </div>
                                     </div>
 
+                                    <!-- Traffic Scale -->
+                                    <div class="row mb-0 border-top pt-2">
+                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Traffic Scale</small></div>
+                                        <div class="col-12">
+                                            <label for="initial_population" class="form-label small">
+                                                Initial Vehicles
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Target number of vehicles to start the simulation with. The GA will adjust this up or down.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="initial_population" name="initial_population" value="1000" min="10" step="10">
+                                            <div class="form-text x-small">Use ~1000 for districts, ~10000 for cities.</div>
+                                        </div>
+                                    </div>
+
                                     <!-- Demand Model Parameters -->
                                     <div class="row mb-0 border-top pt-2">
                                         <div class="col-12 mb-2"><small class="text-muted fw-bold">Demand Model</small>
