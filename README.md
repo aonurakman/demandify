@@ -1,10 +1,8 @@
 ![demandify](static/banner.png)
 
-# Welcome to demandify!
+[![PyPI version](https://badge.fury.io/py/demandify.svg)](https://pypi.org/project/demandify/)
 
-> [!CAUTION]
-> **BETA VERSION**: This project is currently in early beta (0.0.1). Expect frequent breaking changes and instability.
-> Use at your own risk.
+# Welcome to demandify!
 
 **Turn real-world traffic data into accurate SUMO simulations.**
 
@@ -27,16 +25,21 @@ The result? A ready-to-run SUMO scenario that allows you to test your urban rout
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
 
+![GUI Screenshot](static/gui.png)
+
 ## Quickstart
 
 ### 1. Install demandify
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd demandify
+# Install from PyPI (Recommended)
+pip install demandify
+```
 
-# Install in development mode
+If you want to contribute or install from source:
+```bash
+git clone https://github.com/aonurakman/demandify.git
+cd demandify
 pip install -e .
 ```
 
