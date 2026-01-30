@@ -145,8 +145,11 @@ class GeneticAlgorithm:
         population = self.toolbox.population(n=self.population_size)
         
         # Evaluate initial population (sequential to avoid pickle issues)
-        for ind in population:
+        for i, ind in enumerate(population):
+            # Print progress for each individual to keep CLI alive
+            print(f"\r    Evaluating individual {i+1}/{self.population_size}...", end="", flush=True)
             ind.fitness.values = self.toolbox.evaluate(ind)
+        print("\r", end="") # Clear line after evaluation
         
         # Track stats
         loss_history = []
@@ -183,25 +186,25 @@ class GeneticAlgorithm:
             # Elitism: keep best from previous generation
             population = tools.selBest(population, self.elitism) + offspring[:-self.elitism]
         
-        # Stats
-        fits = [ind.fitness.values[0] for ind in population]
-        current_best = min(fits)
-        current_mean = np.mean(fits)
-        
-        loss_history.append(current_best)
-        
-        logger.info(f"✅ Gen {gen+1} Stats: Best Loss={current_best:.2f}, Mean={current_mean:.2f}")
-        
-        # Progress callback for UI updates
-        if progress_callback:
-            progress_callback(gen + 1, current_best, current_mean)
-        
-        # Track improvement (but don't stop early - always run full generations)
-        if current_best < best_loss - early_stopping_epsilon:
-            best_loss = current_best
-            generations_without_improvement = 0
-        else:
-            generations_without_improvement += 1
+            # Stats
+            fits = [ind.fitness.values[0] for ind in population]
+            current_best = min(fits)
+            current_mean = np.mean(fits)
+            
+            loss_history.append(current_best)
+            
+            logger.info(f"✅ Gen {gen+1} Stats: Best Loss={current_best:.2f}, Mean={current_mean:.2f}")
+            
+            # Progress callback for UI updates
+            if progress_callback:
+                progress_callback(gen + 1, current_best, current_mean)
+            
+            # Track improvement (but don't stop early - always run full generations)
+            if current_best < best_loss - early_stopping_epsilon:
+                best_loss = current_best
+                generations_without_improvement = 0
+            else:
+                generations_without_improvement += 1
         
         # Get best individual
         best_ind = tools.selBest(population, 1)[0]

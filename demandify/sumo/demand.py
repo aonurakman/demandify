@@ -8,6 +8,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import logging
 import subprocess
+import math
 
 from demandify.sumo.network import SUMONetwork
 
@@ -32,35 +33,167 @@ class DemandGenerator:
     def select_od_candidates(
         self,
         num_origins: int = 20,
-        num_destinations: int = 20
+        num_destinations: int = 20,
+        max_od_pairs: int = 150,
+        max_consecutive_failures: int = 10000,
+        min_trip_distance: float = 0.0
     ) -> Tuple[List[str], List[str]]:
         """
-        Select candidate origin and destination edges.
-        Seeded selection for reproducibility.
+        Select origin and destination edges by building validated OD pairs.
+        Validates EACH pair individually and resamples failures.
         
         Args:
-            num_origins: Number of origin edges
-            num_destinations: Number of destination edges
+            num_origins: Hint for origins (actual will vary based on validated pairs)
+            num_destinations: Hint for destinations (actual will vary)
+            max_od_pairs: Target number of OD pairs to create
+            max_consecutive_failures: Max failures before giving up
+            min_trip_distance: Minimum Euclidean distance between origin and destination O/D
         
         Returns:
-            (origin_edges, destination_edges)
+            (origin_edges, destination_edges) - unique edges used in validated OD pairs
         """
         all_edges = self.network.get_all_edges()
         
-        if len(all_edges) < num_origins + num_destinations:
-            logger.warning(f"Not enough edges. Requested {num_origins + num_destinations}, have {len(all_edges)}")
-            num_origins = min(num_origins, len(all_edges) // 2)
-            num_destinations = min(num_destinations, len(all_edges) // 2)
+        if len(all_edges) < 2:
+            raise ValueError(f"Insufficient edges in network: {len(all_edges)}")
         
-        # Seeded random selection
-        selected = self.rng.choice(all_edges, size=num_origins + num_destinations, replace=False)
+        # Calculate weights for biased selection (favor major roads)
+        weights = self._calculate_edge_weights(all_edges)
+        total_weight = sum(weights)
+        probs = [w / total_weight for w in weights] if total_weight > 0 else None
         
-        origins = selected[:num_origins].tolist()
-        destinations = selected[num_origins:].tolist()
+        # Build valid OD pairs one at a time
+        valid_pairs = []
+        consecutive_failures = 0
+        total_attempts = 0
         
-        logger.info(f"Selected {len(origins)} origins and {len(destinations)} destinations")
+        logger.info(f"Building up to {max_od_pairs} validated OD pairs (min_dist={min_trip_distance}m)...")
+        
+        current_min_dist = min_trip_distance
+        print(f"  generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...", flush=True)
+        
+        while len(valid_pairs) < max_od_pairs:
+            # Safety break
+            if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                msg = f"\nReached maximum attempt limit ({total_attempts}). Stopping with {len(valid_pairs)} pairs."
+                logger.warning(msg)
+                print(msg, flush=True)
+                break
+                
+            if consecutive_failures > max_consecutive_failures:
+                msg = f"\nStopped after {consecutive_failures} consecutive failures. Created {len(valid_pairs)} pairs."
+                logger.warning(msg)
+                print(msg, flush=True)
+                break
+                
+            # Direct Console Progress (Dynamic)
+            if len(valid_pairs) > 0 and len(valid_pairs) % 10 == 0:
+                 print(f"\r  [{len(valid_pairs)}/{max_od_pairs}] OD pairs found (failures: {consecutive_failures})", end="", flush=True)
+
+            # Adaptive Relaxation: If stuck, reduce min distance requirement
+            if consecutive_failures > 500 and consecutive_failures % 500 == 0 and current_min_dist > 0:
+                 old_dist = current_min_dist
+                 current_min_dist *= 0.8
+                 # logger.debug(f"  Relaxing min_dist from {int(old_dist)}m to {int(current_min_dist)}m after failures")
+                 print(f"\n  ⚠️  Relaxing min distance to {int(current_min_dist)}m to find paths...", flush=True)
+
+            # Sample a random OD pair
+            # Use choice with replacement for indices to be fast, but we need edges
+            candidates = self.rng.choice(all_edges, size=2, replace=False, p=probs)
+            origin, destination = candidates[0], candidates[1]
+            
+            total_attempts += 1
+            
+            # 1. Filter by minimum Euclidean distance
+            valid_dist = True
+            if current_min_dist > 0:
+                ox, oy = self.network.get_edge_centroid(origin)
+                dx, dy = self.network.get_edge_centroid(destination)
+                dist = math.hypot(dx - ox, dy - oy)
+                if dist < current_min_dist:
+                    valid_dist = False
+            
+            if not valid_dist:
+                consecutive_failures += 1
+                continue
+
+            # 2. Validate reachability for this specific pair
+            if self._has_route(origin, destination):
+                valid_pairs.append((origin, destination))
+                consecutive_failures = 0  # Reset on success
+            else:
+                consecutive_failures += 1
+        
+        if len(valid_pairs) == 0:
+            raise ValueError("Could not create any valid OD pairs - network may be disconnected or constraints too strict")
+        
+        if consecutive_failures >= max_consecutive_failures:
+            logger.warning(f"Stopped after {consecutive_failures} consecutive failures. "
+                          f"Created {len(valid_pairs)} pairs (target was {max_od_pairs})")
+        
+        # Extract unique origins and destinations from validated pairs
+        origins = list(set(pair[0] for pair in valid_pairs))
+        destinations = list(set(pair[1] for pair in valid_pairs))
+        
+        logger.info(f"Created {len(valid_pairs)} valid OD pairs from {total_attempts} attempts: "
+                   f"{len(origins)} unique origins, {len(destinations)} unique destinations")
+        
+        print(f"\n  ✓ Done! {len(valid_pairs)} pairs generated.", flush=True)
         
         return origins, destinations
+    
+    def _calculate_edge_weights(self, edges: List[str]) -> List[float]:
+        """Calculate selection weights for edges based on road importance."""
+        weights = []
+        for edge in edges:
+            attrs = self.network.get_edge_attributes(edge)
+            # Default priority 1 (minor), speed 13.89 (50kmh), lanes 1
+            p = max(1, attrs.get('priority', 1))
+            s = max(5.0, attrs.get('speed', 13.89))
+            l = max(1, attrs.get('numLanes', 1))
+            
+            # Boost highways significantly
+            weight = p * s * l
+            weights.append(weight)
+        return weights
+    
+    def _has_route(self, from_edge: str, to_edge: str) -> bool:
+        """
+        Check if there exists a directed route from from_edge to to_edge.
+        Uses BFS on the network adjacency graph.
+        
+        Args:
+            from_edge: Origin edge ID
+            to_edge: Destination edge ID
+            
+        Returns:
+            True if a route exists, False otherwise
+        """
+        if from_edge == to_edge:
+            return True
+        
+        # BFS for reachability
+        visited = {from_edge}
+        queue = [from_edge]
+        idx = 0
+        max_depth = 1000  # Prevent infinite loops on large networks
+        
+        while idx < len(queue) and idx < max_depth:
+            current = queue[idx]
+            idx += 1
+            
+            # Get neighbors (outgoing edges)
+            neighbors = self.network.adjacency.get(current, set())
+            
+            for neighbor in neighbors:
+                if neighbor == to_edge:
+                    return True  # Found a path!
+                
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        
+        return False  # No path found
     
     def genome_to_demand_csv(
         self,

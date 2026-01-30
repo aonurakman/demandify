@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 import xml.etree.ElementTree as ET
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 import json
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,9 @@ class SUMONetwork:
         self.network_file = network_file
         self.edges = []
         self.edge_geometries = {}
+        self.edge_geometries = {}
+        self.edge_attributes = {}
+        self.adjacency = {}  # Directed graph: {from_edge: {to_edges}}
         
         if network_file.exists():
             self._parse_network()
@@ -62,16 +65,121 @@ class SUMONetwork:
                 if len(coords) >= 2:
                     self.edges.append(edge_id)
                     self.edge_geometries[edge_id] = LineString(coords)
+                    
+                    # Store attributes for filtering
+                    # Use first lane's speed/width as proxy for edge
+                    self.edge_attributes[edge_id] = {
+                        'speed': float(first_lane.get('speed', 13.89)),  # default 50km/h
+                        'priority': int(edge.get('priority', -1)),
+                        'numLanes': len(lanes),
+                        'type': edge.get('type', '')
+                    }
         
-        logger.debug(f"Parsed {len(self.edges)} edges from network")
+        # Extract connections (topology)
+        # Assuming simple connections: from edge -> to edge
+        for conn in root.findall('.//connection'):
+            from_edge = conn.get('from')
+            to_edge = conn.get('to')
+            
+            # Skip internal edges in topology
+            if from_edge.startswith(':') or to_edge.startswith(':'):
+                continue
+                
+            if from_edge not in self.adjacency:
+                self.adjacency[from_edge] = set()
+            self.adjacency[from_edge].add(to_edge)
+        
+        logger.debug(f"Parsed {len(self.edges)} edges and topology from network")
+    
+    def get_connected_edges(self) -> List[str]:
+        """
+        Get the list of edges belonging to the Largest Connected Component (LCC).
+        Uses BFS to find the largest weakly accessible component.
+        """
+        if not self.edges:
+            return []
+            
+        # If no connections parsed (shouldn't happen in valid net), return all
+        if not self.adjacency:
+            return self.edges.copy()
+            
+        # Build undirected graph for "Weak Connectivity"
+        # Or just use directed? For driving, Strong Connectivity is ideal,
+        # but finding LCC of directed graph (SCC) is harder (Tarjan's).
+        # We can approximate by finding Largest Weakly Connected Component
+        # and assuming local reachability.
+        # Actually, let's keep it simple: BFS from the edge with most outgoing connections?
+        
+        # Better: BFS from every unvisited node to find all components.
+        visited = set()
+        components = []
+        
+        # Create undirected adjacency for Weak Connectivity check
+        undirected_adj = {e: set() for e in self.edges}
+        for u, neighbors in self.adjacency.items():
+            for v in neighbors:
+                if u in undirected_adj and v in undirected_adj:
+                    undirected_adj[u].add(v)
+                    undirected_adj[v].add(u)
+                    
+        sorted_edges = sorted(self.edges) # Deterministic order
+        
+        for start_node in sorted_edges:
+            if start_node in visited:
+                continue
+                
+            # BFS for this component
+            component = set()
+            queue = [start_node]
+            visited.add(start_node)
+            component.add(start_node)
+            
+            idx = 0
+            while idx < len(queue):
+                u = queue[idx]
+                idx += 1
+                
+                # Neighbors (undirected)
+                for v in undirected_adj.get(u, []):
+                    if v not in visited:
+                        visited.add(v)
+                        component.add(v)
+                        queue.append(v)
+            
+            components.append(component)
+            
+        if not components:
+            return []
+            
+        # Return largest component
+        largest = max(components, key=len)
+        logger.info(f"Connectivity Check: Found {len(components)} components. Largest has {len(largest)} edges ({(len(largest)/len(self.edges))*100:.1f}% coverage)")
+        
+        return list(largest)
     
     def get_edge_geometry(self, edge_id: str) -> LineString:
         """Get the geometry for a given edge ID."""
         return self.edge_geometries.get(edge_id)
+        
+    def get_edge_attributes(self, edge_id: str) -> Dict:
+        """Get attributes (speed, priority, etc) for an edge."""
+        return self.edge_attributes.get(edge_id, {})
     
     def get_all_edges(self) -> List[str]:
         """Get all edge IDs."""
         return self.edges.copy()
+
+    def get_edge_centroid(self, edge_id: str) -> Tuple[float, float]:
+        """
+        Get the centroid coordinates (x, y) of an edge.
+        Returns:
+            (x, y) tuple, or (0,0) if geometry is missing
+        """
+        geom = self.edge_geometries.get(edge_id)
+        if geom:
+            p = geom.centroid
+            return (p.x, p.y)
+        return (0.0, 0.0)
 
 
 def convert_osm_to_sumo(
@@ -105,6 +213,8 @@ def convert_osm_to_sumo(
         "--junctions.join",  # Join junctions
         "--tls.guess-signals",  # Guess traffic lights
         "--tls.discard-simple",  # Discard simple TLS
+        "--remove-edges.isolated",  # Remove isolated edges
+        "--keep-edges.components", "1",  # Keep only largest connected component
         "--seed", str(seed)
     ]
     
