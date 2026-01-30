@@ -24,7 +24,8 @@ class SUMOSimulation:
         warmup_time: int = 300,  # 5 minutes
         simulation_time: int = 900,  # 15 minutes
         seed: int = None,  # For deterministic routing
-        use_dynamic_routing: bool = True  # If True, vehicle_file is trips.xml
+        use_dynamic_routing: bool = True,  # If True, vehicle_file is trips.xml
+        debug: bool = False
     ):
         """
         Initialize SUMO simulation.
@@ -37,6 +38,7 @@ class SUMOSimulation:
             simulation_time: Total simulation time in seconds
             seed: Random seed for deterministic routing (required for dynamic routing)
             use_dynamic_routing: If True, SUMO will route trips dynamically
+            debug: If True, preserve intermediate files (tripinfo, etc.)
         """
         self.network_file = network_file
         self.vehicle_file = vehicle_file
@@ -45,6 +47,7 @@ class SUMOSimulation:
         self.simulation_time = simulation_time
         self.seed = seed
         self.use_dynamic_routing = use_dynamic_routing
+        self.debug = debug
         
         if use_dynamic_routing and seed is None:
             logger.warning("Dynamic routing enabled but no seed provided - results may not be reproducible")
@@ -64,9 +67,9 @@ class SUMOSimulation:
             expected_vehicles: Number of vehicles in trips.xml (for failure tracking)
         
         Returns:
-            Tuple of (edge_stats, routing_failures)
+            Tuple of (edge_stats, trip_stats)
             - edge_stats: Dict mapping edge_id -> mean_speed
-            - routing_failures: Number of vehicles that failed to route
+            - trip_stats: Dict with keys 'routing_failures', 'total_trips', 'avg_duration', 'avg_waiting_time'
         """
         # Create temp directory if needed
         if output_dir is None:
@@ -82,8 +85,9 @@ class SUMOSimulation:
             config_file = output_dir / "simulation.sumocfg"
             edge_output = output_dir / "edge_data.xml"
             tripinfo_output = output_dir / "tripinfo.xml"
+            statistic_output = output_dir / "statistics.xml"
             
-            self._create_config(config_file, edge_output, tripinfo_output)
+            self._create_config(config_file, edge_output, tripinfo_output, statistic_output)
             
             # Run SUMO
             logger.debug("Running SUMO simulation")
@@ -109,20 +113,47 @@ class SUMOSimulation:
             # Parse edge statistics
             edge_stats = self._parse_edge_data(edge_output)
             
-            # Parse routing failures from tripinfo
-            routing_failures = 0
-            if expected_vehicles is not None and tripinfo_output.exists():
-                routing_failures = self._count_routing_failures(tripinfo_output, expected_vehicles)
+            # Parse trip statistics from tripinfo
+            trip_stats = {
+                'routing_failures': 0,
+                'teleports': 0,
+                'total_trips': 0,
+                'avg_duration': 0.0,
+                'avg_waiting_time': 0.0
+            }
             
+            if tripinfo_output.exists():
+                trip_stats = self._parse_trip_stats(tripinfo_output, expected_vehicles)
+            
+            # Parse global statistics if available
+            if statistic_output.exists():
+                global_stats = self._parse_statistic_output(statistic_output)
+                # Update failures:
+                # True Failures = Loaded (Intent) - Inserted (Success)
+                # Note: "Waiting" vehicles are also failures for this specific simulation window
+                if global_stats['loaded'] > 0:
+                    loaded = global_stats['loaded']
+                    inserted = global_stats['inserted']
+                    trip_stats['routing_failures'] = loaded - inserted
+                    trip_stats['teleports'] = global_stats.get('teleports', 0)
+                    trip_stats['total_trips'] = loaded
+                    
+                    # Log if there's a discrepancy
+                    if trip_stats['routing_failures'] > 0:
+                         logger.debug(f"Insertion Backlog: {trip_stats['routing_failures']} vehicles failed to enter")
+                    if trip_stats['teleports'] > 0:
+                         logger.debug(f"Teleportations: {trip_stats['teleports']} vehicles teleported")
+
             # Copy edge data if requested
             if edge_data_file:
                 shutil.copy(edge_output, edge_data_file)
             
-            # Clean up tripinfo to prevent bloat
-            if tripinfo_output.exists():
-                tripinfo_output.unlink()
+            # Clean up tripinfo/stats to prevent bloat (unless debug)
+            if not self.debug:
+                if tripinfo_output.exists(): tripinfo_output.unlink()
+                if statistic_output.exists(): statistic_output.unlink()
             
-            return edge_stats, routing_failures
+            return edge_stats, trip_stats
             
         except subprocess.CalledProcessError as e:
             logger.error(f"SUMO simulation failed: {e.stderr}")
@@ -132,17 +163,36 @@ class SUMOSimulation:
             if cleanup:
                 shutil.rmtree(output_dir, ignore_errors=True)
     
-    def _create_config(self, config_file: Path, edge_output: Path, tripinfo_output: Path):
+    def _create_config(self, config_file: Path, edge_output: Path, tripinfo_output: Path, statistic_output: Path):
         """Create SUMO configuration file with tripinfo for failure tracking."""
-        output_dir = config_file.parent
+        output_dir = config_file.parent.resolve()
         additional_file = output_dir / "additional.xml"
 
-        # 1. Create additional.xml with edgeData configuration
-        # This is where 'freq' attribute is actually respected
+        # Resolve paths first to handle symlinks/relative inputs
+        edge_output = edge_output.resolve()
+        tripinfo_output = tripinfo_output.resolve()
+        statistic_output = statistic_output.resolve()
+        network_path = self.network_file.resolve() if self.network_file else None
+        vehicle_path = self.vehicle_file.resolve() if self.vehicle_file else None
+        
+        # Helper to make paths relative to output_dir (for portability)
+        def make_relative(path: Path) -> str:
+            try:
+                return str(path.relative_to(output_dir))
+            except ValueError:
+                # Fallback: try os.path.relpath which handles ".." (up-level)
+                import os
+                try:
+                    return os.path.relpath(str(path), str(output_dir))
+                except ValueError:
+                    # Fallback to absolute if on different drives etc.
+                    return str(path)
+
+        # 1. Create additional.xml
         add_root = ET.Element('additional')
         ET.SubElement(add_root, 'edgeData', {
             'id': 'edge_data_0',
-            'file': str(edge_output),
+            'file': make_relative(edge_output),
             'freq': '60',            # Output every 60 seconds
             'excludeEmpty': 'false'  # Include edges with no traffic
         })
@@ -156,9 +206,9 @@ class SUMOSimulation:
         
         # Input
         input_elem = ET.SubElement(root, 'input')
-        ET.SubElement(input_elem, 'net-file').set('value', str(self.network_file))
-        ET.SubElement(input_elem, 'route-files').set('value', str(self.vehicle_file))
-        ET.SubElement(input_elem, 'additional-files').set('value', str(additional_file))
+        ET.SubElement(input_elem, 'net-file').set('value', make_relative(network_path))
+        ET.SubElement(input_elem, 'route-files').set('value', make_relative(vehicle_path))
+        ET.SubElement(input_elem, 'additional-files').set('value', make_relative(additional_file))
         
         # Time
         time_elem = ET.SubElement(root, 'time')
@@ -181,7 +231,8 @@ class SUMOSimulation:
         
         # Output (tripinfo for routing failure tracking)
         output_elem = ET.SubElement(root, 'output')
-        ET.SubElement(output_elem, 'tripinfo-output').set('value', str(tripinfo_output))
+        ET.SubElement(output_elem, 'tripinfo-output').set('value', make_relative(tripinfo_output))
+        ET.SubElement(output_elem, 'statistic-output').set('value', make_relative(statistic_output))
         
         # Write config
         tree = ET.ElementTree(root)
@@ -204,8 +255,13 @@ class SUMOSimulation:
         edges_in_warmup = set()
         edges_in_measurement = set()
         
-        tree = ET.parse(edge_data_file)
-        root = tree.getroot()
+        try:
+            tree = ET.parse(edge_data_file)
+            root = tree.getroot()
+        except ET.ParseError as e:
+            logger.error(f"Failed to parse edge data file {edge_data_file}: {e}")
+            logger.warning("Returning empty edge stats due to XML parsing error. This may happen if SUMO crashed or was killed.")
+            return {}
         
         # Edge data is in intervals
         for interval in root.findall('interval'):
@@ -259,32 +315,72 @@ class SUMOSimulation:
         
         return mean_speeds
 
-    def _count_routing_failures(self, tripinfo_file: Path, expected_vehicles: int) -> int:
+    def _parse_trip_stats(self, tripinfo_file: Path, expected_vehicles: int = None) -> Dict:
         """
-        Count routing failures by comparing expected vs successful vehicles.
+        Parse tripinfo.xml to extract detailed trip statistics.
         
         Args:
             tripinfo_file: Path to tripinfo.xml output
-            expected_vehicles: Number of vehicles in trips.xml
+            expected_vehicles: Number of vehicles in trips.xml (for failure tracking)
             
         Returns:
-            Number of vehicles that failed to route
+            Dict with trip statistics
         """
+        stats = {
+            'routing_failures': 0,
+            'total_trips': 0,
+            'completed_trips': 0,
+            'avg_duration': 0.0,
+            'avg_waiting_time': 0.0
+        }
+        
         try:
             tree = ET.parse(tripinfo_file)
             root = tree.getroot()
             
-            # Count successful vehicles (those that have tripinfo entries)
-            successful_vehicles = len(root.findall('.//tripinfo'))
+            tripinfos = root.findall('tripinfo')
+            completed_count = len(tripinfos)
+            stats['completed_trips'] = completed_count
             
-            # Failures = expected - successful
-            routing_failures = max(0, expected_vehicles - successful_vehicles)
+            # Calculate averages
+            if completed_count > 0:
+                durations = [float(t.get('duration', 0)) for t in tripinfos]
+                waitings = [float(t.get('waitingTime', 0)) for t in tripinfos]
+                stats['avg_duration'] = sum(durations) / completed_count
+                stats['avg_waiting_time'] = sum(waitings) / completed_count
             
-            if routing_failures > 0:
-                logger.debug(f"Routing failures: {routing_failures}/{expected_vehicles} vehicles failed to route")
+            # Routing failures
+            if expected_vehicles is not None:
+                # Failures = expected - successful
+                stats['routing_failures'] = max(0, expected_vehicles - completed_count)
+                stats['total_trips'] = expected_vehicles
+            else:
+                stats['total_trips'] = completed_count
             
-            return routing_failures
+            if stats['routing_failures'] > 0:
+                logger.debug(f"Routing failures: {stats['routing_failures']}/{expected_vehicles} vehicles failed to route")
+                
+            return stats
             
         except Exception as e:
             logger.warning(f"Failed to parse tripinfo: {e}")
-            return 0  # Don't penalize if we can't parse
+            return stats
+
+    def _parse_statistic_output(self, stat_file: Path) -> Dict:
+        """Parse SUMO statistics output for global counts."""
+        stats = {'inserted': 0, 'loaded': 0, 'running': 0, 'waiting': 0, 'teleports': 0}
+        try:
+            tree = ET.parse(stat_file)
+            root = tree.getroot()
+            # <vehicles loaded="1500" inserted="1450" running="1300" waiting="50" teleports="0"/>
+            veh = root.find('vehicles')
+            if veh is not None:
+                stats['loaded'] = int(veh.get('loaded', 0))
+                stats['inserted'] = int(veh.get('inserted', 0))
+                stats['running'] = int(veh.get('running', 0))
+                stats['waiting'] = int(veh.get('waiting', 0))
+                stats['teleports'] = int(veh.get('teleports', 0))
+            return stats
+        except Exception as e:
+            logger.debug(f"Failed to parse statistics: {e}")
+            return stats
