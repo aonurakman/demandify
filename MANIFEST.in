@@ -1,0 +1,24 @@
+# Exclude development and environment files from Source Distribution
+exclude DEVELOPER_GUIDE.md
+exclude pyproject.toml.bak
+exclude test_ready.py
+exclude SPEC.md
+exclude .env
+exclude .env.example
+exclude pipeline.log
+
+# Exclude directories
+recursive-exclude .agent *
+recursive-exclude .gemini *
+recursive-exclude demandify_runs *
+recursive-exclude logs *
+recursive-exclude cache *
+recursive-exclude .demandify *
+recursive-exclude venv *
+recursive-exclude tests *
+recursive-exclude scripts *
+recursive-exclude reference *
+
+# Ensure operational data is included (matching pyproject.toml)
+recursive-include demandify/templates *.html
+recursive-include demandify/static *

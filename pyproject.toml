@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "demandify"
-version = "0.1.0"
+version = "0.0.1"
 description = "Calibrate SUMO traffic simulations against real-world congestion data"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ authors = [
     {name = "demandify contributors"}
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: GIS",
     "Programming Language :: Python :: 3.9",
@@ -57,8 +57,16 @@ dev = [
 [project.scripts]
 demandify = "demandify.__main__:main"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["demandify*"]
+exclude = ["tests*"]
+
 [tool.setuptools]
-packages = ["demandify"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+demandify = ["templates/*.html", "static/**/*"]
 
 [tool.black]
 line-length = 100
