@@ -28,7 +28,8 @@ class GeneticAlgorithm:
         elitism: int = 2,
         mutation_sigma: int = 20,
         mutation_indpb: float = 0.3,
-        num_workers: int = None
+        num_workers: int = None,
+        init_prob: float = None
     ):
         """
         Initialize GA.
@@ -57,6 +58,7 @@ class GeneticAlgorithm:
         self.mutation_sigma = mutation_sigma
         self.mutation_indpb = mutation_indpb
         self.num_workers = num_workers or max(1, cpu_count() - 1)
+        self.init_prob = init_prob
         
         # Seeded RNG
         self.rng = np.random.RandomState(seed)
@@ -75,10 +77,16 @@ class GeneticAlgorithm:
         self.toolbox = base.Toolbox()
         
         # Attribute generator (seeded)
-        self.toolbox.register(
-            "attr_int",
-            lambda: self.rng.randint(self.bounds[0], self.bounds[1] + 1)
-        )
+        def gen_attr():
+            if self.init_prob is not None:
+                if self.rng.random() < self.init_prob:
+                    return self.rng.randint(self.bounds[0], self.bounds[1] + 1)
+                else:
+                    return 0
+            else:
+                return self.rng.randint(self.bounds[0], self.bounds[1] + 1)
+
+        self.toolbox.register("attr_int", gen_attr)
         
         # Individual and population
         self.toolbox.register(
@@ -113,7 +121,8 @@ class GeneticAlgorithm:
         Run GA optimization with parallel evaluation.
         
         Args:
-            evaluate_func: Function that takes a genome and returns loss
+            evaluate_func: Function that takes a genome and returns loss. 
+                           MUST be picklable (e.g. partial of top-level func).
             early_stopping_patience: Stop if no improvement for N generations
             early_stopping_epsilon: Minimum improvement threshold
         
@@ -122,13 +131,12 @@ class GeneticAlgorithm:
         """
         logger.info(f"Starting GA optimization (pop={self.population_size}, gen={self.num_generations}, workers={self.num_workers})")
         
-        # Use sequential evaluation instead of parallel to avoid pickle issues
-        # This is simpler and avoids multiprocessing serialization problems
-        def eval_wrapper(individual):
-            return (evaluate_func(np.array(individual)),)
-        
-        # Register evaluation
-        self.toolbox.register("evaluate", eval_wrapper)
+        # Helper to unpack single-element tuple return from evaluate if needed
+        # But evaluate_func is expected to return float
+        def fitness_wrapper(ind):
+            return (evaluate_func(np.array(ind)),)
+
+        self.toolbox.register("evaluate", fitness_wrapper)
         
         # Genetic operators
         self.toolbox.register("mate", tools.cxTwoPoint)
@@ -144,67 +152,109 @@ class GeneticAlgorithm:
         # Create population
         population = self.toolbox.population(n=self.population_size)
         
-        # Evaluate initial population (sequential to avoid pickle issues)
-        for i, ind in enumerate(population):
-            # Print progress for each individual to keep CLI alive
-            print(f"\r    Evaluating individual {i+1}/{self.population_size}...", end="", flush=True)
-            ind.fitness.values = self.toolbox.evaluate(ind)
-        print("\r", end="") # Clear line after evaluation
-        
         # Track stats
         loss_history = []
         best_loss = float('inf')
         generations_without_improvement = 0
         
-        # Evolution loop
-        for gen in range(self.num_generations):
-            # Select next generation
-            offspring = self.toolbox.select(population, len(population))
-            offspring = list(map(self.toolbox.clone, offspring))
+        # Context manager for Pool ensures cleanup
+        # We use map_async or imap for better control
+        with Pool(processes=self.num_workers) as pool:
             
-            # Crossover
-            for child1, child2 in zip(offspring[::2], offspring[1::2]):
-                if self.rng.random() < self.crossover_rate:
-                    self.toolbox.mate(child1, child2)
-                    del child1.fitness.values
-                    del child2.fitness.values
+            # Helper for parallel evaluation
+            def parallel_evaluate(individuals):
+                arrays = [np.array(ind) for ind in individuals]
+                
+                results = []
+                # pool.imap allows return of any object
+                for res in tqdm(pool.imap(evaluate_func, arrays), total=len(individuals), desc="  Evaluating", leave=False):
+                    results.append(res)
+                return results
+
+            # Initial Evaluation
+            logger.info("Evaluating initial population...")
+            results = parallel_evaluate(population)
+            for ind, res in zip(population, results):
+                if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], dict):
+                    loss, metrics = res
+                    ind.fitness.values = (loss,)
+                    ind.metrics = metrics
+                else:
+                    # Fallback for pure float return
+                    loss = res[0] if isinstance(res, tuple) else res
+                    ind.fitness.values = (loss,)
+                    ind.metrics = {}
             
-            # Mutation
-            for mutant in offspring:
-                if self.rng.random() < self.mutation_rate:
-                    self.toolbox.mutate(mutant)
-                    del mutant.fitness.values
+            # Evolution loop
+            for gen in range(self.num_generations):
+                # Select
+                offspring = self.toolbox.select(population, len(population))
+                offspring = list(map(self.toolbox.clone, offspring))
+                
+                # Crossover
+                for child1, child2 in zip(offspring[::2], offspring[1::2]):
+                    if self.rng.random() < self.crossover_rate:
+                        self.toolbox.mate(child1, child2)
+                        del child1.fitness.values
+                        if hasattr(child1, 'metrics'): del child1.metrics
+                        if hasattr(child2, 'metrics'): del child2.metrics
+                
+                # Mutation
+                for mutant in offspring:
+                    if self.rng.random() < self.mutation_rate:
+                        self.toolbox.mutate(mutant)
+                        del mutant.fitness.values
+                        if hasattr(mutant, 'metrics'): del mutant.metrics
+                
+                # Identify invalid (new) individuals
+                invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+                
+                # Evaluate (Parallel)
+                if invalid_ind:
+                    logger.info(f"🧬 Generation {gen+1}/{self.num_generations}: evaluating {len(invalid_ind)} individuals...")
+                    results = parallel_evaluate(invalid_ind)
+                    for ind, res in zip(invalid_ind, results):
+                        if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], dict):
+                            loss, metrics = res
+                            ind.fitness.values = (loss,)
+                            ind.metrics = metrics
+                        else:
+                            loss = res[0] if isinstance(res, tuple) else res
+                            ind.fitness.values = (loss,)
+                            ind.metrics = {}
+                
+                # Elitism
+                population = tools.selBest(population, self.elitism) + offspring[:-self.elitism]
             
-            # Evaluate offspring (sequential)
-            invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-            
-            # Show progress
-            logger.info(f"🧬 Generation {gen+1}/{self.num_generations} starting...")
-            for ind in tqdm(invalid_ind, desc=f"Eval Gen {gen+1}", unit="ind"):
-                ind.fitness.values = self.toolbox.evaluate(ind)
-            
-            # Elitism: keep best from previous generation
-            population = tools.selBest(population, self.elitism) + offspring[:-self.elitism]
-        
-            # Stats
-            fits = [ind.fitness.values[0] for ind in population]
-            current_best = min(fits)
-            current_mean = np.mean(fits)
-            
-            loss_history.append(current_best)
-            
-            logger.info(f"✅ Gen {gen+1} Stats: Best Loss={current_best:.2f}, Mean={current_mean:.2f}")
-            
-            # Progress callback for UI updates
-            if progress_callback:
-                progress_callback(gen + 1, current_best, current_mean)
-            
-            # Track improvement (but don't stop early - always run full generations)
-            if current_best < best_loss - early_stopping_epsilon:
-                best_loss = current_best
-                generations_without_improvement = 0
-            else:
-                generations_without_improvement += 1
+                # Stats
+                fits = [ind.fitness.values[0] for ind in population]
+                current_best = min(fits)
+                current_mean = np.mean(fits)
+                
+                # Aggregate metrics for best individual
+                best_ind_gen = tools.selBest(population, 1)[0]
+                best_metrics = getattr(best_ind_gen, 'metrics', {})
+                
+                loss_history.append(current_best)
+                
+                # Log stats with metrics if available
+                metric_str = ""
+                if best_metrics:
+                    zero_flow = best_metrics.get('zero_flow_edges', '?')
+                    avg_dur = best_metrics.get('avg_trip_duration', 0.0)
+                    trip_fail = best_metrics.get('routing_failures', 0)
+                    metric_str = f" | ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, Fail={trip_fail}"
+                
+                logger.info(f"✅ Gen {gen+1} Stats: Best Loss={current_best:.2f}, Mean={current_mean:.2f}{metric_str}")
+                
+                if progress_callback:
+                    progress_callback(gen + 1, current_best, current_mean)
+                
+                if current_best < best_loss - early_stopping_epsilon:
+                    best_loss = current_best
+                    generations_without_improvement = 0
+                else:
+                    generations_without_improvement += 1
         
         # Get best individual
         best_ind = tools.selBest(population, 1)[0]

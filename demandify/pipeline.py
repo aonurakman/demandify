@@ -9,6 +9,8 @@ import pandas as pd
 import numpy as np
 import logging
 
+from demandify.utils.logger import setup_logging
+
 from demandify.config import get_config
 from demandify.providers.tomtom import TomTomProvider
 from demandify.providers.osm import OSMFetcher
@@ -18,6 +20,8 @@ from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.simulation import SUMOSimulation
 from demandify.calibration.objective import EdgeSpeedObjective
 from demandify.calibration.optimizer import GeneticAlgorithm
+from demandify.calibration.worker import run_simulation_worker, SimulationConfig, evaluate_for_ga
+from functools import partial
 from demandify.cache.manager import CacheManager
 from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key
 from demandify.export.exporter import ScenarioExporter
@@ -48,6 +52,7 @@ class CalibrationPipeline:
         num_destinations: int = 10,
         max_od_pairs: int = 1000,
         bin_minutes: float = 1.0,
+        initial_population: int = 1000,
         output_dir: Path = None,
         run_id: str = None,
         progress_callback: callable = None
@@ -65,6 +70,7 @@ class CalibrationPipeline:
             num_destinations: Number of destination candidates
             max_od_pairs: Maximum number of OD pairs to generate
             bin_minutes: Duration of each demand time bin in minutes
+            initial_population: Target initial number of vehicles (controls GA init bounds)
             output_dir: Output directory for results
             run_id: Optional custom identifier for the run
             progress_callback: Optional callable(stage, name, msg, level) for UI updates
@@ -84,6 +90,7 @@ class CalibrationPipeline:
         self.num_destinations = num_destinations
         self.max_od_pairs = max_od_pairs
         self.bin_minutes = bin_minutes
+        self.initial_population = initial_population
         self.run_id = run_id
         
         if output_dir is None:
@@ -129,46 +136,33 @@ class CalibrationPipeline:
                 logger.warning(f"Progress callback failed: {e}")
         
         # Also log key events
+        # The logger is now configured to output to console gracefully
         if level == "info":
             logger.info(f"[{stage}] {name}: {msg}")
-            print(f"[{stage}] {name}: {msg}", flush=True)
         elif level == "error":
             logger.error(f"[{stage}] {name}: {msg}")
-            print(f"❌ [{stage}] {name}: {msg}", flush=True)
         elif level == "warning":
             logger.warning(f"[{stage}] {name}: {msg}")
-            # Optional: don't spam warnings to stdout unless critical
-            # print(f"⚠️ [{stage}] {name}: {msg}", flush=True)
     
     def _setup_run_logging(self):
         """Setup file logging for this specific run."""
-        log_file = self.output_dir / "logs" / "pipeline.log"
-        
-        # Create file handler
-        file_handler = logging.FileHandler(log_file, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        
-        # Use same format as console
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+        log_file = "pipeline.log"
+        setup_logging(
+            run_dir=self.output_dir / "logs", 
+            log_file=log_file,
+            level=logging.INFO
         )
-        file_handler.setFormatter(formatter)
         
-        # Add to root logger (captures all demandify.* loggers)
-        root_logger = logging.getLogger('demandify')
-        root_logger.addHandler(file_handler)
-        
-        # Store handler reference for cleanup
-        self.log_handler = file_handler
-        
-        # Add Console Handler so user sees progress in CLI
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
-        
-        logger.info(f"Pipeline logs will be saved to {log_file}")
+        # Copy to latest.log for easy tailing
+        try:
+            latest_link = Path("demandify_runs/latest.log")
+            if latest_link.exists():
+                latest_link.unlink()
+            # On Windows, symlinks require admin, so we skip or copy
+            # On Mac/Linux:
+            # latest_link.symlink_to(log_file)
+        except Exception:
+            pass
     
     async def prepare(self) -> Dict:
         """
@@ -501,6 +495,8 @@ class CalibrationPipeline:
         
         return demand_gen, od_pairs, departure_bins
     
+
+
     def _calibrate_demand(
         self,
         demand_gen: DemandGenerator,
@@ -518,70 +514,110 @@ class CalibrationPipeline:
             random_genome = np.random.RandomState(self.seed).randint(0, 10, size=genome_size)
             return random_genome, float('inf'), [float('inf')]
         
-        # Create objective
-        objective = EdgeSpeedObjective(observed_edges)
+        # Create SimulationConfig for the worker
+        sim_config = SimulationConfig(
+            run_id=self.run_id,
+            network_file=network_file,
+            od_pairs=od_pairs,
+            departure_bins=departure_bins,
+            observed_edges=observed_edges,
+            warmup_time=self.warmup_minutes * 60,
+            simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
+            step_length=1.0,
+            debug=False,  # Can be exposed via config
+            output_base_dir=self.output_dir / "temp_eval"
+        )
         
-        # Evaluation function
-        def evaluate(genome: np.ndarray) -> float:
-            # Generate demand files
-            temp_dir = self.output_dir / "temp_eval"
-            temp_dir.mkdir(exist_ok=True)
-            
-            demand_csv = temp_dir / "demand.csv"
-            trips_file = temp_dir / "trips.xml"
-            
-            demand_gen.genome_to_demand_csv(genome, od_pairs, departure_bins, demand_csv)
-            demand_gen.demand_csv_to_trips_xml(demand_csv, trips_file)
-            # Skip routing - SUMO will route dynamically
-            
-            # Run simulation with dynamic routing
-            sim = SUMOSimulation(
-                network_file, 
-                trips_file,  # Pass trips.xml directly
-                step_length=1.0,
-                warmup_time=self.warmup_minutes * 60,
-                simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
-                seed=self.seed,
-                use_dynamic_routing=True
-            )
-            
-            # Count expected vehicles for failure tracking
-            expected_vehicles = int(np.sum(genome))
-            
-            simulated_speeds, routing_failures = sim.run(expected_vehicles=expected_vehicles)
-            
-            # Calculate loss with routing penalty
-            loss = objective.calculate_loss(
-                simulated_speeds, 
-                routing_failures=routing_failures,
-                expected_vehicles=expected_vehicles
-            )
-            
-            return loss
+        # Create picklable evaluation function using partial
+        # This binds 'config' to run_simulation_worker, leaving 'genome' as the only required arg
+        evaluate_func = partial(run_simulation_worker, config=sim_config)
         
-        # Run GA
+        # Note: We rely on the worker to handle demand generation and simulation.
+        # The worker returns (loss, metrics). 
+        # But GA expects a function that returns float loss.
+        # run_simulation_worker returns Tuple[float, Dict].
+        # We need an adapter that returns just float, but partial only binds args.
+        # We need a top-level wrapper or the worker itself to return float.
+        # 
+        # Wait! The worker returns (loss, metrics). GA expects float.
+        # Code in optimizer.py:
+        #   def fitness_wrapper(ind):
+        #       return (evaluate_func(np.array(ind)),)
+        # 
+        # If evaluate_func returns (loss, metrics), then fitness_wrapper returns ((loss, metrics),)
+        # This will break DEAP which expects (float,).
+        #
+        # FIX: The evaluate_func passed to GA must return float.
+        # Since I can't use a lambda (not picklable), I need a wrapper function defined at module level 
+        # or verify if worker returns just loss.
+        # My worker returns (loss, metrics).
+        # I should assume the worker returns just loss, OR use a wrapper.
+        #
+        # Let's import a wrapper from worker.py if possible, or define one here.
+        # Actually, let's use the `evaluate_genome_wrapper` matching signature.
+        # 
+        # BETTER: Modify worker.py to have a function `evaluate_loss_only` for the GA.
+        # OR simply change run_simulation_worker to return just loss? No, we want metrics.
+        #
+        # Strategy: Define `evaluate_adapter` top-level in `pipeline.py` or import it.
+        # Defining it top-level in pipeline.py is tricky if pipeline.py imports worker.
+        # Let's use `run_simulation_worker` but I need to discard the metrics.
+        #
+        # I'll create `evaluate_genome_for_ga` in `pipeline.py` (top-level) or `worker.py`.
+        # Putting it in `worker.py` is cleanest. 
+        # I'll edit `worker.py` in a moment to add `evaluate_for_ga`.
+        # For now, let's assume `run_simulation_worker` returns        # Define parameter bounds (trips per OD pair per bin)
+        # 0 to 3 trips per OD pair per 1-minute bin
+        # Initialization with (0, 100) creates ~500k trips -> Gridlock
+        
+    # ... continuing with valid code ...
+    
+    # Run GA
         genome_size = len(od_pairs) * len(departure_bins)
+        # Dynamic Bounds & Init Prob Logic
+        avg_trips_per_gene = self.initial_population / max(1, genome_size)
+        upper_bound = max(1, int(avg_trips_per_gene * 2))
+        bounds = (0, upper_bound)
+        
+        avg_val_if_active = (bounds[0] + bounds[1]) / 2.0
+        init_prob = None
+        if avg_trips_per_gene < avg_val_if_active:
+             init_prob = avg_trips_per_gene / max(0.1, avg_val_if_active)
+             init_prob = min(1.0, max(0.001, init_prob)) # Clamp
+        
+        dynamic_sigma = max(1, int(upper_bound * 0.2))
+        
+        logger.info(f"Dynamic GA Initialization: Target {self.initial_population} vehicles -> Bounds {bounds} (Avg {avg_trips_per_gene:.2f}/gene)")
+
         ga = GeneticAlgorithm(
             genome_size=genome_size,
             seed=self.seed,
-            bounds=(0, 200),  # Increased to ensure sufficient demand
+            bounds=bounds,
             population_size=self.ga_population,
             num_generations=self.ga_generations,
             mutation_rate=self.ga_mutation_rate,
             crossover_rate=self.ga_crossover_rate,
             elitism=self.ga_elitism,
-            mutation_sigma=self.ga_mutation_sigma,
+            mutation_sigma=dynamic_sigma,
             mutation_indpb=self.ga_mutation_indpb,
-            num_workers=self.config.default_parallel_workers
+            num_workers=self.config.default_parallel_workers,
+            init_prob=init_prob
         )
         
-        # Progress callback for UI updates and CLI feedback
+        # Progress callback
         def progress_callback(gen: int, best_loss: float, mean_loss: float):
             msg = f"  🔄 GA Gen {gen}/{self.ga_generations}: best_loss={best_loss:.2f} km/h, mean={mean_loss:.2f}"
             logger.info(msg)
-            print(msg, flush=True)
+            # print(msg, flush=True) # logger handles this now
         
-        best_genome, best_loss, loss_history = ga.optimize(evaluate, progress_callback=progress_callback)
+        # Start optimization
+        from demandify.calibration.worker import evaluate_for_ga
+        evaluate_func_clean = partial(evaluate_for_ga, config=sim_config)
+        
+        best_genome, best_loss, loss_history = ga.optimize(
+            evaluate_func_clean, 
+            progress_callback=progress_callback
+        )
         
         logger.info(f"✅ Calibration complete: loss={best_loss:.2f} km/h, vehicles={int(best_genome.sum())}")
         
@@ -619,7 +655,11 @@ class CalibrationPipeline:
             use_dynamic_routing=True
         )
         
-        simulated_speeds, _ = sim.run()  # Ignore routing_failures for final sim
+        # Run in 'sumo' dir to generate and keep simulation.sumocfg there
+        sumo_dir = self.output_dir / "sumo"
+        sumo_dir.mkdir(parents=True, exist_ok=True)
+        
+        simulated_speeds, _ = sim.run(output_dir=sumo_dir)  # Ignore routing_failures for final sim
         return simulated_speeds
     
     def _export_results(

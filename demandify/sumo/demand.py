@@ -70,35 +70,29 @@ class DemandGenerator:
         logger.info(f"Building up to {max_od_pairs} validated OD pairs (min_dist={min_trip_distance}m)...")
         
         current_min_dist = min_trip_distance
-        print(f"  generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...", flush=True)
+        logger.info(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
         
         while len(valid_pairs) < max_od_pairs:
             # Safety break
             if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
-                msg = f"\nReached maximum attempt limit ({total_attempts}). Stopping with {len(valid_pairs)} pairs."
-                logger.warning(msg)
-                print(msg, flush=True)
+                logger.warning(f"Reached maximum attempt limit ({total_attempts}). Stopping with {len(valid_pairs)} pairs.")
                 break
                 
             if consecutive_failures > max_consecutive_failures:
-                msg = f"\nStopped after {consecutive_failures} consecutive failures. Created {len(valid_pairs)} pairs."
-                logger.warning(msg)
-                print(msg, flush=True)
+                logger.warning(f"Stopped after {consecutive_failures} consecutive failures. Created {len(valid_pairs)} pairs.")
                 break
                 
-            # Direct Console Progress (Dynamic)
-            if len(valid_pairs) > 0 and len(valid_pairs) % 10 == 0:
-                 print(f"\r  [{len(valid_pairs)}/{max_od_pairs}] OD pairs found (failures: {consecutive_failures})", end="", flush=True)
+            # Progress Logging (every 100 pairs)
+            if len(valid_pairs) > 0 and len(valid_pairs) % 100 == 0 and consecutive_failures == 0:
+                 logger.info(f"  ... {len(valid_pairs)}/{max_od_pairs} OD pairs found")
 
             # Adaptive Relaxation: If stuck, reduce min distance requirement
             if consecutive_failures > 500 and consecutive_failures % 500 == 0 and current_min_dist > 0:
                  old_dist = current_min_dist
                  current_min_dist *= 0.8
-                 # logger.debug(f"  Relaxing min_dist from {int(old_dist)}m to {int(current_min_dist)}m after failures")
-                 print(f"\n  ⚠️  Relaxing min distance to {int(current_min_dist)}m to find paths...", flush=True)
+                 logger.info(f"  Relaxing min_dist from {int(old_dist)}m to {int(current_min_dist)}m after failures")
 
             # Sample a random OD pair
-            # Use choice with replacement for indices to be fast, but we need edges
             candidates = self.rng.choice(all_edges, size=2, replace=False, p=probs)
             origin, destination = candidates[0], candidates[1]
             
@@ -137,8 +131,6 @@ class DemandGenerator:
         
         logger.info(f"Created {len(valid_pairs)} valid OD pairs from {total_attempts} attempts: "
                    f"{len(origins)} unique origins, {len(destinations)} unique destinations")
-        
-        print(f"\n  ✓ Done! {len(valid_pairs)} pairs generated.", flush=True)
         
         return origins, destinations
     
@@ -247,6 +239,10 @@ class DemandGenerator:
         
         # Create DataFrame
         demand_df = pd.DataFrame(trips)
+        
+        # Sort by departure time (CRITICAL for SUMO)
+        if not demand_df.empty:
+            demand_df = demand_df.sort_values('departure timestep')
         
         # Save to CSV
         output_file.parent.mkdir(parents=True, exist_ok=True)
