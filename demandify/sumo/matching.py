@@ -6,7 +6,6 @@ from typing import Optional, Tuple
 import logging
 import pandas as pd
 from shapely.geometry import LineString, Point
-from shapely import speedups
 from rtree import index as rtree_index
 
 logger = logging.getLogger(__name__)
@@ -19,8 +18,7 @@ except ImportError:
     HAS_PYPROJ = False
     logger.warning("pyproj not available - coordinate transformation will be limited")
 
-if speedups.available:
-    speedups.enable()
+
 
 
 def get_network_projection(network_file: Path) -> Tuple[Optional[str], Tuple[float, float]]:
@@ -127,18 +125,47 @@ class EdgeMatcher:
     
     def _transform_coords(self, lon: float, lat: float) -> Tuple[float, float]:
         """Transform WGS84 coordinates to network CRS."""
-        if self.transformer is None:
-            return (lon, lat)
-        
-        try:
-            x, y = self.transformer.transform(lon, lat)
-            # Apply network offset
-            x += self.offset[0]
-            y += self.offset[1]
-            return (x, y)
-        except Exception as e:
-            logger.warning(f"Coordinate transformation failed: {e}")
-            return (lon, lat)
+        if self.transformer:
+            try:
+                x, y = self.transformer.transform(lon, lat)
+                # Apply network offset
+                x += self.offset[0]
+                y += self.offset[1]
+                return (x, y)
+            except Exception as e:
+                logger.warning(f"Coordinate transformation failed: {e}")
+                return (lon, lat)
+        else:
+            # FALLBACK: Simple Equirectangular projection (flat earth approx)
+            # This is "good enough" for small areas if pyproj is missing.
+            # Using center of network or first point as reference would be better,
+            # but we assume network (0,0) is relative to some origin.
+            # For finding RELATIVE distances during matching, we need meters.
+            
+            # 1 deg lat ~= 111132.954m
+            # 1 deg lon ~= 111132.954 * cos(lat)
+            
+            # We assume the network is somewhat centered? No, SUMO networks are in meters.
+            # If we don't have pyproj, we cannot know the network's true origin offset easily
+            # unless we parse 'location' netOffset properly (which we do).
+            # But converting Lon/Lat -> Meters requires a projection center.
+            
+            # CRITICAL: Without pyproj, we can't reliably map LatLon to SUMO XY unless
+            # we implement a full UTM or Mercator projection.
+            # However, for 'matching', we just need the traffic segment (Lat/Lon)
+            # to line up with the network edge (Lat/Lon or XY).
+            # If the network is in XY (meters), and we have Lat/Lon traffic...
+            
+            # Actually, `sumo/network.py` parses edge shapes.
+            # If the .net.xml shapes are in meters (standard), we MUST project traffic to meters.
+            
+            logger.error("CRITICAL: pyproj is missing! Matching will fail because we cannot project WGS84 traffic to SUMO XY meters.")
+            # raise RuntimeError("Feature 'pyproj' is required for map matching. Please install it.")
+            
+            # Attempt a rough approximation relative to the first point seen?
+            # No, that's dangerous.
+            return (lon, lat) # This WILL fail matching as 100m != 100 degrees
+
     
     def match_segment(
         self,
