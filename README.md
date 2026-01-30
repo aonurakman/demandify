@@ -79,24 +79,27 @@ You can run the full calibration pipeline directly from the command line, ideal 
 
 ```bash
 # Basic usage (defaults: window=15, pop=50, gen=20)
-demandify run "2.2961,48.8469,2.3071,48.8532"
+demandify run "2.2961,48.8469,2.3071,48.8532" --name Paris_Test_01
 
 # Advanced usage with custom parameters
 demandify run "2.2961,48.8469,2.3071,48.8532" \
+  --name Paris_Optimization \
   --window 30 \
   --seed 123 \
-  --pop 100 \
   --pop 100 \
   --gen 50 \
   --mutation 0.5 \
   --elitism 2
 ```
 
+> **Note:** The CLI will pause after fetching/matching data to show matching statistics and ask for confirmation before starting the intensive calibration.
+
 #### Parameters
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `bbox` | String | (Req) | Bounding box (`west,south,east,north`) |
+| `--name` | String | Auto | Custom Run ID/Name |
 | `--window` | Int | 15 | Simulation duration (min) |
 | `--seed` | Int | 42 | Random seed |
 | `--pop` | Int | 50 | GA Population size |
@@ -106,6 +109,10 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 | `--elitism` | Int | 2 | Top individuals to keep |
 | `--sigma` | Int | 20 | Mutation magnitude (step size) |
 | `--indpb` | Float | 0.3 | Mutation probability (per gene) |
+| `--origins` | Int | 10 | Number of origin candidates |
+| `--destinations` | Int | 10 | Number of destination candidates |
+| `--max-ods` | Int | 50 | Max OD pairs to generate |
+| `--bin-size` | Int | 5 | Time bin size in minutes |
 
 ## How It Works
 

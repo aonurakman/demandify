@@ -63,7 +63,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
         update_progress(0, "Initializing", "Starting calibration pipeline...")
         
         # Create output directory
-        output_dir = Path.cwd() / "demandify_runs" / f"run_{run_id[:8]}"
+        output_dir = Path.cwd() / "demandify_runs" / f"run_{run_id}"
         
         # Store output_dir in active_runs for log file access
         active_runs[run_id]["output_dir"] = str(output_dir)
@@ -81,88 +81,29 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             ga_elitism=params["ga_elitism"],
             ga_mutation_sigma=params["ga_mutation_sigma"],
             ga_mutation_indpb=params["ga_mutation_indpb"],
-            output_dir=output_dir
+            num_origins=params.get("num_origins", 10),
+            num_destinations=params.get("num_destinations", 10),
+            max_od_pairs=params.get("max_od_pairs", 50),
+            bin_minutes=params.get("bin_minutes", 5),
+            run_id=run_id,
+            output_dir=output_dir,
+            progress_callback=update_progress
         )
         
-        # Stage 1: Fetch traffic data
-        update_progress(1, "Fetching Traffic Data", "Connecting to TomTom API...")
-        traffic_df = await pipeline._fetch_traffic_data()
-        traffic_data_file = output_dir / "traffic_data_raw.csv"
-        traffic_df.to_csv(traffic_data_file, index=False)
-        update_progress(1, "Fetching Traffic Data", f"✓ Fetched {len(traffic_df)} traffic segments")
+        # Run pipeline
+        # The pipeline will handle all stages and call update_progress
+        metadata = await pipeline.run()
         
-        # Stage 2: Fetch OSM
-        update_progress(2, "Download OSM", "Downloading OpenStreetMap data...")
-        osm_file = await pipeline._fetch_osm_data()
-        update_progress(2, "Download OSM", "✓ OSM data downloaded")
-        
-        # Stage 3: Build SUMO network
-        update_progress(3, "Building Network", "Converting map to SUMO network...")
-        network_file = pipeline._build_sumo_network(osm_file)
-        update_progress(3, "Building Network", "✓ SUMO network created")
-        
-        # Stage 4: Match traffic to edges
-        update_progress(4, "Matching Traffic", "Matching traffic data to road network...")
-        observed_edges = pipeline._match_traffic_to_edges(traffic_df, network_file)
-        
-        # ⚠️ CHECK FOR ZERO OBSERVED EDGES
-        if len(observed_edges) == 0:
-            update_progress(4, "No Observed Edges", 
-                          "⚠️ WARNING: No traffic sensors in this area. Cannot calibrate demand without ground truth data.",
-                          level="warning")
-            active_runs[run_id]["status"] = "warning_no_edges"
-            active_runs[run_id]["metadata"] = {
-                "warning": "no_observed_edges",
-                "message": "TomTom has no traffic data for this bounding box"
-            }
-            logger.warning(f"Run {run_id}: No observed edges - user intervention required")
-            return
-        
-        observed_edges_file = output_dir / "observed_edges.csv"
-        observed_edges.to_csv(observed_edges_file, index=False)
-        update_progress(4, "Matching Traffic", f"✓ Matched {len(observed_edges)} road segments")
-        
-        # Stage 5: Initialize demand
-        update_progress(5, "Init Demand", "Initializing demand generation...")
-        demand_gen, od_pairs, departure_bins = pipeline._initialize_demand(network_file)
-        update_progress(5, "Init Demand", f"✓ Created {len(od_pairs)} OD pairs")
-        
-        # Stage 6: Calibrate demand (longest stage)
-        update_progress(6, "Calibrating Demand", 
-                       f"Running genetic algorithm ({params['ga_generations']} generations)...")
-        best_genome, best_loss, loss_history = pipeline._calibrate_demand(
-            demand_gen, od_pairs, departure_bins, observed_edges, network_file
-        )
-        update_progress(6, "Calibrating Demand", f"✓ Complete: loss={best_loss:.2f} km/h")
-        
-        # Stage 7: Generate final demand files
-        update_progress(7, "Generating Demand", "Creating final trip and route files...")
-        demand_csv, trips_file, routes_file = pipeline._generate_final_demand(
-            demand_gen, best_genome, od_pairs, departure_bins, network_file
-        )
-        update_progress(7, "Generating Demand", "✓ Files created")
-        
-        # Stage 8: Export scenario
-        update_progress(8, "Exporting Results", "Running final simulation and generating reports...")
-        simulated_speeds = pipeline._run_final_simulation(network_file, routes_file)
-        
-        # Calculate final metrics
-        objective = EdgeSpeedObjective(observed_edges)
-        quality_metrics = objective.calculate_metrics(simulated_speeds)
-        
-        # Export metadata
-        metadata = pipeline._export_results(
-            network_file, demand_csv, trips_file, routes_file,
-            observed_edges_file, traffic_data_file, observed_edges,
-            simulated_speeds, best_loss, loss_history, quality_metrics
-        )
-        
-        # Update final status
-        active_runs[run_id]["status"] = "completed"
-        active_runs[run_id]["metadata"] = metadata
-        active_runs[run_id]["output_dir"] = str(output_dir)
-        update_progress(8, "Complete", f"Scenario exported to {output_dir}")
-        
+        if metadata:
+            # Update final status
+            active_runs[run_id]["status"] = "completed"
+            active_runs[run_id]["metadata"] = metadata
+            update_progress(8, "Complete", f"Scenario exported to {output_dir}")
+        else:
+            # Aborted?
+            active_runs[run_id]["status"] = "aborted"
+            update_progress(0, "Aborted", "Run aborted.")
+
     except Exception as e:
         logger.error(f"Pipeline failed for run {run_id}: {e}", exc_info=True)
         if run_id in active_runs:
@@ -173,6 +114,55 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             })
 
 
+@router.post("/api/check_feasibility")
+async def check_feasibility(
+    bbox_west: float = Form(...),
+    bbox_south: float = Form(...),
+    bbox_east: float = Form(...),
+    bbox_north: float = Form(...),
+    run_id: Optional[str] = Form(None)
+):
+    """Run preparation phase to check data quality."""
+    from demandify.pipeline import CalibrationPipeline
+    from demandify.config import get_config
+    
+    config = get_config()
+    if not config.tomtom_api_key:
+        raise HTTPException(status_code=400, detail="TomTom API key not configured")
+    
+    # Use provided ID or generate temp one
+    actual_run_id = run_id if run_id else f"check_{uuid.uuid4().hex}"
+    
+    bbox = (bbox_west, bbox_south, bbox_east, bbox_north)
+    
+    try:
+        pipeline = CalibrationPipeline(
+            bbox=bbox,
+            window_minutes=15, # Default for check
+            seed=42, # Default
+            run_id=actual_run_id
+        )
+        
+        # Run preparation
+        context = await pipeline.prepare()
+        
+        return {
+            "status": "success",
+            "run_id": actual_run_id,
+            "stats": {
+                "fetched_segments": len(context["traffic_df"]),
+                "matched_edges": len(context["observed_edges"]),
+                "total_network_edges": context.get("total_edges", 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Check failed: {e}")
+        return {
+            "status": "error", 
+            "message": str(e)
+        }
+
+
 @router.post("/api/run")
 async def start_run(
     background_tasks: BackgroundTasks,
@@ -180,6 +170,7 @@ async def start_run(
     bbox_south: float = Form(...),
     bbox_east: float = Form(...),
     bbox_north: float = Form(...),
+    run_id: Optional[str] = Form(None),
     window_minutes: int = Form(15),
     seed: int = Form(42),
     ga_population: int = Form(50),
@@ -189,6 +180,10 @@ async def start_run(
     ga_elitism: int = Form(2),
     ga_mutation_sigma: int = Form(20),
     ga_mutation_indpb: float = Form(0.3),
+    num_origins: int = Form(10),
+    num_destinations: int = Form(10),
+    max_od_pairs: int = Form(50),
+    bin_minutes: int = Form(5),
     parallel_workers: Optional[int] = Form(None)
 ):
     """Start a new calibration run."""
@@ -209,11 +204,11 @@ async def start_run(
     if not config.tomtom_api_key:
         raise HTTPException(status_code=400, detail="TomTom API key not configured")
     
-    # Create run ID
-    run_id = str(uuid.uuid4())
+    # Create or use run ID
+    actual_run_id = run_id if run_id else str(uuid.uuid4())
     
     # Store run metadata
-    active_runs[run_id] = {
+    active_runs[actual_run_id] = {
         "status": "running",
         "progress": {
             "stage": 0,
@@ -234,13 +229,17 @@ async def start_run(
         "ga_crossover_rate": ga_crossover_rate,
         "ga_elitism": ga_elitism,
         "ga_mutation_sigma": ga_mutation_sigma,
-        "ga_mutation_indpb": ga_mutation_indpb
+        "ga_mutation_indpb": ga_mutation_indpb,
+        "num_origins": num_origins,
+        "num_destinations": num_destinations,
+        "max_od_pairs": max_od_pairs,
+        "bin_minutes": bin_minutes
     }
     
     # Start background task
-    background_tasks.add_task(run_calibration_pipeline, run_id, params)
+    background_tasks.add_task(run_calibration_pipeline, actual_run_id, params)
     
-    return {"run_id": run_id, "status": "started"}
+    return {"run_id": actual_run_id, "status": "started"}
 
 
 @router.get("/api/run/{run_id}/progress")
@@ -252,7 +251,7 @@ async def get_progress(run_id: str):
     # QUICK FIX: Also read from log file if available
     output_dir = active_runs[run_id].get("output_dir")
     if output_dir:
-        log_file = Path(output_dir) / "pipeline.log"
+        log_file = Path(output_dir) / "logs" / "pipeline.log"
         if log_file.exists():
             try:
                 # Read last 30 lines
@@ -296,3 +295,19 @@ async def results_page(request: Request, run_id: str):
         "run_id": run_id,
         "run_data": active_runs[run_id]
     })
+
+
+@router.get("/api/runs")
+async def list_runs():
+    """List all existing run IDs found in the run directory."""
+    runs_dir = Path.cwd() / "demandify_runs"
+    runs = []
+    
+    if runs_dir.exists():
+        for path in runs_dir.iterdir():
+            if path.is_dir() and path.name.startswith("run_"):
+                # Extract ID from "run_ID"
+                run_id = path.name[4:]
+                runs.append(run_id)
+                
+    return {"runs": runs}

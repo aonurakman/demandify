@@ -148,6 +148,22 @@
                                 <input type="number" class="form-control" id="seed" name="seed" value="42" min="0">
                             </div>
 
+                            <!-- Run ID (Optional) -->
+                            <div class="mb-3">
+                                <label for="run_id" class="form-label">
+                                    <i class="bi bi-tag"></i> Run ID (Optional)
+                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                        title="Custom identifier for this run. Leave blank to auto-generate.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="text" class="form-control" id="run_id" name="run_id"
+                                    placeholder="e.g. paris_optimization_v1" pattern="[A-Za-z0-9_-]+">
+                                <div id="run-id-warning" class="form-text text-warning d-none">
+                                    <i class="bi bi-exclamation-triangle"></i> Run ID exists. Files will be overwritten.
+                                </div>
+                            </div>
+
                             <!-- Advanced Parameters -->
                             <div class="mb-3">
                                 <a class="btn btn-link p-0 text-decoration-none" data-bs-toggle="collapse"
@@ -233,44 +249,96 @@
                                                     step="0.05" min="0" max="1">
                                             </div>
                                         </div>
-                                        <div class="row mb-0 border-top pt-2">
-                                            <div class="col-12 mb-2"><small class="text-muted fw-bold">Advanced Mutation
-                                                    Tuning</small></div>
-                                            <div class="col-6">
-                                                <label for="ga_mutation_sigma" class="form-label small">
-                                                    Sigma
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Mutation magnitude (step size). Higher = larger changes to values.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_mutation_sigma" name="ga_mutation_sigma" value="20" min="1">
-                                            </div>
-                                            <div class="col-6">
-                                                <label for="ga_mutation_indpb" class="form-label small">
-                                                    Gene Prob.
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Probability (0.0-1.0) of mutating a specific gene within an individual.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_mutation_indpb" name="ga_mutation_indpb" value="0.3"
-                                                    step="0.05" min="0" max="1">
-                                            </div>
+                                    </div>
+
+                                    <!-- Demand Model Parameters -->
+                                    <div class="row mb-0 border-top pt-2">
+                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Demand Model</small>
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="num_origins" class="form-label small">
+                                                Origins
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Number of candidate startup locations to try.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm" id="num_origins"
+                                                name="num_origins" value="10" min="2">
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="num_destinations" class="form-label small">
+                                                Destinations
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Number of candidate endpoints to try.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="num_destinations" name="num_destinations" value="10" min="2">
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="max_od_pairs" class="form-label small">
+                                                Max Routes
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Maximum unique routes to calibrate. Limits complexity.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm" id="max_od_pairs"
+                                                name="max_od_pairs" value="50" min="5">
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="bin_minutes" class="form-label small">
+                                                Bin Duration: <span id="bin-val">5</span> min
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Duration of each demand time slot. Smaller = finer detail but harder to calibrate.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="range" class="form-range" id="bin_minutes" name="bin_minutes"
+                                                min="1" max="15" value="5" step="1"
+                                                oninput="document.getElementById('bin-val').textContent = this.value">
+                                        </div>
+                                    </div>
+
+                                    <div class="row mb-0 border-top pt-2">
+                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Advanced Mutation
+                                                Tuning</small></div>
+                                        <div class="col-6">
+                                            <label for="ga_mutation_sigma" class="form-label small">
+                                                Sigma
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Mutation magnitude (step size). Higher = larger changes to values.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_mutation_sigma" name="ga_mutation_sigma" value="20" min="1">
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="ga_mutation_indpb" class="form-label small">
+                                                Gene Prob.
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Probability (0.0-1.0) of mutating a specific gene within an individual.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_mutation_indpb" name="ga_mutation_indpb" value="0.3" step="0.05"
+                                                min="0" max="1">
                                         </div>
                                     </div>
                                 </div>
                             </div>
-
-                            <!-- Run Button -->
-                            <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn" {% if not
-                                has_api_key %}disabled{% endif %}>
-                                <i class="bi bi-rocket-takeoff"></i> Start Calibration
-                            </button>
-                        </form>
                     </div>
+
+                    <!-- Run Button -->
+                    <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn" {% if not has_api_key
+                        %}disabled{% endif %}>
+                        <i class="bi bi-rocket-takeoff"></i> Start Calibration
+                    </button>
+                    </form>
                 </div>
             </div>
 
@@ -365,6 +433,53 @@
                             <div class="log-console" id="log-console"></div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal fade" id="checkModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-clipboard-check"></i> Feasibility Check</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Demandify checked the data availability for your selected area:</p>
+                    <ul class="list-group mb-3">
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            TomTom Traffic Segments
+                            <span class="badge bg-primary rounded-pill" id="check-fetched-count">0</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Matched Graph Edges
+                            <span class="badge bg-success rounded-pill" id="check-matched-count">0</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Total Graph Edges
+                            <span class="badge bg-secondary rounded-pill" id="check-total-edges">-</span>
+                        </li>
+                    </ul>
+
+                    <div id="check-warning" class="alert alert-warning d-none">
+                        <i class="bi bi-exclamation-triangle"></i> <strong>Warning:</strong> Low match rate. The
+                        calibration quality may be poor.
+                    </div>
+
+                    <div id="check-critical" class="alert alert-danger d-none">
+                        <i class="bi bi-x-circle"></i> <strong>Critical:</strong> No edges matched. Run will likely
+                        fail.
+                    </div>
+
+                    <p class="small text-muted mb-0">Proceed with calibration?</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirm-run-btn">
+                        <i class="bi bi-play-fill"></i> Proceed
+                    </button>
                 </div>
             </div>
         </div>

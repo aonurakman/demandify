@@ -74,11 +74,14 @@ class ReportGenerator:
         ax.set_title('Calibration Convergence')
         ax.grid(True, alpha=0.3)
         
-        plot_path = self.output_dir / "loss_plot.png"
+        plot_dir = self.output_dir / "plots"
+        plot_dir.mkdir(exist_ok=True)
+        plot_path = plot_dir / "loss_plot.png"
+        
         fig.savefig(plot_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
         
-        return plot_path.name
+        return "plots/loss_plot.png"
     
     def _create_speed_comparison(
         self,
@@ -89,13 +92,35 @@ class ReportGenerator:
         # Match speeds
         obs_speeds = []
         sim_speeds = []
+        plot_data = []
         
         for _, row in observed_edges.iterrows():
             edge_id = row['edge_id']
-            if edge_id in simulated_speeds:
-                obs_speeds.append(row['current_speed'])
-                sim_speeds.append(simulated_speeds[edge_id])
+            obs_speed = row['current_speed']
+            
+            sim_speed = simulated_speeds.get(edge_id)
+            
+            # Add to CSV data regardless of match (use None for missing)
+            plot_data.append({
+                "edge_id": edge_id,
+                "observed_speed": obs_speed,
+                "simulated_speed": sim_speed if sim_speed is not None else None,
+                "status": "matched" if sim_speed is not None else "missing_in_sim"
+            })
+            
+            # Add to plot only if matched
+            if sim_speed is not None:
+                obs_speeds.append(obs_speed)
+                sim_speeds.append(sim_speed)
         
+        # Save scatter plot data to CSV for user analysis
+        if plot_data:
+            df_comp = pd.DataFrame(plot_data)
+            data_dir = self.output_dir / "data"
+            data_dir.mkdir(exist_ok=True)
+            df_comp.to_csv(data_dir / "speed_comparison.csv", index=False)
+            logger.debug(f"Saved speed comparison data ({len(df_comp)} rows) to CSV")
+
         # Plot
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.scatter(obs_speeds, sim_speeds, alpha=0.5)
@@ -122,11 +147,14 @@ class ReportGenerator:
                 verticalalignment='bottom', 
                 color='orange', fontsize=9, alpha=0.7)
         
-        plot_path = self.output_dir / "speed_comparison.png"
+        plot_dir = self.output_dir / "plots"
+        plot_dir.mkdir(exist_ok=True)
+        plot_path = plot_dir / "speed_comparison.png"
+        
         fig.savefig(plot_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
         
-        return plot_path.name
+        return "plots/speed_comparison.png"
     
     def _find_top_mismatches(
         self,
@@ -144,13 +172,19 @@ class ReportGenerator:
             if edge_id in simulated_speeds:
                 sim_speed = simulated_speeds[edge_id]
                 error = abs(sim_speed - obs_speed)
+                note = ""
+            else:
+                sim_speed = 0.0
+                error = obs_speed  # penalty for missing traffic
+                note = "(No Traffic)"
                 
-                mismatches.append({
-                    'edge_id': edge_id,
-                    'observed': round(obs_speed, 1),
-                    'simulated': round(sim_speed, 1),
-                    'error': round(error, 1)
-                })
+            mismatches.append({
+                'edge_id': edge_id,
+                'observed': round(obs_speed, 1),
+                'simulated': round(sim_speed, 1),
+                'error': round(error, 1),
+                'note': note
+            })
         
         df = pd.DataFrame(mismatches)
         if len(df) > 0:

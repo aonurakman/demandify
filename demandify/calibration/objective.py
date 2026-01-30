@@ -36,10 +36,12 @@ class EdgeSpeedObjective:
     
     def calculate_loss(
         self,
-        simulated_speeds: Dict[str, float]
-    ) -> float:
+        simulated_speeds: Dict[str, float],
+        routing_failures: int = 0,
+        expected_vehicles: int = None
+    ):
         """
-        Calculate loss (Mean Absolute Error) between simulated and observed speeds.
+        Calculate loss (MAE) with penalty for routing failures.
         
         Args:
             simulated_speeds: Dict mapping edge_id -> simulated_speed_kmh
@@ -71,6 +73,16 @@ class EdgeSpeedObjective:
             weighted_mae = sum(e * w for e, w in zip(errors, weights)) / sum(weights)
         else:
             weighted_mae = float('inf')
+        
+
+        # Add routing failure penalty (percentage-based: 1% failure = 1 km/h)
+        if routing_failures > 0 and expected_vehicles and expected_vehicles > 0:
+            failure_rate = routing_failures / expected_vehicles
+            routing_penalty = failure_rate * 100
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Routing penalty: {routing_failures}/{expected_vehicles} failures ({failure_rate:.1%}) = +{routing_penalty:.2f} km/h")
+            weighted_mae += routing_penalty
         
         return weighted_mae
     

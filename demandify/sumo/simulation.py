@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 import xml.etree.ElementTree as ET
 import logging
 import pandas as pd
@@ -19,41 +19,54 @@ class SUMOSimulation:
     def __init__(
         self,
         network_file: Path,
-        routes_file: Path,
+        vehicle_file: Path,  # Can be trips.xml or routes.rou.xml
         step_length: float = 1.0,
         warmup_time: int = 300,  # 5 minutes
-        simulation_time: int = 900  # 15 minutes
+        simulation_time: int = 900,  # 15 minutes
+        seed: int = None,  # For deterministic routing
+        use_dynamic_routing: bool = True  # If True, vehicle_file is trips.xml
     ):
         """
         Initialize SUMO simulation.
         
         Args:
             network_file: Path to .net.xml
-            routes_file: Path to .rou.xml
+            vehicle_file: Path to trips.xml (dynamic) or routes.rou.xml (precomputed)
             step_length: Simulation step length in seconds
             warmup_time: Warmup period in seconds
             simulation_time: Total simulation time in seconds
+            seed: Random seed for deterministic routing (required for dynamic routing)
+            use_dynamic_routing: If True, SUMO will route trips dynamically
         """
         self.network_file = network_file
-        self.routes_file = routes_file
+        self.vehicle_file = vehicle_file
         self.step_length = step_length
         self.warmup_time = warmup_time
         self.simulation_time = simulation_time
+        self.seed = seed
+        self.use_dynamic_routing = use_dynamic_routing
+        
+        if use_dynamic_routing and seed is None:
+            logger.warning("Dynamic routing enabled but no seed provided - results may not be reproducible")
     
     def run(
         self,
         output_dir: Path = None,
-        edge_data_file: Path = None
-    ) -> Dict[str, float]:
+        edge_data_file: Path = None,
+        expected_vehicles: int = None
+    ) -> Tuple[Dict[str, float], int]:
         """
         Run SUMO simulation and extract edge statistics.
         
         Args:
             output_dir: Directory for simulation outputs (temp if None)
             edge_data_file: Output file for edge statistics XML
+            expected_vehicles: Number of vehicles in trips.xml (for failure tracking)
         
         Returns:
-            Dict mapping edge_id -> mean_speed
+            Tuple of (edge_stats, routing_failures)
+            - edge_stats: Dict mapping edge_id -> mean_speed
+            - routing_failures: Number of vehicles that failed to route
         """
         # Create temp directory if needed
         if output_dir is None:
@@ -68,8 +81,9 @@ class SUMOSimulation:
             # Create config file
             config_file = output_dir / "simulation.sumocfg"
             edge_output = output_dir / "edge_data.xml"
+            tripinfo_output = output_dir / "tripinfo.xml"
             
-            self._create_config(config_file, edge_output)
+            self._create_config(config_file, edge_output, tripinfo_output)
             
             # Run SUMO
             logger.debug("Running SUMO simulation")
@@ -79,7 +93,8 @@ class SUMOSimulation:
                 "-c", str(config_file),
                 "--no-warnings",
                 "--no-step-log",
-                "--duration-log.disable"
+                "--duration-log.disable",
+                "--ignore-route-errors"  # Skip vehicles with no valid route
             ]
             
             result = subprocess.run(
@@ -94,11 +109,20 @@ class SUMOSimulation:
             # Parse edge statistics
             edge_stats = self._parse_edge_data(edge_output)
             
+            # Parse routing failures from tripinfo
+            routing_failures = 0
+            if expected_vehicles is not None and tripinfo_output.exists():
+                routing_failures = self._count_routing_failures(tripinfo_output, expected_vehicles)
+            
             # Copy edge data if requested
             if edge_data_file:
                 shutil.copy(edge_output, edge_data_file)
             
-            return edge_stats
+            # Clean up tripinfo to prevent bloat
+            if tripinfo_output.exists():
+                tripinfo_output.unlink()
+            
+            return edge_stats, routing_failures
             
         except subprocess.CalledProcessError as e:
             logger.error(f"SUMO simulation failed: {e.stderr}")
@@ -108,8 +132,8 @@ class SUMOSimulation:
             if cleanup:
                 shutil.rmtree(output_dir, ignore_errors=True)
     
-    def _create_config(self, config_file: Path, edge_output: Path):
-        """Create SUMO configuration file and additional edge-data config."""
+    def _create_config(self, config_file: Path, edge_output: Path, tripinfo_output: Path):
+        """Create SUMO configuration file with tripinfo for failure tracking."""
         output_dir = config_file.parent
         additional_file = output_dir / "additional.xml"
 
@@ -133,7 +157,7 @@ class SUMOSimulation:
         # Input
         input_elem = ET.SubElement(root, 'input')
         ET.SubElement(input_elem, 'net-file').set('value', str(self.network_file))
-        ET.SubElement(input_elem, 'route-files').set('value', str(self.routes_file))
+        ET.SubElement(input_elem, 'route-files').set('value', str(self.vehicle_file))
         ET.SubElement(input_elem, 'additional-files').set('value', str(additional_file))
         
         # Time
@@ -141,6 +165,23 @@ class SUMOSimulation:
         ET.SubElement(time_elem, 'begin').set('value', '0')
         ET.SubElement(time_elem, 'end').set('value', str(self.simulation_time))
         ET.SubElement(time_elem, 'step-length').set('value', str(self.step_length))
+        
+        # Routing configuration (for dynamic routing)
+        if self.use_dynamic_routing:
+            routing_elem = ET.SubElement(root, 'routing')
+            # Disable dynamic rerouting during simulation (use initial routes only)
+            ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '0')
+            # Use Dijkstra algorithm for initial routing
+            ET.SubElement(routing_elem, 'routing-algorithm').set('value', 'dijkstra')
+        
+        # Random (seed for deterministic behavior)
+        if self.seed is not None:
+            random_elem = ET.SubElement(root, 'random')
+            ET.SubElement(random_elem, 'seed').set('value', str(self.seed))
+        
+        # Output (tripinfo for routing failure tracking)
+        output_elem = ET.SubElement(root, 'output')
+        ET.SubElement(output_elem, 'tripinfo-output').set('value', str(tripinfo_output))
         
         # Write config
         tree = ET.ElementTree(root)
@@ -217,3 +258,33 @@ class SUMOSimulation:
             logger.warning(f"   → Vehicles likely complete trips before measurement starts!")
         
         return mean_speeds
+
+    def _count_routing_failures(self, tripinfo_file: Path, expected_vehicles: int) -> int:
+        """
+        Count routing failures by comparing expected vs successful vehicles.
+        
+        Args:
+            tripinfo_file: Path to tripinfo.xml output
+            expected_vehicles: Number of vehicles in trips.xml
+            
+        Returns:
+            Number of vehicles that failed to route
+        """
+        try:
+            tree = ET.parse(tripinfo_file)
+            root = tree.getroot()
+            
+            # Count successful vehicles (those that have tripinfo entries)
+            successful_vehicles = len(root.findall('.//tripinfo'))
+            
+            # Failures = expected - successful
+            routing_failures = max(0, expected_vehicles - successful_vehicles)
+            
+            if routing_failures > 0:
+                logger.debug(f"Routing failures: {routing_failures}/{expected_vehicles} vehicles failed to route")
+            
+            return routing_failures
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse tripinfo: {e}")
+            return 0  # Don't penalize if we can't parse

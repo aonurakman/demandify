@@ -198,6 +198,56 @@ function initEventListeners() {
         }
     });
 
+    // Duplicate Run ID Check
+    const runIdInput = document.getElementById('run_id');
+    const warningEl = document.getElementById('run-id-warning');
+    let existingRuns = [];
+
+    async function loadExistingRuns() {
+        try {
+            const resp = await fetch('/api/runs');
+            if (resp.ok) {
+                const data = await resp.json();
+                existingRuns = data.runs;
+            }
+        } catch (e) {
+            console.error('Failed to load runs', e);
+        }
+    }
+
+    // Initial load
+    if (runIdInput) loadExistingRuns();
+
+    if (runIdInput && warningEl) {
+        runIdInput.addEventListener('input', function () {
+            const val = this.value.trim();
+            if (val && existingRuns.includes(val)) {
+                warningEl.classList.remove('d-none');
+            } else {
+                warningEl.classList.add('d-none');
+            }
+        });
+
+        // Also check on focus just in case list updated
+        runIdInput.addEventListener('focus', loadExistingRuns);
+    }
+
+    // Window duration change handler
+    const windowSelect = document.getElementById('window_minutes');
+    if (windowSelect) {
+        windowSelect.addEventListener('change', function () {
+            const maxVal = parseInt(this.value);
+            const binInput = document.getElementById('bin_minutes');
+            if (binInput) {
+                binInput.max = maxVal;
+                if (parseInt(binInput.value) > maxVal) {
+                    binInput.value = maxVal;
+                    document.getElementById('bin-val').textContent = maxVal;
+                }
+            }
+        });
+    }
+
     // Change API key button
     const changeKeyBtn = document.getElementById('change-api-key-btn');
     if (changeKeyBtn) {
@@ -232,6 +282,8 @@ function initEventListeners() {
 
     // Run form submit
     const runForm = document.getElementById('run-form');
+    let pendingRunId = null;
+
     runForm.addEventListener('submit', async function (e) {
         e.preventDefault();
 
@@ -240,15 +292,82 @@ function initEventListeners() {
             return;
         }
 
+        // Show loading state
+        const btn = document.getElementById('run-btn');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Checking...';
+
+        const formData = new FormData(runForm);
+
+        try {
+            // Step 1: Check Feasibility
+            const response = await fetch('/api/check_feasibility', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+
+                // Store run ID for confirmation
+                pendingRunId = data.run_id;
+
+                // Populate Modal
+                document.getElementById('check-fetched-count').textContent = data.stats.fetched_segments;
+                document.getElementById('check-matched-count').textContent = data.stats.matched_edges;
+
+                const totalEl = document.getElementById('check-total-edges');
+                if (totalEl) totalEl.textContent = data.stats.total_network_edges || '-';
+
+                const warningEl = document.getElementById('check-warning');
+                const criticalEl = document.getElementById('check-critical');
+
+                warningEl.classList.add('d-none');
+                criticalEl.classList.add('d-none');
+
+                const matched = data.stats.matched_edges;
+                if (matched === 0) {
+                    criticalEl.classList.remove('d-none');
+                } else if (matched < 5) {
+                    warningEl.classList.remove('d-none');
+                }
+
+                // Show Modal
+                const modal = new bootstrap.Modal(document.getElementById('checkModal'));
+                modal.show();
+
+            } else {
+                const error = await response.json();
+                alert('Error checking feasibility: ' + (error.detail || error.message));
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error checking feasibility');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    });
+
+    // Confirm Run Button in Modal
+    document.getElementById('confirm-run-btn').addEventListener('click', async function () {
+        // Hide modal
+        const modalEl = document.getElementById('checkModal');
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        modal.hide();
+
+        // Start Actual Run
+        if (!pendingRunId) return;
+
         // Show progress panel
         document.getElementById('info-panel').style.display = 'none';
         document.getElementById('progress-panel').style.display = 'block';
-
-        // Disable run button
         document.getElementById('run-btn').disabled = true;
 
-        // Submit form
         const formData = new FormData(runForm);
+        // Ensure we use the SAME run_id
+        formData.set('run_id', pendingRunId);
 
         try {
             const response = await fetch('/api/run', {
