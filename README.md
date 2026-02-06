@@ -74,6 +74,7 @@ This starts the web server at [http://127.0.0.1:8000](http://127.0.0.1:8000)
 2. **Configure parameters** (defaults work well):
    - Time window: 15 or 30 minutes
    - Seed: any integer for reproducibility
+   - Warmup: a few minutes to populate the network
    - GA population/generations: controls quality vs speed
 3. **Paste your API key** (one-time, stored locally)
 4. **Click "Start Calibration"**
@@ -108,7 +109,11 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 | `bbox` | String | (Req) | Bounding box (`west,south,east,north`) |
 | `--name` | String | Auto | Custom Run ID/Name |
 | `--window` | Int | 15 | Simulation duration (min) |
+| `--warmup` | Int | 5 | Warmup duration before scoring (min) |
 | `--seed` | Int | 42 | Random seed |
+| `--step-length`| Float | 1.0 | SUMO step length (seconds) |
+| `--workers` | Int | Auto | Parallel GA workers |
+| `--tile-zoom` | Int | 12 | TomTom vector flow tile zoom |
 | `--pop` | Int | 50 | GA Population size |
 | `--gen` | Int | 20 | GA Generations |
 | `--mutation`| Float | 0.5 | Mutation rate (per individual) |
