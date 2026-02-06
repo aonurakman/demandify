@@ -39,8 +39,7 @@ class DemandGenerator:
         min_trip_distance: float = 0.0
     ) -> Tuple[List[str], List[str]]:
         """
-        Select origin and destination edges by building validated OD pairs.
-        Validates EACH pair individually and resamples failures.
+        Backwards-compatible wrapper around `select_od_pairs`.
         
         Args:
             num_origins: Hint for origins (actual will vary based on validated pairs)
@@ -51,6 +50,43 @@ class DemandGenerator:
         
         Returns:
             (origin_edges, destination_edges) - unique edges used in validated OD pairs
+        """
+        pairs = self.select_od_pairs(
+            num_origins=num_origins,
+            num_destinations=num_destinations,
+            max_od_pairs=max_od_pairs,
+            max_consecutive_failures=max_consecutive_failures,
+            min_trip_distance=min_trip_distance,
+        )
+        origins = sorted({o for o, _ in pairs})
+        destinations = sorted({d for _, d in pairs})
+        return origins, destinations
+
+    def select_od_pairs(
+        self,
+        num_origins: int = 20,
+        num_destinations: int = 20,
+        max_od_pairs: int = 150,
+        max_consecutive_failures: int = 10000,
+        min_trip_distance: float = 0.0,
+    ) -> List[Tuple[str, str]]:
+        """
+        Select origin/destination edges by building validated OD pairs.
+        Validates EACH pair individually (reachability + min distance) and resamples failures.
+
+        Notes:
+            - Validation is based on the network topology and lane permissions for passenger vehicles.
+            - Returned pairs are unique.
+
+        Args:
+            num_origins: Hint for origins (not enforced; retained for API compatibility)
+            num_destinations: Hint for destinations (not enforced; retained for API compatibility)
+            max_od_pairs: Target number of OD pairs to create
+            max_consecutive_failures: Max failures before giving up
+            min_trip_distance: Minimum Euclidean distance between origin and destination O/D
+
+        Returns:
+            List of (origin_edge, destination_edge) pairs that should be routable in SUMO.
         """
         all_edges = self.network.get_all_edges()
         
@@ -63,7 +99,8 @@ class DemandGenerator:
         probs = [w / total_weight for w in weights] if total_weight > 0 else None
         
         # Build valid OD pairs one at a time
-        valid_pairs = []
+        valid_pairs: List[Tuple[str, str]] = []
+        valid_pairs_set = set()
         consecutive_failures = 0
         total_attempts = 0
         
@@ -111,9 +148,15 @@ class DemandGenerator:
                 consecutive_failures += 1
                 continue
 
+            pair = (origin, destination)
+            if pair in valid_pairs_set:
+                consecutive_failures += 1
+                continue
+
             # 2. Validate reachability for this specific pair
             if self._has_route(origin, destination):
-                valid_pairs.append((origin, destination))
+                valid_pairs.append(pair)
+                valid_pairs_set.add(pair)
                 consecutive_failures = 0  # Reset on success
             else:
                 consecutive_failures += 1
@@ -125,14 +168,15 @@ class DemandGenerator:
             logger.warning(f"Stopped after {consecutive_failures} consecutive failures. "
                           f"Created {len(valid_pairs)} pairs (target was {max_od_pairs})")
         
-        # Extract unique origins and destinations from validated pairs
-        origins = list(set(pair[0] for pair in valid_pairs))
-        destinations = list(set(pair[1] for pair in valid_pairs))
-        
-        logger.info(f"Created {len(valid_pairs)} valid OD pairs from {total_attempts} attempts: "
-                   f"{len(origins)} unique origins, {len(destinations)} unique destinations")
-        
-        return origins, destinations
+        origins = {o for o, _ in valid_pairs}
+        destinations = {d for _, d in valid_pairs}
+
+        logger.info(
+            f"Created {len(valid_pairs)} valid OD pairs from {total_attempts} attempts: "
+            f"{len(origins)} unique origins, {len(destinations)} unique destinations"
+        )
+
+        return valid_pairs
     
     def _calculate_edge_weights(self, edges: List[str]) -> List[float]:
         """Calculate selection weights for edges based on road importance."""
@@ -355,4 +399,3 @@ class DemandGenerator:
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ duarouter failed: {e.stderr}")
             raise RuntimeError(f"Failed to route trips: {e.stderr}")
-

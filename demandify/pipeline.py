@@ -548,24 +548,13 @@ class CalibrationPipeline:
         
         logger.info(f"Network diagonal ~{int(diag)}m. Using min_trip_distance={int(self.min_trip_distance)}m")
         
-        # Select OD pairs (now validates each pair individually)
-        origins, destinations = demand_gen.select_od_candidates(
+        # Select OD pairs (validates each pair individually; lane-permission aware)
+        od_pairs = demand_gen.select_od_pairs(
             num_origins=self.num_origins,
             num_destinations=self.num_destinations,
-            max_od_pairs=self.max_od_pairs,  # Pass target to ensure even distribution
-            min_trip_distance=self.min_trip_distance
+            max_od_pairs=self.max_od_pairs,
+            min_trip_distance=self.min_trip_distance,
         )
-        
-        # Create OD pairs from validated origins/destinations
-        # Note: origins/destinations now contain only edges used in validated pairs
-        od_pairs = [(o, d) for o in origins for d in destinations if o != d]
-        
-        # Limit if needed (should rarely exceed since we controlled it in select_od_candidates)
-        if len(od_pairs) > self.max_od_pairs:
-            # We shuffle first to avoid biasing towards the first found pairs
-            np.random.RandomState(self.seed).shuffle(od_pairs)
-            od_pairs = od_pairs[:self.max_od_pairs]
-            logger.info(f"Limited to {self.max_od_pairs} OD pairs from {len(origins)}×{len(destinations)} combinations")
         
         # Create departure bins - cover ENTIRE duration (warmup + window)
         # We start from t=0 to populate the network during warmup

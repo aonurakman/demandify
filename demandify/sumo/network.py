@@ -11,6 +11,22 @@ import json
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_VCLASS = "passenger"
+
+
+def _parse_vclass_list(value: str) -> set:
+    if not value:
+        return set()
+    return set(value.split())
+
+
+def _is_vclass_allowed(*, allow: str, disallow: str, vclass: str) -> bool:
+    if allow:
+        return vclass in _parse_vclass_list(allow)
+    if disallow:
+        return vclass not in _parse_vclass_list(disallow)
+    return True
+
 
 class SUMONetwork:
     """Handle SUMO network conversion and edge geometry extraction."""
@@ -25,9 +41,9 @@ class SUMONetwork:
         self.network_file = network_file
         self.edges = []
         self.edge_geometries = {}
-        self.edge_geometries = {}
         self.edge_attributes = {}
         self.adjacency = {}  # Directed graph: {from_edge: {to_edges}}
+        self.edge_allowed_lanes = {}  # {edge_id: {lane_index, ...}} for passenger routing
         
         if network_file.exists():
             self._parse_network()
@@ -44,7 +60,7 @@ class SUMONetwork:
             edge_id = edge.get('id')
             
             # Skip internal edges
-            if edge_id.startswith(':'):
+            if not edge_id or edge_id.startswith(':'):
                 continue
             
             # Get lanes (use first lane geometry for edge)
@@ -52,8 +68,37 @@ class SUMONetwork:
             if not lanes:
                 continue
             
-            first_lane = lanes[0]
-            shape_str = first_lane.get('shape')
+            allowed_lanes = set()
+            for lane in lanes:
+                try:
+                    lane_idx = int(lane.get("index", "0"))
+                except Exception:
+                    continue
+                if _is_vclass_allowed(
+                    allow=lane.get("allow", ""),
+                    disallow=lane.get("disallow", ""),
+                    vclass=_DEFAULT_VCLASS,
+                ):
+                    allowed_lanes.add(lane_idx)
+
+            self.edge_allowed_lanes[edge_id] = allowed_lanes
+
+            if not allowed_lanes:
+                continue
+
+            lane_for_geom = None
+            for lane in lanes:
+                try:
+                    lane_idx = int(lane.get("index", "0"))
+                except Exception:
+                    continue
+                if lane_idx in allowed_lanes:
+                    lane_for_geom = lane
+                    break
+            if lane_for_geom is None:
+                lane_for_geom = lanes[0]
+
+            shape_str = lane_for_geom.get('shape')
             
             if shape_str:
                 # Parse shape: "x1,y1 x2,y2 x3,y3 ..."
@@ -69,7 +114,7 @@ class SUMONetwork:
                     # Store attributes for filtering
                     # Use first lane's speed/width as proxy for edge
                     self.edge_attributes[edge_id] = {
-                        'speed': float(first_lane.get('speed', 13.89)),  # default 50km/h
+                        'speed': float(lane_for_geom.get('speed', 13.89)),  # default 50km/h
                         'priority': int(edge.get('priority', -1)),
                         'numLanes': len(lanes),
                         'type': edge.get('type', '')
@@ -82,7 +127,22 @@ class SUMONetwork:
             to_edge = conn.get('to')
             
             # Skip internal edges in topology
-            if from_edge.startswith(':') or to_edge.startswith(':'):
+            if not from_edge or not to_edge or from_edge.startswith(':') or to_edge.startswith(':'):
+                continue
+
+            try:
+                from_lane = int(conn.get("fromLane", "0"))
+                to_lane = int(conn.get("toLane", "0"))
+            except Exception:
+                from_lane = None
+                to_lane = None
+
+            allowed_from = self.edge_allowed_lanes.get(from_edge)
+            if from_lane is not None and allowed_from is not None and from_lane not in allowed_from:
+                continue
+
+            allowed_to = self.edge_allowed_lanes.get(to_edge)
+            if to_lane is not None and allowed_to is not None and to_lane not in allowed_to:
                 continue
                 
             if from_edge not in self.adjacency:
