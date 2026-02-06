@@ -457,6 +457,37 @@ function stopProgressPolling() {
     }
 }
 
+function checkRunStatus() {
+    if (!currentRunId) return;
+    fetch(`/api/run/${currentRunId}/status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+            if (!data) return;
+            if (data.status === 'completed' || data.status === 'failed') {
+                stopProgressPolling();
+                showRestartOption(data.status);
+            }
+        })
+        .catch(() => {});
+}
+
+function showRestartOption(status) {
+    const restartBar = document.getElementById('restart-bar');
+    const restartMsg = document.getElementById('restart-message');
+    if (!restartBar || !restartMsg) return;
+
+    if (status === 'completed') {
+        restartMsg.innerHTML = '<i class="bi bi-check-circle text-success"></i> Calibration completed successfully.';
+    } else {
+        restartMsg.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Calibration failed.';
+    }
+    restartBar.style.display = 'block';
+
+    // Hide cancel button since run is done
+    const cancelBtn = document.getElementById('cancel-btn');
+    if (cancelBtn) cancelBtn.style.display = 'none';
+}
+
 function updateProgress(progress) {
     // Update stepper
     const steps = document.querySelectorAll('.step');
@@ -485,6 +516,9 @@ function updateProgress(progress) {
         });
         logConsole.scrollTop = logConsole.scrollHeight;
     }
+
+    // Check run status for completion/failure
+    checkRunStatus();
 }
 
 function resetUI() {
@@ -492,4 +526,22 @@ function resetUI() {
     document.getElementById('progress-panel').style.display = 'none';
     document.getElementById('run-btn').disabled = false;
     currentRunId = null;
+
+    // Reset restart bar
+    const restartBar = document.getElementById('restart-bar');
+    if (restartBar) restartBar.style.display = 'none';
+
+    // Restore cancel button visibility
+    const cancelBtn = document.getElementById('cancel-btn');
+    if (cancelBtn) cancelBtn.style.display = '';
+
+    // Clear log console
+    const logConsole = document.getElementById('log-console');
+    if (logConsole) logConsole.innerHTML = '';
+
+    // Reset stepper
+    document.querySelectorAll('.step').forEach(step => {
+        step.classList.remove('active', 'completed');
+    });
+    document.getElementById('current-stage-name').textContent = 'Initializing...';
 }

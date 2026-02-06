@@ -85,6 +85,16 @@ def cmd_doctor(args):
     print("\n✅ Diagnostics complete")
 
 
+def _prompt_restart():
+    """Prompt the user to restart or exit. Returns True to restart."""
+    print("\n" + "─" * 60)
+    try:
+        response = input("🔄 Run another calibration? [y/N] ").strip().lower()
+        return response == 'y'
+    except EOFError:
+        return False
+
+
 async def cmd_run(args):
     """Run calibration in headless mode."""
     from demandify.pipeline import CalibrationPipeline
@@ -103,90 +113,99 @@ async def cmd_run(args):
         
     print(ASCII_ART)
     print(f"demandify v{__version__}")
-    print("🚀 Starting headless calibration run")
-    print(f"   BBox: {bbox}")
-    print(f"   Window: {args.window} min")
-    print(f"   Seed: {args.seed}")
-    print(f"   Run ID: {args.name if args.name else 'Auto-generated'}")
-    print("-" * 50)
-    
-    start_time = time.time()
-    
-    try:
-        pipeline = CalibrationPipeline(
-            bbox=bbox,
-            window_minutes=args.window,
-            seed=args.seed,
-            warmup_minutes=args.warmup,
-            step_length=args.step_length,
-            parallel_workers=args.workers,
-            traffic_tile_zoom=args.tile_zoom,
-            ga_population=args.pop,
-            ga_generations=args.gen,
-            ga_mutation_rate=args.mutation,
-            ga_crossover_rate=args.crossover,
-            ga_elitism=args.elitism,
-            ga_mutation_sigma=args.sigma,
-            ga_mutation_indpb=args.indpb,
-            num_origins=args.origins,
-            num_destinations=args.destinations,
-            max_od_pairs=args.max_ods,
-            bin_minutes=args.bin_size,
-            initial_population=args.initial_population,
-            run_id=args.name
-        )
+
+    while True:
+        print("🚀 Starting headless calibration run")
+        print(f"   BBox: {bbox}")
+        print(f"   Window: {args.window} min")
+        print(f"   Seed: {args.seed}")
+        print(f"   Run ID: {args.name if args.name else 'Auto-generated'}")
+        print("-" * 50)
         
-        def confirm_stats(stats):
-            print("\n📊 Traffic Data Check:")
-            print(f"   - Fetched Segments: {stats['fetched_segments']}")
-            print(f"   - Matched Edges:    {stats['matched_edges']}")
-            print(f"   - Total Graph Edges: {stats.get('total_network_edges', '-')}")
+        start_time = time.time()
+        
+        try:
+            pipeline = CalibrationPipeline(
+                bbox=bbox,
+                window_minutes=args.window,
+                seed=args.seed,
+                warmup_minutes=args.warmup,
+                step_length=args.step_length,
+                parallel_workers=args.workers,
+                traffic_tile_zoom=args.tile_zoom,
+                ga_population=args.pop,
+                ga_generations=args.gen,
+                ga_mutation_rate=args.mutation,
+                ga_crossover_rate=args.crossover,
+                ga_elitism=args.elitism,
+                ga_mutation_sigma=args.sigma,
+                ga_mutation_indpb=args.indpb,
+                num_origins=args.origins,
+                num_destinations=args.destinations,
+                max_od_pairs=args.max_ods,
+                bin_minutes=args.bin_size,
+                initial_population=args.initial_population,
+                run_id=args.name
+            )
             
-            if stats['matched_edges'] == 0:
-                print("\n❌ CRITICAL: No edges matched! Run will fail.")
-            elif stats['matched_edges'] < 5:
-                print("\n⚠️  WARNING: Very few edges matched (<5). Results may be poor.")
-            
-            print(f"\n   Logs: {pipeline.output_dir}/logs/pipeline.log")
+            def confirm_stats(stats):
+                print("\n📊 Traffic Data Check:")
+                print(f"   - Fetched Segments: {stats['fetched_segments']}")
+                print(f"   - Matched Edges:    {stats['matched_edges']}")
+                print(f"   - Total Graph Edges: {stats.get('total_network_edges', '-')}")
                 
-            try:
-                response = input("\nProceed with calibration? [y/N] ").strip().lower()
-                return response == 'y'
-            except EOFError:
-                return False
-        
-        result = await pipeline.run(confirm_callback=confirm_stats)
-        
-        if result is None:
-            return
+                if stats['matched_edges'] == 0:
+                    print("\n❌ CRITICAL: No edges matched! Run will fail.")
+                elif stats['matched_edges'] < 5:
+                    print("\n⚠️  WARNING: Very few edges matched (<5). Results may be poor.")
+                
+                print(f"\n   Logs: {pipeline.output_dir}/logs/pipeline.log")
+                    
+                try:
+                    response = input("\nProceed with calibration? [y/N] ").strip().lower()
+                    return response == 'y'
+                except EOFError:
+                    return False
+            
+            result = await pipeline.run(confirm_callback=confirm_stats)
+            
+            if result is None:
+                if not _prompt_restart():
+                    return
+                # Clear run_id so the next iteration generates a new one
+                args.name = None
+                continue
 
-        elapsed = time.time() - start_time
-        run_dir_name = Path(result['run_dir']).name if 'run_dir' in result else pipeline.output_dir.name
-        run_id = pipeline.run_id
-        
-        print("\n" + "="*60)
-        print(f"✅ CALIBRATION SUCCESSFUL")
-        print("="*60)
-        print(f"⏱️  Time: {elapsed:.1f}s")
-        print(f"📂 Folder: {pipeline.output_dir}")
-        
-        # High visibility box for Run ID
-        print("\n" + "╔" + "═"*58 + "╗")
-        print(f"║{'RUN COMPLETE'.center(58)}║")
-        print("║" + " "*58 + "║")
-        print(f"║  Run ID: {run_id:<48}║")
-        print(f"║  Path:   {run_dir_name:<48}║")
-        print("║" + " "*58 + "║")
-        print("╚" + "═"*58 + "╝")
-        print(f"\n📄 Report available at: {pipeline.output_dir}/report.html\n")
-        
-    except Exception as e:
-        if "No traffic sensors matches" in str(e):
-            print("\n⚠️  WARNING: No traffic sensors in this area.")
-            return
+            elapsed = time.time() - start_time
+            run_dir_name = Path(result['run_dir']).name if 'run_dir' in result else pipeline.output_dir.name
+            run_id = pipeline.run_id
+            
+            print("\n" + "="*60)
+            print(f"✅ CALIBRATION SUCCESSFUL")
+            print("="*60)
+            print(f"⏱️  Time: {elapsed:.1f}s")
+            print(f"📂 Folder: {pipeline.output_dir}")
+            
+            # High visibility box for Run ID
+            print("\n" + "╔" + "═"*58 + "╗")
+            print(f"║{'RUN COMPLETE'.center(58)}║")
+            print("║" + " "*58 + "║")
+            print(f"║  Run ID: {run_id:<48}║")
+            print(f"║  Path:   {run_dir_name:<48}║")
+            print("║" + " "*58 + "║")
+            print("╚" + "═"*58 + "╝")
+            print(f"\n📄 Report available at: {pipeline.output_dir}/report.html\n")
+            
+        except Exception as e:
+            if "No traffic sensors matches" in str(e):
+                print("\n⚠️  WARNING: No traffic sensors in this area.")
+            else:
+                print(f"\n❌ Error: {e}")
 
-        print(f"\n❌ Error: {e}")
-        return
+        if not _prompt_restart():
+            return
+        # Clear run_id so the next iteration generates a new one
+        args.name = None
 
 
 def cmd_serve(args):
