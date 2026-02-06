@@ -2,7 +2,7 @@
 Genetic algorithm for demand calibration.
 Fully seeded for reproducibility with parallel evaluation.
 """
-from typing import List, Tuple, Callable
+from typing import Any, Dict, List, Tuple, Callable, Union
 import numpy as np
 import logging
 from deap import base, creator, tools
@@ -112,7 +112,7 @@ class GeneticAlgorithm:
     
     def optimize(
         self,
-        evaluate_func: Callable[[np.ndarray], float],
+        evaluate_func: Callable[[np.ndarray], Union[float, Tuple[float, Dict[str, Any]]]],
         early_stopping_patience: int = 5,
         early_stopping_epsilon: float = 0.1,
         progress_callback: Callable[[int, float, float], None] = None
@@ -121,7 +121,8 @@ class GeneticAlgorithm:
         Run GA optimization with parallel evaluation.
         
         Args:
-            evaluate_func: Function that takes a genome and returns loss. 
+            evaluate_func: Function that takes a genome and returns either a float loss
+                           or a (loss, metrics_dict) tuple.
                            MUST be picklable (e.g. partial of top-level func).
             early_stopping_patience: Stop if no improvement for N generations
             early_stopping_epsilon: Minimum improvement threshold

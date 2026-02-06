@@ -3,7 +3,7 @@ Main calibration pipeline orchestrator.
 Ties together all components to execute the full workflow.
 """
 from pathlib import Path
-from typing import Tuple, Dict, List
+from typing import Any, Tuple, Dict, List, Optional
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -288,15 +288,9 @@ class CalibrationPipeline:
         # Stage 6: Calibrate demand
         self._report_progress(6, "Calibrating Demand", 
                              f"Running genetic algorithm ({self.ga_generations} generations)...")
-        calibration_result = self._calibrate_demand(
+        best_genome, best_loss, loss_history, generation_stats = self._calibrate_demand(
             demand_gen, od_pairs, departure_bins, observed_edges, network_file
         )
-        # Support both legacy 3-tuple and new 4-tuple returns from _calibrate_demand
-        if len(calibration_result) == 3:
-            best_genome, best_loss, loss_history = calibration_result
-            generation_stats = None
-        else:
-            best_genome, best_loss, loss_history, generation_stats = calibration_result
         self._report_progress(6, "Calibrating Demand", f"✓ Complete: loss={best_loss:.2f} km/h")
         
         # Stage 7: Generate final demand files
@@ -598,7 +592,7 @@ class CalibrationPipeline:
         departure_bins: List[Tuple[int, int]],
         observed_edges: pd.DataFrame,
         network_file: Path
-    ) -> Tuple[np.ndarray, float, List[float]]:
+    ) -> Tuple[np.ndarray, float, List[float], Optional[List[Dict[str, Any]]]]:
         """Calibrate demand using GA."""
         
         # Handle case where no edges were matched
@@ -606,7 +600,7 @@ class CalibrationPipeline:
             logger.warning("No observed edges matched - skipping calibration, using random demand")
             genome_size = len(od_pairs) * len(departure_bins)
             random_genome = np.random.RandomState(self.seed).randint(0, 10, size=genome_size)
-            return random_genome, float('inf'), [float('inf')]
+            return random_genome, float('inf'), [float('inf')], None
         
         # Create SimulationConfig for the worker
         sim_config = SimulationConfig(
@@ -728,7 +722,7 @@ class CalibrationPipeline:
         best_loss: float,
         loss_history: List[float],
         quality_metrics: Dict,
-        generation_stats: List[dict] = None
+        generation_stats: Optional[List[Dict[str, Any]]] = None
     ) -> Dict:
         """Export scenario and generate report with comprehensive metadata."""
         # Comprehensive metadata per user request
