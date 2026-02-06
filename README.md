@@ -21,7 +21,7 @@ The result? A ready-to-run SUMO scenario that allows you to test your urban rout
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering
 - 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds
-- 💾 **Smart caching**: Content-addressed caching for fast re-runs
+- 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
 
@@ -127,7 +127,7 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 demandify follows an 8-stage pipeline:
 
 1. **Validate inputs** - Check bbox, parameters, API key
-2. **Fetch traffic snapshot** - Get real-time speeds from TomTom
+2. **Fetch traffic snapshot** - Get real-time speeds from TomTom (Vector Flow Tiles, cached by 5-min time bucket)
 3. **Fetch OSM extract** - Download road network data
 4. **Build SUMO network** - Convert OSM to car-only SUMO `.net.xml`
 5. **Map matching** - Match traffic segments to SUMO edges
@@ -139,15 +139,15 @@ demandify follows an 8-stage pipeline:
       
 While demandify uses seeding (random seed) for all internal stochastic operations (OD selection, GA evolution), **perfect reproducibility is not guaranteed** due to the inherently chaotic nature of traffic microsimulation (SUMO) and real-time data inputs.
       
-Seeding ensures *consistency* (runs look similar), but small timing differences in OS scheduling or dynamic routing decisions can lead to divergent outcomes.
+Seeding ensures *consistency* (runs look similar), but small timing differences in OS scheduling or dynamic routing decisions can lead to divergent outcomes. Traffic snapshots are cached in 5-minute buckets; using the same seed, bbox, and time bucket will reproduce demand.csv and SUMO randomness.
       
 ### Caching
       
 demandify caches:
 - OSM extracts (by bbox)
 - SUMO networks (by bbox + conversion params)
-- Traffic snapshots (by bbox + timestamp bucket)
-- Map matching results
+- Traffic snapshots (by bbox + provider + style + tile zoom + 5-minute timestamp bucket)
+- Map matching results (by bbox + network key + provider + timestamp bucket)
       
 Cache location: `~/.demandify/cache/`
 
@@ -164,6 +164,9 @@ demandify run "west,south,east,north"
 
 # Check system requirements
 demandify doctor
+
+# Set TomTom API key (CLI)
+demandify set-key YOUR_KEY_HERE
 
 # Clear cache
 demandify cache clear
@@ -201,6 +204,7 @@ Three ways to provide your TomTom API key:
 1. **Web UI**: Paste in the form (saved to `~/.demandify/config.json`)
 2. **Environment variable**: `export TOMTOM_API_KEY=your_key`
 3. **`.env` file**: Copy `.env.example` to `.env` and add your key
+4. **CLI**: `demandify set-key YOUR_KEY` stores it in `~/.demandify/config.json`
 
 ## Development
 
