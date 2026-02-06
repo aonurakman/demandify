@@ -2,11 +2,11 @@
 TomTom Traffic Flow provider.
 Prefers Vector Flow Tiles; falls back to Flow Segment sampling.
 """
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Sequence
 from datetime import datetime
+import hashlib
 import httpx
 import pandas as pd
-from shapely.geometry import LineString
 import logging
 import math
 
@@ -41,12 +41,57 @@ def _tile_bounds(x: int, y: int, zoom: int) -> Tuple[float, float, float, float]
     return west, south, east, north
 
 
-def _tile_to_lonlat(x: float, y: float, x_tile: int, y_tile: int, zoom: int, extent: int = 4096) -> Tuple[float, float]:
-    """Convert vector-tile local coords to lon/lat."""
-    west, south, east, north = _tile_bounds(x_tile, y_tile, zoom)
-    lon = west + (x / extent) * (east - west)
-    lat = north - (y / extent) * (north - south)
+def _tile_to_lonlat(
+    x: float,
+    y: float,
+    x_tile: int,
+    y_tile: int,
+    zoom: int,
+    extent: int = 4096
+) -> Tuple[float, float]:
+    """
+    Convert vector-tile local coords (0..extent) to lon/lat (WGS84).
+    
+    Uses Web Mercator math (lat is non-linear in y).
+    """
+    scale = (2.0 ** zoom) * float(extent)
+    global_x = (x_tile * extent) + x
+    global_y = (y_tile * extent) + y
+    
+    lon = (global_x / scale) * 360.0 - 180.0
+    lat = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * global_y / scale))))
     return lon, lat
+
+
+def _geometry_bbox(geometry: Sequence[Tuple[float, float]]) -> Optional[Tuple[float, float, float, float]]:
+    """Return (west, south, east, north) bbox for a geometry (lon,lat points)."""
+    if not geometry:
+        return None
+    xs = [p[0] for p in geometry]
+    ys = [p[1] for p in geometry]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_intersects(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> bool:
+    """Return True if bbox a intersects bbox b. Bbox = (west,south,east,north)."""
+    aw, a_s, ae, an = a
+    bw, b_s, be, bn = b
+    return not (ae < bw or be < aw or an < b_s or bn < a_s)
+
+
+def _get_prop_float(props: Dict, keys: Sequence[str]) -> Optional[float]:
+    """Get the first present property key as float."""
+    for key in keys:
+        if key not in props:
+            continue
+        val = props.get(key)
+        if val is None:
+            continue
+        try:
+            return float(val)
+        except Exception:
+            continue
+    return None
 
 
 class TomTomProvider(TrafficProvider):
@@ -119,24 +164,83 @@ class TomTomProvider(TrafficProvider):
             for feat in features:
                 props = feat.get("properties", {})
                 geom = feat.get("geometry")
-                if not geom or geom["type"] != "LineString":
-                    continue
-                coords = []
-                for px, py in geom["coordinates"]:
-                    lon, lat = _tile_to_lonlat(px, py, x, y, self.tile_zoom, extent=extent)
-                    coords.append((lon, lat))
-                if not coords:
+                if not geom:
                     continue
                 
-                current_speed = props.get("currentSpeed") or props.get("current_speed")
-                freeflow = props.get("freeFlowSpeed") or props.get("freeflowSpeed") or current_speed
-                confidence = props.get("confidence", 0.9)
-                segment_id = props.get("id") or props.get("segmentId") or f"{layer_name}_{hash(tuple(coords[0]))}"
+                geom_type = geom.get("type")
+                if geom_type not in ("LineString", "MultiLineString"):
+                    continue
+                
+                # Normalize to a single coordinate sequence (take the longest line if MultiLineString)
+                lines = geom.get("coordinates", [])
+                if geom_type == "LineString":
+                    lines = [lines]
+                if not lines:
+                    continue
+                line = max(lines, key=len) if isinstance(lines, list) else lines
+                if not line or len(line) < 2:
+                    continue
+                
+                coords: List[Tuple[float, float]] = []
+                for px, py in line:
+                    lon, lat = _tile_to_lonlat(px, py, x, y, self.tile_zoom, extent=extent)
+                    coords.append((lon, lat))
+                if len(coords) < 2:
+                    continue
+                
+                # Property keys differ by TomTom tile version; try common long + short forms.
+                current_speed = _get_prop_float(
+                    props,
+                    (
+                        "currentSpeed",
+                        "current_speed",
+                        "cs",
+                        "cspd",
+                        "cSpeed",
+                        "speed",
+                        "sp",
+                        "s",
+                        "c",
+                    )
+                )
+                if current_speed is None:
+                    # If we can't read speeds, this segment is not useful for calibration.
+                    continue
+                
+                freeflow = _get_prop_float(
+                    props,
+                    (
+                        "freeFlowSpeed",
+                        "freeflowSpeed",
+                        "freeflow_speed",
+                        "ffs",
+                        "ffSpeed",
+                        "ff",
+                        "f",
+                        "free",
+                    )
+                )
+                if freeflow is None:
+                    freeflow = current_speed
+                
+                confidence = _get_prop_float(props, ("confidence", "cn", "conf"))
+                if confidence is None:
+                    confidence = 0.9
+                
+                segment_id = (
+                    props.get("id")
+                    or props.get("segmentId")
+                    or props.get("segment_id")
+                    or props.get("uuid")
+                )
+                if segment_id is None:
+                    h = hashlib.sha1(repr(coords).encode("utf-8")).hexdigest()
+                    segment_id = f"{layer_name}_{h}"
                 segments.append({
                     "segment_id": str(segment_id),
                     "geometry": coords,
-                    "current_speed": float(current_speed) if current_speed is not None else 0.0,
-                    "freeflow_speed": float(freeflow) if freeflow is not None else 0.0,
+                    "current_speed": float(current_speed),
+                    "freeflow_speed": float(freeflow),
                     "timestamp": datetime.utcnow(),
                     "quality": float(confidence) if confidence is not None else 0.9
                 })
@@ -209,7 +313,7 @@ class TomTomProvider(TrafficProvider):
         
         tiles = self._bbox_to_tiles(bbox)
         segments = []
-        seen = set()
+        seen_ids = set()
         
         for x, y in tiles:
             tile_bytes = await self._fetch_tile(x, y)
@@ -217,15 +321,22 @@ class TomTomProvider(TrafficProvider):
                 continue
             decoded = self._decode_tile(tile_bytes, x, y)
             for seg in decoded:
-                geom_key = tuple(seg["geometry"][0]) if seg.get("geometry") else None
-                if geom_key and geom_key in seen:
+                geom = seg.get("geometry") or []
+                seg_bbox = _geometry_bbox(geom)
+                if seg_bbox and not _bbox_intersects(seg_bbox, bbox):
                     continue
-                seen.add(geom_key)
+                
+                seg_id = seg.get("segment_id")
+                if seg_id and seg_id in seen_ids:
+                    continue
+                if seg_id:
+                    seen_ids.add(seg_id)
                 segments.append(seg)
         
         if segments:
-            logger.info(f"Fetched {len(segments)} segments from {len(tiles)} tiles (zoom={self.tile_zoom})")
-            return pd.DataFrame(segments)
+            df = pd.DataFrame(segments)
+            logger.info(f"Fetched {len(df)} segments from {len(tiles)} tiles (zoom={self.tile_zoom})")
+            return df
         return pd.DataFrame()
     
     async def _fetch_via_flow_segments(self, bbox: Tuple[float, float, float, float]) -> pd.DataFrame:
