@@ -421,6 +421,11 @@ function initEventListeners() {
         }
     });
 
+    // Restart button
+    document.getElementById('restart-btn').addEventListener('click', function () {
+        resetUI();
+    });
+
     // Toggle details
     document.getElementById('toggle-details').addEventListener('click', function () {
         const console = document.getElementById('log-console');
@@ -457,20 +462,6 @@ function stopProgressPolling() {
     }
 }
 
-function checkRunStatus() {
-    if (!currentRunId) return;
-    fetch(`/api/run/${currentRunId}/status`)
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-            if (!data) return;
-            if (data.status === 'completed' || data.status === 'failed') {
-                stopProgressPolling();
-                showRestartOption(data.status);
-            }
-        })
-        .catch(() => {});
-}
-
 function showRestartOption(status) {
     const restartBar = document.getElementById('restart-bar');
     const restartMsg = document.getElementById('restart-message');
@@ -478,6 +469,8 @@ function showRestartOption(status) {
 
     if (status === 'completed') {
         restartMsg.innerHTML = '<i class="bi bi-check-circle text-success"></i> Calibration completed successfully.';
+    } else if (status === 'aborted') {
+        restartMsg.innerHTML = '<i class="bi bi-dash-circle text-warning"></i> Calibration was aborted.';
     } else {
         restartMsg.innerHTML = '<i class="bi bi-x-circle text-danger"></i> Calibration failed.';
     }
@@ -517,8 +510,15 @@ function updateProgress(progress) {
         logConsole.scrollTop = logConsole.scrollHeight;
     }
 
-    // Check run status for completion/failure
-    checkRunStatus();
+    // Check for terminal status included in progress response
+    if (progress.status && progress.status !== 'running') {
+        const runId = currentRunId;
+        // Ensure this status still applies to the current run
+        if (runId && runId === currentRunId) {
+            stopProgressPolling();
+            showRestartOption(progress.status);
+        }
+    }
 }
 
 function resetUI() {

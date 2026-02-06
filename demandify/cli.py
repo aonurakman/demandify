@@ -190,6 +190,9 @@ async def cmd_run(args):
                 print("╚" + "═"*58 + "╝")
                 print(f"\n📄 Report available at: {pipeline.output_dir}/report.html\n")
             
+        except KeyboardInterrupt:
+            print("\n🛑 Run aborted by user")
+
         except Exception as e:
             if "No traffic sensors matches" in str(e):
                 print("\n⚠️  WARNING: No traffic sensors in this area.")
