@@ -288,9 +288,15 @@ class CalibrationPipeline:
         # Stage 6: Calibrate demand
         self._report_progress(6, "Calibrating Demand", 
                              f"Running genetic algorithm ({self.ga_generations} generations)...")
-        best_genome, best_loss, loss_history, generation_stats = self._calibrate_demand(
+        calibration_result = self._calibrate_demand(
             demand_gen, od_pairs, departure_bins, observed_edges, network_file
         )
+        # Support both legacy 3-tuple and new 4-tuple returns from _calibrate_demand
+        if len(calibration_result) == 3:
+            best_genome, best_loss, loss_history = calibration_result
+            generation_stats = None
+        else:
+            best_genome, best_loss, loss_history, generation_stats = calibration_result
         self._report_progress(6, "Calibrating Demand", f"✓ Complete: loss={best_loss:.2f} km/h")
         
         # Stage 7: Generate final demand files
