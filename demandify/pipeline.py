@@ -41,6 +41,10 @@ class CalibrationPipeline:
         bbox: Tuple[float, float, float, float],
         window_minutes: int,
         seed: int,
+        warmup_minutes: int = 5,
+        step_length: float = 1.0,
+        parallel_workers: int = None,
+        traffic_tile_zoom: int = 12,
         ga_population: int = 50,
         ga_generations: int = 20,
         ga_mutation_rate: float = 0.5,
@@ -64,6 +68,10 @@ class CalibrationPipeline:
             bbox: (west, south, east, north)
             window_minutes: Simulation window in minutes
             seed: Random seed
+            warmup_minutes: Warmup duration before measurements (min)
+            step_length: SUMO simulation step length (seconds)
+            parallel_workers: Parallel GA evaluation workers (defaults to config)
+            traffic_tile_zoom: TomTom vector flow tile zoom (higher = more detail, more tiles)
             ga_population: GA population size
             ga_generations: GA generations
             num_origins: Number of origin candidates
@@ -77,8 +85,11 @@ class CalibrationPipeline:
         """
         self.bbox = bbox
         self.window_minutes = window_minutes
-        self.warmup_minutes = 5
+        self.warmup_minutes = warmup_minutes
         self.seed = seed
+        self.step_length = step_length
+        self.parallel_workers = parallel_workers
+        self.traffic_tile_zoom = traffic_tile_zoom
         self.ga_population = ga_population
         self.ga_generations = ga_generations
         self.ga_mutation_rate = ga_mutation_rate
@@ -377,7 +388,7 @@ class CalibrationPipeline:
         if not self.config.tomtom_api_key:
             raise RuntimeError("TomTom API key not configured")
         
-        provider = TomTomProvider(self.config.tomtom_api_key)
+        provider = TomTomProvider(self.config.tomtom_api_key, tile_zoom=self.traffic_tile_zoom)
         self.provider_meta = provider.get_provider_metadata()
         self.traffic_timestamp, self.traffic_bucket = self._bucket_timestamp()
         
@@ -610,7 +621,7 @@ class CalibrationPipeline:
             observed_edges=observed_edges,
             warmup_time=self.warmup_minutes * 60,
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
-            step_length=1.0,
+            step_length=self.step_length,
             debug=False,  # Can be exposed via config
             output_base_dir=self.output_dir / "temp_eval",
             seed=self.seed
@@ -646,7 +657,7 @@ class CalibrationPipeline:
             elitism=self.ga_elitism,
             mutation_sigma=dynamic_sigma,
             mutation_indpb=self.ga_mutation_indpb,
-            num_workers=self.config.default_parallel_workers,
+            num_workers=self.parallel_workers or self.config.default_parallel_workers,
             init_prob=init_prob
         )
         
@@ -694,7 +705,7 @@ class CalibrationPipeline:
         sim = SUMOSimulation(
             network_file, 
             trips_file,  # Pass trips.xml
-            step_length=1.0,
+            step_length=self.step_length,
             warmup_time=self.warmup_minutes * 60,
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
             seed=self.seed,
@@ -739,7 +750,7 @@ class CalibrationPipeline:
             'simulation_config': {
                 'window_minutes': self.window_minutes,
                 'warmup_minutes': self.warmup_minutes,
-                'step_length_seconds': 1.0
+                'step_length_seconds': self.step_length
             },
             'calibration_config': {
                 'ga_population': self.ga_population,
@@ -749,7 +760,7 @@ class CalibrationPipeline:
                 'ga_elitism': self.ga_elitism,
                 'ga_mutation_sigma': self.ga_mutation_sigma,
                 'ga_mutation_indpb': self.ga_mutation_indpb,
-                'num_workers': self.config.default_parallel_workers
+                'num_workers': self.parallel_workers or self.config.default_parallel_workers
             },
             'demand_config': {
                 'num_origins': self.num_origins,
@@ -780,7 +791,7 @@ class CalibrationPipeline:
             'output_files': {
                 'demand_csv': 'data/demand.csv',
                 'trips_xml': 'sumo/trips.xml',
-                'routes_xml': 'sumo/routes.rou.xml',
+                'routes_xml': None,
                 'network_xml': f'sumo/{network_file.name}',
                 'scenario_config': 'sumo/scenario.sumocfg',
                 'observed_edges_csv': 'data/observed_edges.csv',

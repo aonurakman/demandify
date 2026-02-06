@@ -84,6 +84,7 @@ class ScenarioExporter:
             output_file=sumocfg_path,
             simulation_time=run_metadata.get('simulation_config', {}).get('window_minutes', 15) * 60 + 
                           run_metadata.get('simulation_config', {}).get('warmup_minutes', 5) * 60,
+            step_length=run_metadata.get('simulation_config', {}).get('step_length_seconds', 1.0),
             seed=seed
         )
         
@@ -100,6 +101,7 @@ class ScenarioExporter:
         trips_file: Path,  # Changed from routes_file
         output_file: Path,
         simulation_time: int,
+        step_length: float = 1.0,
         seed: int = 42
     ):
         """Create SUMO configuration file for dynamic routing."""
@@ -126,6 +128,7 @@ class ScenarioExporter:
         time_elem = ET.SubElement(root, 'time')
         ET.SubElement(time_elem, 'begin').set('value', '0')
         ET.SubElement(time_elem, 'end').set('value', str(simulation_time))
+        ET.SubElement(time_elem, 'step-length').set('value', str(step_length))
         
         # Routing configuration for dynamic routing
         routing_elem = ET.SubElement(root, 'routing')

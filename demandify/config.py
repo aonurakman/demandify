@@ -30,6 +30,7 @@ class DemandifyConfig(BaseSettings):
     default_window_minutes: int = 15
     default_warmup_minutes: int = 5
     default_step_length: float = 1.0
+    default_traffic_tile_zoom: int = 12
     
     # Calibration defaults
     default_ga_population: int = 50
