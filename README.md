@@ -136,9 +136,9 @@ demandify follows an 8-stage pipeline:
 3. **Fetch OSM extract** - Download road network data
 4. **Build SUMO network** - Convert OSM to car-only SUMO `.net.xml`
 5. **Map matching** - Match traffic segments to SUMO edges
-6. **Initialize demand** - Select origin/destination pairs and time bins
+6. **Initialize demand** - Select routable OD pairs (lane-permission aware) and time bins
 7. **Calibrate demand** - Run GA to optimize vehicle counts
-8. **Export scenario** - Generate `demand.csv`, routes, config, and report
+8. **Export scenario** - Generate `demand.csv`, `trips.xml`, config, and report
 
 ### Variability & Consistency
       
@@ -187,9 +187,8 @@ Each run creates a folder with:
 - **`demand.csv`** - Travel demand with exact schema:
   - `ID`, `origin link id`, `destination link id`, `departure timestep`
 - **`trips.xml`** - SUMO trips file
-- **`routes.rou.xml`** - Routed SUMO routes
 - **`network.net.xml`** - SUMO network
-- **`scenario.sumocfg`** - SUMO configuration (ready to run)
+- **`scenario.sumocfg`** - SUMO configuration (ready to run; ignores route errors by default)
 - **`observed_edges.csv`** - Observed traffic speeds
 - **`run_meta.json`** - Complete run metadata
 - **`report.html`** - Calibration report with visualizations
