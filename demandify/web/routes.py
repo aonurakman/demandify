@@ -291,8 +291,8 @@ async def get_progress(run_id: str):
                 logger.error(f"Error reading log file: {e}")
     
     return {
+        **run["progress"],
         "status": run.get("status", "running"),
-        **run["progress"]
     }
 
 
