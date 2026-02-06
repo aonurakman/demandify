@@ -508,7 +508,7 @@ class ReportGenerator:
     
     <div class="section">
         <h2>📉 GA Population Statistics</h2>
-        <div class="plots">{extra_plots_html if extra_plots_html else '<p>No generation statistics available.</p>'}
+        <div class="plots">{extra_plots_html if extra_plots_html else '<p>No additional GA population plots available.</p>'}
         </div>
     </div>
     
