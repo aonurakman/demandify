@@ -50,8 +50,11 @@ async def run_calibration_pipeline(run_id: str, params: dict):
     from demandify.calibration.objective import EdgeSpeedObjective
     
     try:
-        # Update progress helper
-        def update_progress(stage: int, stage_name: str, message: str, level: str = "info"):
+        # Capture event loop for thread-safe progress updates
+        loop = asyncio.get_running_loop()
+
+        # Thread-safe update progress helper
+        def _do_update(stage: int, stage_name: str, message: str, level: str):
             if run_id in active_runs:
                 active_runs[run_id]["progress"]["stage"] = stage
                 active_runs[run_id]["progress"]["stage_name"] = stage_name
@@ -59,6 +62,9 @@ async def run_calibration_pipeline(run_id: str, params: dict):
                     "message": message,
                     "level": level
                 })
+
+        def update_progress(stage: int, stage_name: str, message: str, level: str = "info"):
+            loop.call_soon_threadsafe(_do_update, stage, stage_name, message, level)
         
         update_progress(0, "Initializing", "Starting calibration pipeline...")
         
@@ -264,8 +270,10 @@ async def get_progress(run_id: str):
     if run_id not in active_runs:
         raise HTTPException(status_code=404, detail="Run not found")
     
+    run = active_runs[run_id]
+    
     # QUICK FIX: Also read from log file if available
-    output_dir = active_runs[run_id].get("output_dir")
+    output_dir = run.get("output_dir")
     if output_dir:
         log_file = Path(output_dir) / "logs" / "pipeline.log"
         if log_file.exists():
@@ -279,16 +287,19 @@ async def get_progress(run_id: str):
                 for line in recent_lines:
                     if ' - INFO - ' in line or ' - WARNING - ' in line:
                         msg = line.split(' - ', 3)[-1].strip()
-                        if msg and msg not in [l["message"] for l in active_runs[run_id]["progress"]["logs"][-10:]]:
+                        if msg and msg not in [l["message"] for l in run["progress"]["logs"][-10:]]:
                             level = "warning" if "WARNING" in line else "info"
-                            active_runs[run_id]["progress"]["logs"].append({
+                            run["progress"]["logs"].append({
                                 "message": msg,
                                 "level": level
                             })
             except Exception as e:
                 logger.error(f"Error reading log file: {e}")
     
-    return active_runs[run_id]["progress"]
+    return {
+        **run["progress"],
+        "status": run.get("status", "running"),
+    }
 
 
 @router.get("/api/run/{run_id}/status")

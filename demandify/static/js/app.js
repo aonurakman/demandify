@@ -443,6 +443,19 @@ function startProgressPolling() {
             if (response.ok) {
                 const progress = await response.json();
                 updateProgress(progress);
+
+                if (progress.status === 'completed') {
+                    stopProgressPolling();
+                    window.location.href = `/results?run_id=${currentRunId}`;
+                } else if (progress.status === 'failed') {
+                    stopProgressPolling();
+                    alert('Pipeline failed. Check console output for details.');
+                    resetUI();
+                } else if (progress.status === 'aborted') {
+                    stopProgressPolling();
+                    alert('Pipeline was aborted. The UI has been reset.');
+                    resetUI();
+                }
             }
         } catch (error) {
             console.error('Error fetching progress:', error);

@@ -5,6 +5,7 @@ Ties together all components to execute the full workflow.
 from pathlib import Path
 from typing import Tuple, Dict, List
 from datetime import datetime
+import asyncio
 import pandas as pd
 import numpy as np
 import logging
@@ -217,7 +218,7 @@ class CalibrationPipeline:
         # Stage 3: Build SUMO network
         self._report_progress(3, "Building Network", "Converting map to SUMO network...")
         # Build/Get from cache using original OSM path (key based)
-        network_cache_path = self._build_sumo_network(osm_cache_path)
+        network_cache_path = await asyncio.to_thread(self._build_sumo_network, osm_cache_path)
         
         # Copy to run folder
         network_file = self.output_dir / "sumo" / "network.net.xml"
@@ -226,7 +227,7 @@ class CalibrationPipeline:
         # Count edges and plot map
         net = SUMONetwork(network_file)
         total_edges = len(net.edges)
-        plot_network_geometry(network_file, self.output_dir / "plots" / "network.png")
+        await asyncio.to_thread(plot_network_geometry, network_file, self.output_dir / "plots" / "network.png")
         self._report_progress(3, "Building Network", "✓ SUMO network created")
         
         # Cleanup OSM file to save space
@@ -239,7 +240,7 @@ class CalibrationPipeline:
         
         # Stage 4: Map matching
         self._report_progress(4, "Matching Traffic", "Matching traffic data to road network...")
-        observed_edges = self._match_traffic_to_edges(traffic_df, network_file)
+        observed_edges = await asyncio.to_thread(self._match_traffic_to_edges, traffic_df, network_file)
         
         # Save observed edges
         observed_edges_file = self.output_dir / "data" / "observed_edges.csv"
@@ -370,8 +371,8 @@ class CalibrationPipeline:
                 logger.info("🚫 Run aborted by user.")
                 return None
                 
-        # Phase 2: Calibrate
-        return self.calibrate(context)
+        # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
+        return await asyncio.to_thread(self.calibrate, context)
     
     async def _fetch_traffic_data(self) -> pd.DataFrame:
         """Fetch traffic data from TomTom."""
