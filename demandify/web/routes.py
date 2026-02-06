@@ -264,8 +264,10 @@ async def get_progress(run_id: str):
     if run_id not in active_runs:
         raise HTTPException(status_code=404, detail="Run not found")
     
+    run = active_runs[run_id]
+    
     # QUICK FIX: Also read from log file if available
-    output_dir = active_runs[run_id].get("output_dir")
+    output_dir = run.get("output_dir")
     if output_dir:
         log_file = Path(output_dir) / "logs" / "pipeline.log"
         if log_file.exists():
@@ -279,16 +281,19 @@ async def get_progress(run_id: str):
                 for line in recent_lines:
                     if ' - INFO - ' in line or ' - WARNING - ' in line:
                         msg = line.split(' - ', 3)[-1].strip()
-                        if msg and msg not in [l["message"] for l in active_runs[run_id]["progress"]["logs"][-10:]]:
+                        if msg and msg not in [l["message"] for l in run["progress"]["logs"][-10:]]:
                             level = "warning" if "WARNING" in line else "info"
-                            active_runs[run_id]["progress"]["logs"].append({
+                            run["progress"]["logs"].append({
                                 "message": msg,
                                 "level": level
                             })
             except Exception as e:
                 logger.error(f"Error reading log file: {e}")
     
-    return active_runs[run_id]["progress"]
+    return {
+        "status": run.get("status", "running"),
+        **run["progress"]
+    }
 
 
 @router.get("/api/run/{run_id}/status")
