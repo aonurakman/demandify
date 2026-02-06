@@ -2,8 +2,9 @@
 Traffic segment to SUMO edge matching using spatial indexing and coordinate transformation.
 """
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Sequence
 import logging
+import math
 import pandas as pd
 from shapely.geometry import LineString, Point
 from rtree import index as rtree_index
@@ -61,22 +62,41 @@ def get_network_projection(network_file: Path) -> Tuple[Optional[str], Tuple[flo
     return proj_param, offset
 
 
+def _derive_utm_crs_from_bbox(bbox: Optional[Sequence[float]]) -> Optional[str]:
+    """
+    Derive a UTM EPSG code from bbox center (lon, lat).
+    Returns EPSG string or None if bbox is missing.
+    """
+    if not bbox or len(bbox) != 4:
+        return None
+    west, south, east, north = bbox
+    lon = (west + east) / 2.0
+    lat = (south + north) / 2.0
+    zone = int(math.floor((lon + 180) / 6) + 1)
+    zone = max(1, min(zone, 60))
+    if lat >= 0:
+        return f"EPSG:326{zone:02d}"
+    return f"EPSG:327{zone:02d}"
+
+
 class EdgeMatcher:
     """Matches traffic segments to SUMO network edges using spatial indexing."""
     
-    def __init__(self, network, network_file: Path = None):
+    def __init__(self, network, network_file: Path = None, bbox: Optional[Sequence[float]] = None):
         """
         Initialize matcher with a SUMO network.
         
         Args:
             network: SUMONetwork instance
             network_file: Optional path to network file for projection info
+            bbox: Optional bbox (west,south,east,north) to derive fallback CRS
         """
         self.network = network
         self.network_file = network_file
         self.spatial_index = None
         self.transformer = None
         self.offset = (0, 0)
+        self.bbox = bbox
         
         self._build_spatial_index()
         self._setup_transformer()
@@ -103,12 +123,17 @@ class EdgeMatcher:
             except Exception as e:
                 logger.warning(f"Could not create transformer from proj: {e}")
         
-        # Fallback to UTM Zone 31N (common for Western Europe)
-        try:
-            self.transformer = Transformer.from_crs("EPSG:4326", "EPSG:32631", always_xy=True)
-            logger.info("Using fallback UTM Zone 31N transformer")
-        except Exception as e:
-            logger.error(f"Could not create fallback transformer: {e}")
+        # Fallback: derive UTM from bbox center
+        utm_epsg = _derive_utm_crs_from_bbox(self.bbox)
+        if utm_epsg:
+            try:
+                self.transformer = Transformer.from_crs("EPSG:4326", utm_epsg, always_xy=True)
+                logger.info(f"Using fallback transformer {utm_epsg} from bbox center")
+                return
+            except Exception as e:
+                logger.error(f"Could not create fallback transformer {utm_epsg}: {e}")
+        
+        logger.error("No valid transformer configured; matching accuracy will be poor.")
     
     def _build_spatial_index(self):
         """Build R-tree spatial index for edges."""
@@ -128,7 +153,7 @@ class EdgeMatcher:
         if self.transformer:
             try:
                 x, y = self.transformer.transform(lon, lat)
-                # Apply network offset
+                # Apply network offset (netconvert usually stores offsets to keep coordinates small)
                 x += self.offset[0]
                 y += self.offset[1]
                 return (x, y)
@@ -136,35 +161,9 @@ class EdgeMatcher:
                 logger.warning(f"Coordinate transformation failed: {e}")
                 return (lon, lat)
         else:
-            # FALLBACK: Simple Equirectangular projection (flat earth approx)
-            # This is "good enough" for small areas if pyproj is missing.
-            # Using center of network or first point as reference would be better,
-            # but we assume network (0,0) is relative to some origin.
-            # For finding RELATIVE distances during matching, we need meters.
-            
-            # 1 deg lat ~= 111132.954m
-            # 1 deg lon ~= 111132.954 * cos(lat)
-            
-            # We assume the network is somewhat centered? No, SUMO networks are in meters.
-            # If we don't have pyproj, we cannot know the network's true origin offset easily
-            # unless we parse 'location' netOffset properly (which we do).
-            # But converting Lon/Lat -> Meters requires a projection center.
-            
-            # CRITICAL: Without pyproj, we can't reliably map LatLon to SUMO XY unless
-            # we implement a full UTM or Mercator projection.
-            # However, for 'matching', we just need the traffic segment (Lat/Lon)
-            # to line up with the network edge (Lat/Lon or XY).
-            # If the network is in XY (meters), and we have Lat/Lon traffic...
-            
-            # Actually, `sumo/network.py` parses edge shapes.
-            # If the .net.xml shapes are in meters (standard), we MUST project traffic to meters.
             
             logger.error("CRITICAL: pyproj is missing! Matching will fail because we cannot project WGS84 traffic to SUMO XY meters.")
-            # raise RuntimeError("Feature 'pyproj' is required for map matching. Please install it.")
-            
-            # Attempt a rough approximation relative to the first point seen?
-            # No, that's dangerous.
-            return (lon, lat) # This WILL fail matching as 100m != 100 degrees
+            return (lon, lat)
 
     
     def match_segment(

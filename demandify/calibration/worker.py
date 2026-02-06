@@ -9,6 +9,7 @@ import math
 import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
+import hashlib
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional
@@ -34,9 +35,17 @@ class SimulationConfig:
     simulation_time: int
     step_length: float = 1.0
     debug: bool = False
+    seed: int = 42
     
     # Paths
     output_base_dir: Path = Path("temp_sims")
+
+
+def _stable_seed(genome: np.ndarray, base_seed: int) -> int:
+    """Deterministic seed from genome + base seed."""
+    digest = hashlib.sha256(genome.tobytes()).digest()
+    seed_val = int.from_bytes(digest[:8], byteorder="little")
+    return (seed_val ^ base_seed) % (2**32 - 1)
 
 
 def generate_demand_files(
@@ -66,7 +75,7 @@ def generate_demand_files(
     trip_id = 0
     
     # Generate trips
-    # Vectorized approach or fast loop
+    base_seed = seed
     for od_idx, (origin, dest) in enumerate(od_pairs):
         for bin_idx, (start_time, end_time) in enumerate(departure_bins):
             # Ensure non-negative integer count
@@ -74,9 +83,7 @@ def generate_demand_files(
             
             if count > 0:
                 # Seeded random jitter for this specific bin/OD combo
-                # Unique seed based on input seed + identifiers
-                # We use a simple hash combination to be deterministic but varied
-                local_seed = (seed + od_idx * 1000 + bin_idx * 100000) % (2**32)
+                local_seed = (base_seed + od_idx * 1000 + bin_idx * 100000) % (2**32)
                 bin_rng = np.random.RandomState(local_seed)
                 
                 departure_times = bin_rng.uniform(start_time, end_time, size=count)
@@ -145,7 +152,7 @@ def run_simulation_worker(
     
     try:
         # 1. Generate Demand
-        seed = int(np.sum(genome)) + worker_idx # Simple seed variation based on genome content
+        seed = _stable_seed(genome, config.seed)
         trips_file = generate_demand_files(
             genome, 
             config.od_pairs, 
@@ -161,7 +168,7 @@ def run_simulation_worker(
             step_length=config.step_length,
             warmup_time=config.warmup_time,
             simulation_time=config.simulation_time,
-            seed=42, # Deterministic routing inside SUMO
+            seed=seed, # Deterministic routing inside SUMO
             use_dynamic_routing=True
         )
         

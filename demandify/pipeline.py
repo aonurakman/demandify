@@ -23,7 +23,7 @@ from demandify.calibration.optimizer import GeneticAlgorithm
 from demandify.calibration.worker import run_simulation_worker, SimulationConfig, evaluate_for_ga
 from functools import partial
 from demandify.cache.manager import CacheManager
-from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key
+from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key, matching_key
 from demandify.export.exporter import ScenarioExporter
 from demandify.export.report import ReportGenerator
 from demandify.utils.visualization import plot_network_geometry
@@ -92,6 +92,10 @@ class CalibrationPipeline:
         self.bin_minutes = bin_minutes
         self.initial_population = initial_population
         self.run_id = run_id
+        self.traffic_timestamp = None
+        self.traffic_bucket = None
+        self.provider_meta: Dict = {}
+        self.network_cache_key = None
         
         if output_dir is None:
             if run_id:
@@ -163,6 +167,16 @@ class CalibrationPipeline:
             # latest_link.symlink_to(log_file)
         except Exception:
             pass
+    
+    def _bucket_timestamp(self, dt: datetime = None, bucket_minutes: int = 5) -> Tuple[datetime, str]:
+        """Round timestamp to bucket for caching traffic snapshots."""
+        dt = dt or datetime.utcnow()
+        bucket_size = bucket_minutes * 60
+        epoch = int(dt.timestamp())
+        bucket_epoch = (epoch // bucket_size) * bucket_size
+        bucket_dt = datetime.fromtimestamp(bucket_epoch)
+        bucket_str = bucket_dt.strftime("%Y-%m-%dT%H:%M")
+        return bucket_dt, bucket_str
     
     async def prepare(self) -> Dict:
         """
@@ -355,8 +369,7 @@ class CalibrationPipeline:
         if traffic_data_file.exists():
             logger.info("Using existing traffic data from run directory")
             df = pd.read_csv(traffic_data_file)
-            # Ensure geometry column is evaluated if string
-            if 'geometry' in df.columns and isinstance(df.iloc[0]['geometry'], str):
+            if len(df) > 0 and 'geometry' in df.columns and isinstance(df.iloc[0]['geometry'], str):
                 import ast
                 df['geometry'] = df['geometry'].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
             return df
@@ -365,9 +378,42 @@ class CalibrationPipeline:
             raise RuntimeError("TomTom API key not configured")
         
         provider = TomTomProvider(self.config.tomtom_api_key)
+        self.provider_meta = provider.get_provider_metadata()
+        self.traffic_timestamp, self.traffic_bucket = self._bucket_timestamp()
+        
+        # Cache lookup (bucketed time)
+        cache_key_bbox = bbox_key(*self.bbox)
+        traffic_cache_key = traffic_key(
+            cache_key_bbox,
+            provider="tomtom",
+            timestamp_bucket=self.traffic_bucket,
+            zoom=getattr(provider, "tile_zoom", None),
+            style=getattr(provider, "style", None)
+        )
+        traffic_cache_path = self.cache_manager.get_traffic_path(traffic_cache_key)
+        
+        if self.cache_manager.exists(traffic_cache_path):
+            logger.info(f"Using cached traffic snapshot {traffic_cache_key}")
+            df = pd.read_pickle(traffic_cache_path)
+            if len(df) > 0 and 'timestamp' not in df.columns:
+                df['timestamp'] = self.traffic_timestamp
+            return df
         
         try:
             traffic_df = await provider.fetch_traffic_snapshot(self.bbox)
+            if len(traffic_df) > 0:
+                traffic_df['timestamp'] = self.traffic_timestamp
+                traffic_df.to_pickle(traffic_cache_path)
+                self.cache_manager.save_metadata(traffic_cache_path, {
+                    "bbox": {
+                        "west": self.bbox[0],
+                        "south": self.bbox[1],
+                        "east": self.bbox[2],
+                        "north": self.bbox[3]
+                    },
+                    "timestamp_bucket": self.traffic_bucket,
+                    "provider": self.provider_meta
+                })
             logger.debug(f"Fetched {len(traffic_df)} traffic segments")
             return traffic_df
         finally:
@@ -396,6 +442,7 @@ class CalibrationPipeline:
         cache_key_bbox = bbox_key(*self.bbox)
         cache_key_osm = osm_key(cache_key_bbox)
         cache_key_net = network_key(cache_key_osm, car_only=True, seed=self.seed)
+        self.network_cache_key = cache_key_net
         network_file = self.cache_manager.get_network_path(cache_key_net)
         
         if self.cache_manager.exists(network_file):
@@ -412,18 +459,33 @@ class CalibrationPipeline:
         self, traffic_df: pd.DataFrame, network_file: Path
     ) -> pd.DataFrame:
         """Match traffic segments to SUMO edges."""
+        cache_key_bbox = bbox_key(*self.bbox)
+        cache_key_match = None
+        observed_edges_cache = None
+        if self.traffic_bucket:
+            net_key = self.network_cache_key or network_key(osm_key(cache_key_bbox), car_only=True, seed=self.seed)
+            cache_key_match = matching_key(cache_key_bbox, net_key, "tomtom", self.traffic_bucket)
+            observed_edges_cache = self.cache_manager.get_matching_path(cache_key_match)
+        
         # Check if already matches (idempotency)
         observed_edges_file = self.output_dir / "data" / "observed_edges.csv"
         if observed_edges_file.exists():
             logger.info("Using existing observed edges from run directory")
             return pd.read_csv(observed_edges_file)
+        
+        if observed_edges_cache and self.cache_manager.exists(observed_edges_cache):
+            logger.info(f"Using cached observed edges {cache_key_match}")
+            return pd.read_csv(observed_edges_cache)
             
         network = SUMONetwork(network_file)
-        matcher = EdgeMatcher(network, network_file)  # Pass file for projection info
+        matcher = EdgeMatcher(network, network_file, bbox=self.bbox)  # Pass file for projection info
         
         observed_edges = matcher.match_traffic_data(traffic_df, min_confidence=0.1)
         
         logger.debug(f"Matched {len(observed_edges)} edges")
+        
+        if observed_edges_cache:
+            observed_edges.to_csv(observed_edges_cache, index=False)
         
         return observed_edges
     
@@ -435,8 +497,8 @@ class CalibrationPipeline:
         demand_gen = DemandGenerator(network, seed=self.seed)
         
         # Calculate adaptive minimum trip distance
-        # Heuristic: 10% of the bounding box diagonal
-        # This prevents picking origin/dest that are practically neighbors
+        # Heuristic: 10% of the bounding box diagonal - 
+        # To prevent picking origin/dest that are practically neighbors
         w, s, e, n = self.bbox
         # Very rough approximation of meters (lat/lon degrees to meters)
         # Using 111km per degree lat, and ~75km per degree lon at 48N
@@ -445,8 +507,8 @@ class CalibrationPipeline:
         diag = (dx*dx + dy*dy)**0.5
         
         # Adaptive min distance: max(200m, 10% of diagonal)
-        # But cap it at 2km for very large maps to avoid filtering too much
-        self.min_trip_distance = min(2000.0, max(200.0, diag * 0.10))
+        # But cap it at 1km for very large maps to avoid filtering too much
+        self.min_trip_distance = min(1000.0, max(200.0, diag * 0.10))
         
         logger.info(f"Network diagonal ~{int(diag)}m. Using min_trip_distance={int(self.min_trip_distance)}m")
         
@@ -525,54 +587,13 @@ class CalibrationPipeline:
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
             step_length=1.0,
             debug=False,  # Can be exposed via config
-            output_base_dir=self.output_dir / "temp_eval"
+            output_base_dir=self.output_dir / "temp_eval",
+            seed=self.seed
         )
-        
-        # Create picklable evaluation function using partial
-        # This binds 'config' to run_simulation_worker, leaving 'genome' as the only required arg
+
         evaluate_func = partial(run_simulation_worker, config=sim_config)
-        
-        # Note: We rely on the worker to handle demand generation and simulation.
-        # The worker returns (loss, metrics). 
-        # But GA expects a function that returns float loss.
-        # run_simulation_worker returns Tuple[float, Dict].
-        # We need an adapter that returns just float, but partial only binds args.
-        # We need a top-level wrapper or the worker itself to return float.
-        # 
-        # Wait! The worker returns (loss, metrics). GA expects float.
-        # Code in optimizer.py:
-        #   def fitness_wrapper(ind):
-        #       return (evaluate_func(np.array(ind)),)
-        # 
-        # If evaluate_func returns (loss, metrics), then fitness_wrapper returns ((loss, metrics),)
-        # This will break DEAP which expects (float,).
-        #
-        # FIX: The evaluate_func passed to GA must return float.
-        # Since I can't use a lambda (not picklable), I need a wrapper function defined at module level 
-        # or verify if worker returns just loss.
-        # My worker returns (loss, metrics).
-        # I should assume the worker returns just loss, OR use a wrapper.
-        #
-        # Let's import a wrapper from worker.py if possible, or define one here.
-        # Actually, let's use the `evaluate_genome_wrapper` matching signature.
-        # 
-        # BETTER: Modify worker.py to have a function `evaluate_loss_only` for the GA.
-        # OR simply change run_simulation_worker to return just loss? No, we want metrics.
-        #
-        # Strategy: Define `evaluate_adapter` top-level in `pipeline.py` or import it.
-        # Defining it top-level in pipeline.py is tricky if pipeline.py imports worker.
-        # Let's use `run_simulation_worker` but I need to discard the metrics.
-        #
-        # I'll create `evaluate_genome_for_ga` in `pipeline.py` (top-level) or `worker.py`.
-        # Putting it in `worker.py` is cleanest. 
-        # I'll edit `worker.py` in a moment to add `evaluate_for_ga`.
-        # For now, let's assume `run_simulation_worker` returns        # Define parameter bounds (trips per OD pair per bin)
-        # 0 to 3 trips per OD pair per 1-minute bin
-        # Initialization with (0, 100) creates ~500k trips -> Gridlock
-        
-    # ... continuing with valid code ...
     
-    # Run GA
+        # Run GA
         genome_size = len(od_pairs) * len(departure_bins)
         # Dynamic Bounds & Init Prob Logic
         avg_trips_per_gene = self.initial_population / max(1, genome_size)
@@ -725,8 +746,9 @@ class CalibrationPipeline:
                 }
             },
             'data_sources': {
-                'traffic_provider': 'TomTom Flow Segment Data API',
-                'traffic_snapshot_timestamp': datetime.now().isoformat(),
+                'traffic_provider': 'TomTom Flow (tiles preferred)',
+                'traffic_provider_meta': self.provider_meta,
+                'traffic_snapshot_timestamp': (self.traffic_timestamp.isoformat() if self.traffic_timestamp else datetime.now().isoformat()),
                 'osm_source': 'Overpass API',
                 'traffic_segments_fetched': len(pd.read_csv(traffic_data_file)) if traffic_data_file.exists() else 0
             },

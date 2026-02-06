@@ -54,18 +54,47 @@ def network_key(osm_key: str, car_only: bool, seed: int) -> str:
     })
 
 
-def traffic_key(bbox_key: str, provider: str, timestamp_bucket: str) -> str:
+def traffic_key(
+    bbox_key: str,
+    provider: str,
+    timestamp_bucket: str,
+    zoom: int = None,
+    style: str = None
+) -> str:
     """
     Generate cache key for traffic data.
     
     Args:
         bbox_key: Bbox cache key
         provider: Provider name
-        timestamp_bucket: Timestamp rounded to hour (e.g., "2024-01-28T18:00")
+        timestamp_bucket: Timestamp rounded bucket (e.g., "2024-01-28T18:05")
+        zoom: Optional tile zoom (for tile-based providers)
+        style: Optional provider style (absolute/relative etc)
     """
-    return generate_cache_key({
+    payload = {
         'type': 'traffic',
         'bbox_key': bbox_key,
+        'provider': provider,
+        'timestamp_bucket': timestamp_bucket
+    }
+    if zoom is not None:
+        payload['zoom'] = zoom
+    if style is not None:
+        payload['style'] = style
+    return generate_cache_key(payload)
+
+
+def matching_key(
+    bbox_key: str,
+    network_cache_key: str,
+    provider: str,
+    timestamp_bucket: str
+) -> str:
+    """Generate cache key for map-matching results."""
+    return generate_cache_key({
+        'type': 'matching',
+        'bbox_key': bbox_key,
+        'network_key': network_cache_key,
         'provider': provider,
         'timestamp_bucket': timestamp_bucket
     })
