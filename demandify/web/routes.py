@@ -74,6 +74,10 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             bbox=bbox,
             window_minutes=params["window_minutes"],
             seed=params["seed"],
+            warmup_minutes=params.get("warmup_minutes", 5),
+            step_length=params.get("step_length", 1.0),
+            parallel_workers=params.get("parallel_workers"),
+            traffic_tile_zoom=params.get("traffic_tile_zoom", 12),
             ga_population=params["ga_population"],
             ga_generations=params["ga_generations"],
             ga_mutation_rate=params["ga_mutation_rate"],
@@ -121,7 +125,8 @@ async def check_feasibility(
     bbox_south: float = Form(...),
     bbox_east: float = Form(...),
     bbox_north: float = Form(...),
-    run_id: Optional[str] = Form(None)
+    run_id: Optional[str] = Form(None),
+    traffic_tile_zoom: int = Form(12)
 ):
     """Run preparation phase to check data quality."""
     from demandify.pipeline import CalibrationPipeline
@@ -141,6 +146,7 @@ async def check_feasibility(
             bbox=bbox,
             window_minutes=15, # Default for check
             seed=42, # Default
+            traffic_tile_zoom=traffic_tile_zoom,
             run_id=actual_run_id
         )
         
@@ -174,6 +180,9 @@ async def start_run(
     run_id: Optional[str] = Form(None),
     window_minutes: int = Form(15),
     seed: int = Form(42),
+    warmup_minutes: int = Form(5),
+    step_length: float = Form(1.0),
+    traffic_tile_zoom: int = Form(12),
     ga_population: int = Form(50),
     ga_generations: int = Form(20),
     ga_mutation_rate: float = Form(0.5),
@@ -185,6 +194,7 @@ async def start_run(
     num_destinations: int = Form(10),
     max_od_pairs: int = Form(50),
     bin_minutes: int = Form(5),
+    initial_population: int = Form(1000),
     parallel_workers: Optional[int] = Form(None)
 ):
     """Start a new calibration run."""
@@ -224,6 +234,9 @@ async def start_run(
         "bbox": [bbox_west, bbox_south, bbox_east, bbox_north],
         "window_minutes": window_minutes,
         "seed": seed,
+        "warmup_minutes": warmup_minutes,
+        "step_length": step_length,
+        "traffic_tile_zoom": traffic_tile_zoom,
         "ga_population": ga_population,
         "ga_generations": ga_generations,
         "ga_mutation_rate": ga_mutation_rate,
@@ -234,7 +247,9 @@ async def start_run(
         "num_origins": num_origins,
         "num_destinations": num_destinations,
         "max_od_pairs": max_od_pairs,
-        "bin_minutes": bin_minutes
+        "bin_minutes": bin_minutes,
+        "initial_population": initial_population,
+        "parallel_workers": parallel_workers
     }
     
     # Start background task
