@@ -169,32 +169,26 @@ async def cmd_run(args):
             
             result = await pipeline.run(confirm_callback=confirm_stats)
             
-            if result is None:
-                if not _prompt_restart():
-                    return
-                # Clear run_id so the next iteration generates a new one
-                args.name = None
-                continue
-
-            elapsed = time.time() - start_time
-            run_dir_name = Path(result['run_dir']).name if 'run_dir' in result else pipeline.output_dir.name
-            run_id = pipeline.run_id
-            
-            print("\n" + "="*60)
-            print(f"✅ CALIBRATION SUCCESSFUL")
-            print("="*60)
-            print(f"⏱️  Time: {elapsed:.1f}s")
-            print(f"📂 Folder: {pipeline.output_dir}")
-            
-            # High visibility box for Run ID
-            print("\n" + "╔" + "═"*58 + "╗")
-            print(f"║{'RUN COMPLETE'.center(58)}║")
-            print("║" + " "*58 + "║")
-            print(f"║  Run ID: {run_id:<48}║")
-            print(f"║  Path:   {run_dir_name:<48}║")
-            print("║" + " "*58 + "║")
-            print("╚" + "═"*58 + "╝")
-            print(f"\n📄 Report available at: {pipeline.output_dir}/report.html\n")
+            if result is not None:
+                elapsed = time.time() - start_time
+                run_dir_name = Path(result['run_dir']).name if 'run_dir' in result else pipeline.output_dir.name
+                run_id = pipeline.run_id
+                
+                print("\n" + "="*60)
+                print(f"✅ CALIBRATION SUCCESSFUL")
+                print("="*60)
+                print(f"⏱️  Time: {elapsed:.1f}s")
+                print(f"📂 Folder: {pipeline.output_dir}")
+                
+                # High visibility box for Run ID
+                print("\n" + "╔" + "═"*58 + "╗")
+                print(f"║{'RUN COMPLETE'.center(58)}║")
+                print("║" + " "*58 + "║")
+                print(f"║  Run ID: {run_id:<48}║")
+                print(f"║  Path:   {run_dir_name:<48}║")
+                print("║" + " "*58 + "║")
+                print("╚" + "═"*58 + "╝")
+                print(f"\n📄 Report available at: {pipeline.output_dir}/report.html\n")
             
         except Exception as e:
             if "No traffic sensors matches" in str(e):

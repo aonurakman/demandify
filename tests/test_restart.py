@@ -27,3 +27,9 @@ def test_prompt_restart_empty():
 def test_prompt_restart_eof():
     with patch("builtins.input", side_effect=EOFError):
         assert _prompt_restart() is False
+
+
+def test_prompt_restart_yes_word():
+    """Only single-letter 'y' is accepted, not 'yes'."""
+    with patch("builtins.input", return_value="yes"):
+        assert _prompt_restart() is False
