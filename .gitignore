@@ -68,4 +68,4 @@ pyproject.toml.bak
 test_ready.py
 SPEC.md
 reference/
-DEVELOPER_GUIDE.md
+local_assets/
