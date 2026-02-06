@@ -1,7 +1,5 @@
 """Tests for progress API response and pipeline async behavior."""
 import inspect
-import pytest
-from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
