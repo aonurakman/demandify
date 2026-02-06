@@ -438,11 +438,12 @@ function stopProgressPolling() {
 function updateProgress(progress) {
     // Update stepper
     const steps = document.querySelectorAll('.step');
+    const stageIndex = Math.min(progress.stage || 0, steps.length - 1);
     steps.forEach((step, index) => {
         step.classList.remove('active', 'completed');
-        if (index < progress.stage) {
+        if (index < stageIndex) {
             step.classList.add('completed');
-        } else if (index === progress.stage) {
+        } else if (index === stageIndex) {
             step.classList.add('active');
         }
     });
