@@ -451,6 +451,10 @@ function startProgressPolling() {
                     stopProgressPolling();
                     alert('Pipeline failed. Check console output for details.');
                     resetUI();
+                } else if (progress.status === 'aborted') {
+                    stopProgressPolling();
+                    alert('Pipeline was aborted. The UI has been reset.');
+                    resetUI();
                 }
             }
         } catch (error) {
