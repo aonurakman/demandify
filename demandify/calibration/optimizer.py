@@ -116,7 +116,7 @@ class GeneticAlgorithm:
         early_stopping_patience: int = 5,
         early_stopping_epsilon: float = 0.1,
         progress_callback: Callable[[int, float, float], None] = None
-    ) -> Tuple[np.ndarray, float, List[float]]:
+    ) -> Tuple[np.ndarray, float, List[float], List[dict]]:
         """
         Run GA optimization with parallel evaluation.
         
@@ -127,7 +127,7 @@ class GeneticAlgorithm:
             early_stopping_epsilon: Minimum improvement threshold
         
         Returns:
-            (best_genome, best_loss, loss_history)
+            (best_genome, best_loss, loss_history, generation_stats)
         """
         logger.info(f"Starting GA optimization (pop={self.population_size}, gen={self.num_generations}, workers={self.num_workers})")
         
@@ -154,6 +154,7 @@ class GeneticAlgorithm:
         
         # Track stats
         loss_history = []
+        generation_stats = []
         best_loss = float('inf')
         generations_without_improvement = 0
         
@@ -230,12 +231,42 @@ class GeneticAlgorithm:
                 fits = [ind.fitness.values[0] for ind in population]
                 current_best = min(fits)
                 current_mean = np.mean(fits)
+                current_std = np.std(fits)
                 
                 # Aggregate metrics for best individual
                 best_ind_gen = tools.selBest(population, 1)[0]
                 best_metrics = getattr(best_ind_gen, 'metrics', {})
                 
+                # Genome magnitude stats
+                magnitudes = [np.sum(np.array(ind)) for ind in population]
+                best_magnitude = np.sum(np.array(best_ind_gen))
+                mean_magnitude = np.mean(magnitudes)
+                
+                # Aggregate population-level metrics
+                pop_zero_flows = []
+                pop_failures = []
+                for ind in population:
+                    m = getattr(ind, 'metrics', {})
+                    if 'zero_flow_edges' in m:
+                        pop_zero_flows.append(m['zero_flow_edges'])
+                    if 'routing_failures' in m:
+                        pop_failures.append(m['routing_failures'])
+                
+                gen_stat = {
+                    'generation': gen + 1,
+                    'best_loss': current_best,
+                    'mean_loss': current_mean,
+                    'std_loss': current_std,
+                    'best_magnitude': float(best_magnitude),
+                    'mean_magnitude': float(mean_magnitude),
+                    'best_zero_flow': best_metrics.get('zero_flow_edges', None),
+                    'mean_zero_flow': float(np.mean(pop_zero_flows)) if pop_zero_flows else None,
+                    'best_routing_failures': best_metrics.get('routing_failures', None),
+                    'mean_routing_failures': float(np.mean(pop_failures)) if pop_failures else None,
+                }
+                
                 loss_history.append(current_best)
+                generation_stats.append(gen_stat)
                 
                 # Log stats with metrics if available
                 metric_str = ""
@@ -263,7 +294,7 @@ class GeneticAlgorithm:
         
         logger.info(f"GA complete: best loss = {best_loss:.2f}")
         
-        return best_genome, best_loss, loss_history
+        return best_genome, best_loss, loss_history, generation_stats
     
     def _bounded_mutation(self, individual, mu, sigma, indpb):
         """Gaussian mutation with bounds."""
