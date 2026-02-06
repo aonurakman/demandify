@@ -129,6 +129,10 @@ class ScenarioExporter:
         ET.SubElement(time_elem, 'begin').set('value', '0')
         ET.SubElement(time_elem, 'end').set('value', str(simulation_time))
         ET.SubElement(time_elem, 'step-length').set('value', str(step_length))
+
+        # Processing
+        processing_elem = ET.SubElement(root, 'processing')
+        ET.SubElement(processing_elem, 'ignore-route-errors').set('value', 'true')
         
         # Routing configuration for dynamic routing
         routing_elem = ET.SubElement(root, 'routing')
