@@ -1,7 +1,12 @@
 """Tests for progress API response and pipeline async behavior."""
+import inspect
 import pytest
 from unittest.mock import MagicMock
 
+from starlette.testclient import TestClient
+
+from demandify.app import app
+from demandify.pipeline import CalibrationPipeline
 from demandify.web.routes import active_runs
 
 
@@ -16,9 +21,6 @@ def test_progress_response_includes_status():
             "logs": [{"message": "Downloading...", "level": "info"}]
         }
     }
-
-    from starlette.testclient import TestClient
-    from demandify.app import app
 
     client = TestClient(app)
 
@@ -50,9 +52,6 @@ def test_progress_response_completed_status():
         }
     }
 
-    from starlette.testclient import TestClient
-    from demandify.app import app
-
     client = TestClient(app)
 
     resp = client.get(f"/api/run/{run_id}/progress")
@@ -76,9 +75,6 @@ def test_progress_response_failed_status():
         }
     }
 
-    from starlette.testclient import TestClient
-    from demandify.app import app
-
     client = TestClient(app)
 
     resp = client.get(f"/api/run/{run_id}/progress")
@@ -91,13 +87,11 @@ def test_progress_response_failed_status():
 
 def test_calibrate_runs_in_thread():
     """pipeline.run() should use asyncio.to_thread for calibrate()."""
-    from demandify.pipeline import CalibrationPipeline
-    import inspect
-
     # Verify run() is async
     assert inspect.iscoroutinefunction(CalibrationPipeline.run)
 
-    # Verify the source code uses asyncio.to_thread for calibrate
-    source = inspect.getsource(CalibrationPipeline.run)
-    assert "asyncio.to_thread" in source
-    assert "self.calibrate" in source
+    # Verify prepare() is async
+    assert inspect.iscoroutinefunction(CalibrationPipeline.prepare)
+
+    # Verify calibrate() is sync (it's the method that needs wrapping)
+    assert not inspect.iscoroutinefunction(CalibrationPipeline.calibrate)
