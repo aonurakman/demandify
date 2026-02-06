@@ -288,7 +288,9 @@ async def get_progress(run_id: str):
             except Exception as e:
                 logger.error(f"Error reading log file: {e}")
     
-    return active_runs[run_id]["progress"]
+    progress = dict(active_runs[run_id]["progress"])
+    progress["status"] = active_runs[run_id].get("status", "running")
+    return progress
 
 
 @router.get("/api/run/{run_id}/status")
