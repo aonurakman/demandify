@@ -30,7 +30,12 @@ function initMap() {
         draw: {
             polyline: false,
             polygon: false,
-            circle: false,
+            circle: {
+                shapeOptions: {
+                    color: '#2563eb',
+                    weight: 2
+                }
+            },
             marker: false,
             circlemarker: false,
             rectangle: {
@@ -55,17 +60,34 @@ function initMap() {
         drawnItems.clearLayers();
         drawnItems.addLayer(layer);
 
-        // Get bounds
-        const bounds = layer.getBounds();
-        const sw = bounds.getSouthWest();
-        const ne = bounds.getNorthEast();
+        if (event.layerType === 'circle') {
+            const center = layer.getLatLng();
+            const radiusMeters = layer.getRadius();
+            const latKmPerDeg = 111.0;
+            const lonKmPerDeg = 111.0 * Math.cos(center.lat * Math.PI / 180);
 
-        currentBbox = {
-            west: sw.lng,
-            south: sw.lat,
-            east: ne.lng,
-            north: ne.lat
-        };
+            const latDelta = (radiusMeters / 1000.0) / latKmPerDeg;
+            const lonDelta = (radiusMeters / 1000.0) / lonKmPerDeg;
+
+            currentBbox = {
+                west: center.lng - lonDelta,
+                south: center.lat - latDelta,
+                east: center.lng + lonDelta,
+                north: center.lat + latDelta
+            };
+        } else {
+            // Get bounds (rectangle)
+            const bounds = layer.getBounds();
+            const sw = bounds.getSouthWest();
+            const ne = bounds.getNorthEast();
+
+            currentBbox = {
+                west: sw.lng,
+                south: sw.lat,
+                east: ne.lng,
+                north: ne.lat
+            };
+        }
 
         // Update form
         updateBboxForm();

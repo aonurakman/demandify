@@ -39,7 +39,7 @@
                         <div id="map" style="height: 400px;"></div>
                     </div>
                     <div class="card-footer bg-white">
-                        <small class="text-muted">Draw a rectangle on the map to select your calibration area</small>
+                        <small class="text-muted">Draw a rectangle (or circle) on the map to select your calibration area</small>
                         <span id="bbox-area" class="float-end fw-bold text-primary"></span>
                     </div>
                 </div>
@@ -172,6 +172,52 @@
                                 </a>
                                 <div class="collapse" id="advanced-params">
                                     <div class="card card-body mt-2 bg-light">
+                                        <!-- Simulation Settings -->
+                                        <div class="row mb-3">
+                                            <div class="col-12 mb-2"><small class="text-muted fw-bold">Simulation</small></div>
+                                            <div class="col-6">
+                                                <label for="warmup_minutes" class="form-label small">
+                                                    Warmup (min)
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Warmup duration before measurements start. Helps populate the network before scoring.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="warmup_minutes" name="warmup_minutes"
+                                                    value="{{ config.default_warmup_minutes }}" min="0" max="60">
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="step_length" class="form-label small">
+                                                    Step Length (s)
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="SUMO simulation step length. Smaller = more accurate but slower.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="step_length" name="step_length"
+                                                    value="{{ config.default_step_length }}" step="0.1" min="0.1" max="5">
+                                            </div>
+                                        </div>
+
+                                        <!-- Traffic Ingestion -->
+                                        <div class="row mb-3 border-top pt-2">
+                                            <div class="col-12 mb-2"><small class="text-muted fw-bold">TomTom Traffic</small></div>
+                                            <div class="col-6">
+                                                <label for="traffic_tile_zoom" class="form-label small">
+                                                    Tile Zoom
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Vector tile zoom for TomTom Flow. Higher = more detail (may require more requests for large bboxes).">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <input type="number" class="form-control form-control-sm"
+                                                    id="traffic_tile_zoom" name="traffic_tile_zoom"
+                                                    value="{{ config.default_traffic_tile_zoom }}" min="8" max="18">
+                                            </div>
+                                        </div>
+
                                         <div class="row mb-3">
                                             <div class="col-6">
                                                 <label for="ga_population" class="form-label small">
