@@ -45,14 +45,14 @@ def cmd_cache_clear(args):
 
 def cmd_set_key(args):
     """Update TomTom API key."""
-    from demandify.config import save_config, get_config
+    from demandify.config import save_api_key, get_config
     
+    save_api_key("tomtom", args.api_key)
     config = get_config()
-    config.tomtom_api_key = args.api_key
-    save_config(config)
+    config_path = config.cache_dir.parent / "config.json"
     
     print(f"✅ TomTom API key updated: {args.api_key[:8]}...")
-    print(f"   Key saved to {config.config_dir / 'config.json'}")
+    print(f"   Key saved to {config_path}")
 
 
 def cmd_doctor(args):
