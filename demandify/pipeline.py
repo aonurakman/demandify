@@ -391,29 +391,51 @@ class CalibrationPipeline:
             style=getattr(provider, "style", None)
         )
         traffic_cache_path = self.cache_manager.get_traffic_path(traffic_cache_key)
+
+        def _df_has_points_in_bbox(df: pd.DataFrame) -> bool:
+            if df is None or df.empty:
+                return False
+            if 'geometry' not in df.columns:
+                return False
+            west, south, east, north = self.bbox
+            for geom in df['geometry']:
+                if not geom:
+                    continue
+                try:
+                    for lon, lat in geom:
+                        if west <= float(lon) <= east and south <= float(lat) <= north:
+                            return True
+                except Exception:
+                    continue
+            return False
         
         if self.cache_manager.exists(traffic_cache_path):
             logger.info(f"Using cached traffic snapshot {traffic_cache_key}")
             df = pd.read_pickle(traffic_cache_path)
             if len(df) > 0 and 'timestamp' not in df.columns:
                 df['timestamp'] = self.traffic_timestamp
-            return df
+            if _df_has_points_in_bbox(df):
+                return df
+            logger.warning("Cached traffic snapshot has no points in bbox; refetching.")
         
         try:
             traffic_df = await provider.fetch_traffic_snapshot(self.bbox)
             if len(traffic_df) > 0:
                 traffic_df['timestamp'] = self.traffic_timestamp
-                traffic_df.to_pickle(traffic_cache_path)
-                self.cache_manager.save_metadata(traffic_cache_path, {
-                    "bbox": {
-                        "west": self.bbox[0],
-                        "south": self.bbox[1],
-                        "east": self.bbox[2],
-                        "north": self.bbox[3]
-                    },
-                    "timestamp_bucket": self.traffic_bucket,
-                    "provider": self.provider_meta
-                })
+                if _df_has_points_in_bbox(traffic_df):
+                    traffic_df.to_pickle(traffic_cache_path)
+                    self.cache_manager.save_metadata(traffic_cache_path, {
+                        "bbox": {
+                            "west": self.bbox[0],
+                            "south": self.bbox[1],
+                            "east": self.bbox[2],
+                            "north": self.bbox[3]
+                        },
+                        "timestamp_bucket": self.traffic_bucket,
+                        "provider": self.provider_meta
+                    })
+                else:
+                    logger.warning("Fetched traffic has no points in bbox; skipping cache write.")
             logger.debug(f"Fetched {len(traffic_df)} traffic segments")
             return traffic_df
         finally:
@@ -475,7 +497,10 @@ class CalibrationPipeline:
         
         if observed_edges_cache and self.cache_manager.exists(observed_edges_cache):
             logger.info(f"Using cached observed edges {cache_key_match}")
-            return pd.read_csv(observed_edges_cache)
+            cached = pd.read_csv(observed_edges_cache)
+            if len(cached) > 0:
+                return cached
+            logger.info("Cached observed edges were empty; recomputing.")
             
         network = SUMONetwork(network_file)
         matcher = EdgeMatcher(network, network_file, bbox=self.bbox)  # Pass file for projection info
@@ -484,7 +509,7 @@ class CalibrationPipeline:
         
         logger.debug(f"Matched {len(observed_edges)} edges")
         
-        if observed_edges_cache:
+        if observed_edges_cache and len(observed_edges) > 0:
             observed_edges.to_csv(observed_edges_cache, index=False)
         
         return observed_edges
