@@ -117,6 +117,10 @@ async def cmd_run(args):
             bbox=bbox,
             window_minutes=args.window,
             seed=args.seed,
+            warmup_minutes=args.warmup,
+            step_length=args.step_length,
+            parallel_workers=args.workers,
+            traffic_tile_zoom=args.tile_zoom,
             ga_population=args.pop,
             ga_generations=args.gen,
             ga_mutation_rate=args.mutation,
@@ -128,6 +132,7 @@ async def cmd_run(args):
             num_destinations=args.destinations,
             max_od_pairs=args.max_ods,
             bin_minutes=args.bin_size,
+            initial_population=args.initial_population,
             run_id=args.name
         )
         
@@ -233,7 +238,11 @@ def cli():
     run_parser.add_argument("bbox", help="Bounding box (west,south,east,north)")
     run_parser.add_argument("--name", help="Custom run ID/name")
     run_parser.add_argument("--window", type=int, default=15, help="Simulation window minutes (default: 15)")
+    run_parser.add_argument("--warmup", type=int, default=5, help="Warmup minutes (default: 5)")
     run_parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    run_parser.add_argument("--step-length", type=float, default=1.0, help="SUMO step length seconds (default: 1.0)")
+    run_parser.add_argument("--workers", type=int, default=None, help="Parallel GA workers (default: auto)")
+    run_parser.add_argument("--tile-zoom", type=int, default=12, help="TomTom tile zoom (default: 12)")
     run_parser.add_argument("--pop", type=int, default=50, help="GA population size (default: 50)")
     run_parser.add_argument("--gen", type=int, default=20, help="GA generations (default: 20)")
     run_parser.add_argument("--mutation", type=float, default=0.5, help="Mutation rate (default: 0.5)")
@@ -245,6 +254,7 @@ def cli():
     run_parser.add_argument("--destinations", type=int, default=10, help="Number of destination candidates (default: 10)")
     run_parser.add_argument("--max-ods", type=int, default=1000, help="Max OD pairs to generate (default: 1000)")
     run_parser.add_argument("--bin-size", type=float, default=1.0, help="Time bin size in minutes (default: 1.0)")
+    run_parser.add_argument("--initial-population", type=int, default=1000, help="Target initial vehicles (default: 1000)")
     
     # serve command (default)
     serve_parser = subparsers.add_parser("serve", help="Start web server (default)")
