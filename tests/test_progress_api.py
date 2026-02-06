@@ -1,6 +1,7 @@
 """Tests for progress API response and pipeline async behavior."""
 import inspect
 
+import pytest
 from starlette.testclient import TestClient
 
 from demandify.app import app
@@ -8,17 +9,35 @@ from demandify.pipeline import CalibrationPipeline
 from demandify.web.routes import active_runs
 
 
-def test_progress_response_includes_status():
-    """Progress endpoint should include run status alongside progress fields."""
-    run_id = "test-status-included"
-    active_runs[run_id] = {
-        "status": "running",
-        "progress": {
-            "stage": 2,
-            "stage_name": "Download OSM",
-            "logs": [{"message": "Downloading...", "level": "info"}]
+@pytest.fixture()
+def run_entry():
+    """Create and clean up an active_runs entry for testing."""
+    created_ids = []
+
+    def _make(run_id, status, stage, stage_name, logs):
+        active_runs[run_id] = {
+            "status": status,
+            "progress": {
+                "stage": stage,
+                "stage_name": stage_name,
+                "logs": list(logs),
+            },
         }
-    }
+        created_ids.append(run_id)
+        return run_id
+
+    yield _make
+
+    for rid in created_ids:
+        active_runs.pop(rid, None)
+
+
+def test_progress_response_includes_status(run_entry):
+    """Progress endpoint should include run status alongside progress fields."""
+    run_id = run_entry(
+        "test-status-included", "running", 2, "Download OSM",
+        [{"message": "Downloading...", "level": "info"}],
+    )
 
     client = TestClient(app)
 
@@ -34,21 +53,13 @@ def test_progress_response_includes_status():
     assert data["stage_name"] == "Download OSM"
     assert len(data["logs"]) >= 1
 
-    # Cleanup
-    del active_runs[run_id]
 
-
-def test_progress_response_completed_status():
+def test_progress_response_completed_status(run_entry):
     """Completed runs should return status='completed'."""
-    run_id = "test-completed"
-    active_runs[run_id] = {
-        "status": "completed",
-        "progress": {
-            "stage": 8,
-            "stage_name": "Complete",
-            "logs": [{"message": "Done", "level": "info"}]
-        }
-    }
+    run_id = run_entry(
+        "test-completed", "completed", 8, "Complete",
+        [{"message": "Done", "level": "info"}],
+    )
 
     client = TestClient(app)
 
@@ -58,20 +69,13 @@ def test_progress_response_completed_status():
     assert data["status"] == "completed"
     assert data["stage"] == 8
 
-    del active_runs[run_id]
 
-
-def test_progress_response_failed_status():
+def test_progress_response_failed_status(run_entry):
     """Failed runs should return status='failed'."""
-    run_id = "test-failed"
-    active_runs[run_id] = {
-        "status": "failed",
-        "progress": {
-            "stage": 3,
-            "stage_name": "Building Network",
-            "logs": [{"message": "Error: network build failed", "level": "error"}]
-        }
-    }
+    run_id = run_entry(
+        "test-failed", "failed", 3, "Building Network",
+        [{"message": "Error: network build failed", "level": "error"}],
+    )
 
     client = TestClient(app)
 
@@ -79,8 +83,6 @@ def test_progress_response_failed_status():
     data = resp.json()
 
     assert data["status"] == "failed"
-
-    del active_runs[run_id]
 
 
 def test_calibrate_runs_in_thread():

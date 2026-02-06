@@ -50,8 +50,11 @@ async def run_calibration_pipeline(run_id: str, params: dict):
     from demandify.calibration.objective import EdgeSpeedObjective
     
     try:
-        # Update progress helper
-        def update_progress(stage: int, stage_name: str, message: str, level: str = "info"):
+        # Capture event loop for thread-safe progress updates
+        loop = asyncio.get_running_loop()
+
+        # Thread-safe update progress helper
+        def _do_update(stage: int, stage_name: str, message: str, level: str):
             if run_id in active_runs:
                 active_runs[run_id]["progress"]["stage"] = stage
                 active_runs[run_id]["progress"]["stage_name"] = stage_name
@@ -59,6 +62,9 @@ async def run_calibration_pipeline(run_id: str, params: dict):
                     "message": message,
                     "level": level
                 })
+
+        def update_progress(stage: int, stage_name: str, message: str, level: str = "info"):
+            loop.call_soon_threadsafe(_do_update, stage, stage_name, message, level)
         
         update_progress(0, "Initializing", "Starting calibration pipeline...")
         
