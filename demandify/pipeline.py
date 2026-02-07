@@ -3,8 +3,9 @@ Main calibration pipeline orchestrator.
 Ties together all components to execute the full workflow.
 """
 from pathlib import Path
-from typing import Tuple, Dict, List
+from typing import Any, Tuple, Dict, List, Optional
 from datetime import datetime
+import asyncio
 import pandas as pd
 import numpy as np
 import logging
@@ -217,7 +218,7 @@ class CalibrationPipeline:
         # Stage 3: Build SUMO network
         self._report_progress(3, "Building Network", "Converting map to SUMO network...")
         # Build/Get from cache using original OSM path (key based)
-        network_cache_path = self._build_sumo_network(osm_cache_path)
+        network_cache_path = await asyncio.to_thread(self._build_sumo_network, osm_cache_path)
         
         # Copy to run folder
         network_file = self.output_dir / "sumo" / "network.net.xml"
@@ -226,7 +227,7 @@ class CalibrationPipeline:
         # Count edges and plot map
         net = SUMONetwork(network_file)
         total_edges = len(net.edges)
-        plot_network_geometry(network_file, self.output_dir / "plots" / "network.png")
+        await asyncio.to_thread(plot_network_geometry, network_file, self.output_dir / "plots" / "network.png")
         self._report_progress(3, "Building Network", "✓ SUMO network created")
         
         # Cleanup OSM file to save space
@@ -239,7 +240,7 @@ class CalibrationPipeline:
         
         # Stage 4: Map matching
         self._report_progress(4, "Matching Traffic", "Matching traffic data to road network...")
-        observed_edges = self._match_traffic_to_edges(traffic_df, network_file)
+        observed_edges = await asyncio.to_thread(self._match_traffic_to_edges, traffic_df, network_file)
         
         # Save observed edges
         observed_edges_file = self.output_dir / "data" / "observed_edges.csv"
@@ -288,7 +289,7 @@ class CalibrationPipeline:
         # Stage 6: Calibrate demand
         self._report_progress(6, "Calibrating Demand", 
                              f"Running genetic algorithm ({self.ga_generations} generations)...")
-        best_genome, best_loss, loss_history = self._calibrate_demand(
+        best_genome, best_loss, loss_history, generation_stats = self._calibrate_demand(
             demand_gen, od_pairs, departure_bins, observed_edges, network_file
         )
         self._report_progress(6, "Calibrating Demand", f"✓ Complete: loss={best_loss:.2f} km/h")
@@ -329,7 +330,8 @@ class CalibrationPipeline:
         metadata = self._export_results(
             network_file, demand_csv, trips_file,
             observed_edges_file, traffic_data_file, observed_edges,
-            simulated_speeds, best_loss, loss_history, quality_metrics
+            simulated_speeds, best_loss, loss_history, quality_metrics,
+            generation_stats
         )
         
         # Note: With dynamic routing, we don't generate routes.rou.xml
@@ -370,8 +372,8 @@ class CalibrationPipeline:
                 logger.info("🚫 Run aborted by user.")
                 return None
                 
-        # Phase 2: Calibrate
-        return self.calibrate(context)
+        # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
+        return await asyncio.to_thread(self.calibrate, context)
     
     async def _fetch_traffic_data(self) -> pd.DataFrame:
         """Fetch traffic data from TomTom."""
@@ -591,7 +593,7 @@ class CalibrationPipeline:
         departure_bins: List[Tuple[int, int]],
         observed_edges: pd.DataFrame,
         network_file: Path
-    ) -> Tuple[np.ndarray, float, List[float]]:
+    ) -> Tuple[np.ndarray, float, List[float], Optional[List[Dict[str, Any]]]]:
         """Calibrate demand using GA."""
         
         # Handle case where no edges were matched
@@ -599,7 +601,7 @@ class CalibrationPipeline:
             logger.warning("No observed edges matched - skipping calibration, using random demand")
             genome_size = len(od_pairs) * len(departure_bins)
             random_genome = np.random.RandomState(self.seed).randint(0, 10, size=genome_size)
-            return random_genome, float('inf'), [float('inf')]
+            return random_genome, float('inf'), [float('inf')], None
         
         # Create SimulationConfig for the worker
         sim_config = SimulationConfig(
@@ -660,14 +662,14 @@ class CalibrationPipeline:
         from demandify.calibration.worker import evaluate_for_ga
         evaluate_func_clean = partial(evaluate_for_ga, config=sim_config)
         
-        best_genome, best_loss, loss_history = ga.optimize(
+        best_genome, best_loss, loss_history, generation_stats = ga.optimize(
             evaluate_func_clean, 
             progress_callback=progress_callback
         )
         
         logger.info(f"✅ Calibration complete: loss={best_loss:.2f} km/h, vehicles={int(best_genome.sum())}")
         
-        return best_genome, best_loss, loss_history
+        return best_genome, best_loss, loss_history, generation_stats
     
     def _generate_final_demand(
         self,
@@ -720,7 +722,8 @@ class CalibrationPipeline:
         simulated_speeds: Dict[str, float],
         best_loss: float,
         loss_history: List[float],
-        quality_metrics: Dict
+        quality_metrics: Dict,
+        generation_stats: Optional[List[Dict[str, Any]]] = None
     ) -> Dict:
         """Export scenario and generate report with comprehensive metadata."""
         # Comprehensive metadata per user request
@@ -809,7 +812,9 @@ class CalibrationPipeline:
         
         # Generate report
         report_gen = ReportGenerator(self.output_dir)
-        report_gen.generate(observed_edges, simulated_speeds, loss_history, metadata)
+        report_gen.generate(
+            observed_edges, simulated_speeds, loss_history, metadata, generation_stats
+        )
         
         # Visualize network (per user request)
         from demandify.export.visualize import visualize_network

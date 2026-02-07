@@ -2,7 +2,8 @@
 HTML report generation for calibration results.
 """
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -30,7 +31,8 @@ class ReportGenerator:
         observed_edges: pd.DataFrame,
         simulated_speeds: Dict[str, float],
         loss_history: List[float],
-        metadata: Dict
+        metadata: Dict,
+        generation_stats: Optional[List[dict]] = None
     ) -> Path:
         """
         Generate HTML report.
@@ -40,21 +42,35 @@ class ReportGenerator:
             simulated_speeds: Dict of simulated speeds
             loss_history: List of loss values per generation
             metadata: Run metadata
+            generation_stats: Optional list of per-generation statistics dicts
         
         Returns:
             Path to report.html
         """
         logger.info("Generating calibration report")
         
-         # Create visualizations
-        loss_plot = self._create_loss_plot(loss_history)
+        # Create visualizations
+        loss_plot = self._create_loss_plot(loss_history, generation_stats)
         speed_plot = self._create_speed_comparison(observed_edges, simulated_speeds)
+        
+        # Create additional plots if generation_stats available
+        extra_plots = []
+        if generation_stats:
+            failures_plot = self._create_failures_plot(generation_stats)
+            if failures_plot:
+                extra_plots.append(("Failures & Zero-Flow Edges", failures_plot))
+            
+            magnitude_plot = self._create_magnitude_plot(generation_stats)
+            if magnitude_plot:
+                extra_plots.append(("Genome Magnitude (Total Vehicles)", magnitude_plot))
         
         # Calculate mismatches
         mismatches = self._find_top_mismatches(observed_edges, simulated_speeds, top_n=10)
         
         # Build HTML
-        html = self._build_html(loss_plot, speed_plot, mismatches, metadata, observed_edges)
+        html = self._build_html(
+            loss_plot, speed_plot, mismatches, metadata, observed_edges, extra_plots
+        )
         
         # Save
         report_file = self.output_dir / "report.html"
@@ -65,13 +81,41 @@ class ReportGenerator:
         
         return report_file
     
-    def _create_loss_plot(self, loss_history: List[float]) -> str:
-        """Create loss convergence plot."""
+    def _create_loss_plot(
+        self, loss_history: List[float], generation_stats: Optional[List[dict]] = None
+    ) -> str:
+        """Create loss convergence plot with optional mean±stddev band."""
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(loss_history, marker='o', linewidth=2)
+        
+        generations = list(range(1, len(loss_history) + 1))
+        
+        # Best loss line
+        ax.plot(
+            generations, loss_history, marker='o', linewidth=2,
+            color='#2563eb', markersize=5, label='Best Loss', zorder=3
+        )
+        
+        # Mean ± stddev band if generation_stats available
+        if generation_stats and len(generation_stats) == len(loss_history):
+            mean_losses = [s['mean_loss'] for s in generation_stats]
+            std_losses = [s['std_loss'] for s in generation_stats]
+            
+            ax.plot(
+                generations, mean_losses, linewidth=1.5, linestyle='--',
+                color='#f59e0b', label='Mean Loss', zorder=2
+            )
+            
+            lower = [m - s for m, s in zip(mean_losses, std_losses)]
+            upper = [m + s for m, s in zip(mean_losses, std_losses)]
+            ax.fill_between(
+                generations, lower, upper,
+                alpha=0.15, color='#f59e0b', label='±1 Std Dev'
+            )
+        
         ax.set_xlabel('Generation')
-        ax.set_ylabel('Loss (MAE)')
+        ax.set_ylabel('Loss (MAE, km/h)')
         ax.set_title('Calibration Convergence')
+        ax.legend(loc='upper right', fontsize=9)
         ax.grid(True, alpha=0.3)
         
         plot_dir = self.output_dir / "plots"
@@ -88,7 +132,7 @@ class ReportGenerator:
         observed_edges: pd.DataFrame,
         simulated_speeds: Dict[str, float]
     ) -> str:
-        """Create observed vs simulated speed scatter plot."""
+        """Create observed vs simulated speed scatter plot with statistics."""
         # Match speeds
         obs_speeds = []
         sim_speeds = []
@@ -123,16 +167,46 @@ class ReportGenerator:
 
         # Plot
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(obs_speeds, sim_speeds, alpha=0.5)
+        
+        n_matched = len(obs_speeds)
+        n_missing = len(plot_data) - n_matched
+        
+        ax.scatter(
+            obs_speeds, sim_speeds, alpha=0.5, s=30, color='#2563eb',
+            edgecolors='white', linewidths=0.3,
+            label=f'Matched edges (n={n_matched})'
+        )
         
         # Diagonal line
         max_speed = max(max(obs_speeds, default=0), max(sim_speeds, default=0))
-        ax.plot([0, max_speed], [0, max_speed], 'r--', label='Perfect match')
+        ax.plot([0, max_speed], [0, max_speed], 'r--', linewidth=1.5, label='Perfect match (y=x)')
+        
+        # Compute R² and RMSE for matched edges
+        stats_text = f"n = {n_matched} matched"
+        if n_missing > 0:
+            stats_text += f", {n_missing} missing"
+        if n_matched >= 2:
+            obs_arr = np.array(obs_speeds)
+            sim_arr = np.array(sim_speeds)
+            ss_res = np.sum((sim_arr - obs_arr) ** 2)
+            ss_tot = np.sum((obs_arr - np.mean(obs_arr)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+            rmse = np.sqrt(np.mean((sim_arr - obs_arr) ** 2))
+            mae = np.mean(np.abs(sim_arr - obs_arr))
+            stats_text += f"\nR² = {r_squared:.3f}, RMSE = {rmse:.1f} km/h\nMAE = {mae:.1f} km/h"
+        
+        # Statistics box (bottom-right area, above the region label)
+        ax.text(
+            0.95, 0.22, stats_text,
+            transform=ax.transAxes, horizontalalignment='right',
+            verticalalignment='top', fontsize=8,
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.8, edgecolor='#ccc')
+        )
         
         ax.set_xlabel('Observed Speed (km/h)')
         ax.set_ylabel('Simulated Speed (km/h)')
-        ax.set_title('Speed Comparison')
-        ax.legend()
+        ax.set_title('Speed Comparison: Observed vs Simulated')
+        ax.legend(loc='upper left', fontsize=8)
         ax.grid(True, alpha=0.3)
         
         # Add descriptive annotations
@@ -155,6 +229,107 @@ class ReportGenerator:
         plt.close(fig)
         
         return "plots/speed_comparison.png"
+    
+    def _create_failures_plot(self, generation_stats: List[dict]) -> Optional[str]:
+        """Create plot showing zero-flow edges and routing failures over generations."""
+        generations = [s['generation'] for s in generation_stats]
+        
+        has_zero_flow = any(s.get('best_zero_flow') is not None for s in generation_stats)
+        has_failures = any(s.get('best_routing_failures') is not None for s in generation_stats)
+        
+        if not has_zero_flow and not has_failures:
+            return None
+        
+        fig, ax1 = plt.subplots(figsize=(8, 4))
+        
+        if has_zero_flow:
+            best_zf = [s.get('best_zero_flow', 0) or 0 for s in generation_stats]
+            mean_zf = [s.get('mean_zero_flow', 0) or 0 for s in generation_stats]
+            ax1.plot(
+                generations, best_zf, marker='s', markersize=4, linewidth=2,
+                color='#8b5cf6', label='Best: Zero-Flow Edges'
+            )
+            ax1.plot(
+                generations, mean_zf, linestyle='--', linewidth=1.5,
+                color='#8b5cf6', alpha=0.6, label='Mean: Zero-Flow Edges'
+            )
+        
+        ax1.set_xlabel('Generation')
+        ax1.set_ylabel('Zero-Flow Edges', color='#8b5cf6')
+        ax1.tick_params(axis='y', labelcolor='#8b5cf6')
+        ax1.grid(True, alpha=0.3)
+        
+        if has_failures:
+            ax2 = ax1.twinx()
+            best_rf = [s.get('best_routing_failures', 0) or 0 for s in generation_stats]
+            mean_rf = [s.get('mean_routing_failures', 0) or 0 for s in generation_stats]
+            ax2.plot(
+                generations, best_rf, marker='^', markersize=4, linewidth=2,
+                color='#ef4444', label='Best: Routing Failures'
+            )
+            ax2.plot(
+                generations, mean_rf, linestyle='--', linewidth=1.5,
+                color='#ef4444', alpha=0.6, label='Mean: Routing Failures'
+            )
+            ax2.set_ylabel('Routing Failures', color='#ef4444')
+            ax2.tick_params(axis='y', labelcolor='#ef4444')
+        
+        # Combined legend
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        if has_failures:
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=8)
+        else:
+            ax1.legend(loc='upper right', fontsize=8)
+        
+        ax1.set_title('Zero-Flow Edges & Routing Failures Over Generations')
+        fig.tight_layout()
+        
+        plot_dir = self.output_dir / "plots"
+        plot_dir.mkdir(exist_ok=True)
+        plot_path = plot_dir / "failures_plot.png"
+        
+        fig.savefig(plot_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        
+        return "plots/failures_plot.png"
+    
+    def _create_magnitude_plot(self, generation_stats: List[dict]) -> Optional[str]:
+        """Create plot showing best and mean genome magnitude over generations."""
+        generations = [s['generation'] for s in generation_stats]
+        
+        has_magnitude = any(s.get('best_magnitude') is not None for s in generation_stats)
+        if not has_magnitude:
+            return None
+        
+        best_mag = [s.get('best_magnitude', 0) for s in generation_stats]
+        mean_mag = [s.get('mean_magnitude', 0) for s in generation_stats]
+        
+        fig, ax = plt.subplots(figsize=(8, 4))
+        
+        ax.plot(
+            generations, best_mag, marker='o', markersize=4, linewidth=2,
+            color='#059669', label='Best Individual'
+        )
+        ax.plot(
+            generations, mean_mag, linestyle='--', linewidth=1.5,
+            color='#059669', alpha=0.6, label='Population Mean'
+        )
+        
+        ax.set_xlabel('Generation')
+        ax.set_ylabel('Total Vehicles (Genome Sum)')
+        ax.set_title('Genome Magnitude Over Generations')
+        ax.legend(loc='best', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        
+        plot_dir = self.output_dir / "plots"
+        plot_dir.mkdir(exist_ok=True)
+        plot_path = plot_dir / "magnitude_plot.png"
+        
+        fig.savefig(plot_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        
+        return "plots/magnitude_plot.png"
     
     def _find_top_mismatches(
         self,
@@ -198,7 +373,8 @@ class ReportGenerator:
         speed_plot: str,
         mismatches: pd.DataFrame,
         metadata: Dict,
-        observed_edges: pd.DataFrame
+        observed_edges: pd.DataFrame,
+        extra_plots: Optional[List[tuple]] = None
     ) -> str:
         """Build HTML report."""
         
@@ -223,6 +399,16 @@ class ReportGenerator:
         
         bbox = run_info.get('bbox_coordinates', {})
         seed = run_info.get('seed', 'N/A')
+        
+        # Build extra plots HTML
+        extra_plots_html = ""
+        if extra_plots:
+            for title, plot_path in extra_plots:
+                extra_plots_html += f"""
+            <div class="plot">
+                <h3>{title}</h3>
+                <img src="{plot_path}" alt="{title}">
+            </div>"""
         
         html = f"""
 <!DOCTYPE html>
@@ -266,8 +452,6 @@ class ReportGenerator:
         th {{ background-color: #f3f4f6; font-weight: 600; }}
         .metric {{ font-size: 1.5em; color: #2563eb; font-weight: bold; }}
         img {{ max-width: 100%; height: auto; }}
-        .plots {{ display: flex; gap: 20px; flex-wrap: wrap; }}
-        .plot {{ flex: 1; min-width: 400px; }}
         .plots {{ display: flex; gap: 20px; flex-wrap: wrap; }}
         .plot {{ flex: 1; min-width: 400px; }}
         .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));  gap: 15px; }}
@@ -319,6 +503,12 @@ class ReportGenerator:
                     </ul>
                 </p>
             </div>
+        </div>
+    </div>
+    
+    <div class="section">
+        <h2>📉 GA Population Statistics</h2>
+        <div class="plots">{extra_plots_html if extra_plots_html else '<p>No additional GA population plots available.</p>'}
         </div>
     </div>
     
