@@ -24,8 +24,8 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 # In-memory run storage (in production, use Redis or DB)
 active_runs = {}
 
-# Maximum number of log entries to keep per run
-MAX_LOG_ENTRIES = 500
+# Maximum number of log entries to keep in memory per run
+MAX_LOG_ENTRIES = 100
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -61,11 +61,12 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             if run_id in active_runs:
                 active_runs[run_id]["progress"]["stage"] = stage
                 active_runs[run_id]["progress"]["stage_name"] = stage_name
-                logs = active_runs[run_id]["progress"]["logs"]
-                logs.append({"message": message, "level": level})
-                # Cap logs to prevent unbounded growth
-                if len(logs) > MAX_LOG_ENTRIES:
-                    active_runs[run_id]["progress"]["logs"] = logs[-MAX_LOG_ENTRIES:]
+                active_runs[run_id]["progress"]["logs"].append({"message": message, "level": level})
+                # Trim logs to max length
+                if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
+                    active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"][
+                        "logs"
+                    ][-MAX_LOG_ENTRIES:]
 
         def update_progress(stage: int, stage_name: str, message: str, level: str = "info"):
             loop.call_soon_threadsafe(_do_update, stage, stage_name, message, level)
@@ -123,11 +124,14 @@ async def run_calibration_pipeline(run_id: str, params: dict):
         logger.error(f"Pipeline failed for run {run_id}: {e}", exc_info=True)
         if run_id in active_runs:
             active_runs[run_id]["status"] = "failed"
-            logs = active_runs[run_id]["progress"]["logs"]
-            logs.append({"message": f"Error: {str(e)}", "level": "error"})
-            # Cap logs to prevent unbounded growth
-            if len(logs) > MAX_LOG_ENTRIES:
-                active_runs[run_id]["progress"]["logs"] = logs[-MAX_LOG_ENTRIES:]
+            active_runs[run_id]["progress"]["logs"].append(
+                {"message": f"Error: {str(e)}", "level": "error"}
+            )
+            # Trim logs to max length
+            if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
+                active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"]["logs"][
+                    -MAX_LOG_ENTRIES:
+                ]
 
 
 @router.post("/api/check_feasibility")
@@ -282,18 +286,20 @@ async def get_progress(run_id: str):
                     recent_lines = lines[-30:] if len(lines) > 30 else lines
 
                 # Parse and add to logs
+                # Create set of recent messages for efficient deduplication
+                recent_messages = {
+                    log_entry["message"] for log_entry in run["progress"]["logs"][-10:]
+                }
                 for line in recent_lines:
                     if " - INFO - " in line or " - WARNING - " in line:
                         msg = line.split(" - ", 3)[-1].strip()
-                        if msg and msg not in [
-                            log_entry["message"] for log_entry in run["progress"]["logs"][-10:]
-                        ]:
+                        if msg and msg not in recent_messages:
                             level = "warning" if "WARNING" in line else "info"
-                            logs = run["progress"]["logs"]
-                            logs.append({"message": msg, "level": level})
-                            # Cap logs to prevent unbounded growth
-                            if len(logs) > MAX_LOG_ENTRIES:
-                                run["progress"]["logs"] = logs[-MAX_LOG_ENTRIES:]
+                            run["progress"]["logs"].append({"message": msg, "level": level})
+
+                # Trim logs to max length after appending
+                if len(run["progress"]["logs"]) > MAX_LOG_ENTRIES:
+                    run["progress"]["logs"] = run["progress"]["logs"][-MAX_LOG_ENTRIES:]
             except Exception as e:
                 logger.error(f"Error reading log file: {e}")
 

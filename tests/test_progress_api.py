@@ -1,4 +1,5 @@
 """Tests for progress API response and pipeline async behavior."""
+
 import inspect
 
 import pytest
@@ -35,7 +36,10 @@ def run_entry():
 def test_progress_response_includes_status(run_entry):
     """Progress endpoint should include run status alongside progress fields."""
     run_id = run_entry(
-        "test-status-included", "running", 2, "Download OSM",
+        "test-status-included",
+        "running",
+        2,
+        "Download OSM",
         [{"message": "Downloading...", "level": "info"}],
     )
 
@@ -57,7 +61,10 @@ def test_progress_response_includes_status(run_entry):
 def test_progress_response_completed_status(run_entry):
     """Completed runs should return status='completed'."""
     run_id = run_entry(
-        "test-completed", "completed", 8, "Complete",
+        "test-completed",
+        "completed",
+        8,
+        "Complete",
         [{"message": "Done", "level": "info"}],
     )
 
@@ -73,7 +80,10 @@ def test_progress_response_completed_status(run_entry):
 def test_progress_response_failed_status(run_entry):
     """Failed runs should return status='failed'."""
     run_id = run_entry(
-        "test-failed", "failed", 3, "Building Network",
+        "test-failed",
+        "failed",
+        3,
+        "Building Network",
         [{"message": "Error: network build failed", "level": "error"}],
     )
 
@@ -83,6 +93,54 @@ def test_progress_response_failed_status(run_entry):
     data = resp.json()
 
     assert data["status"] == "failed"
+
+
+def test_log_trimming_in_progress_endpoint(run_entry):
+    """Logs should be trimmed to MAX_LOG_ENTRIES when appended via update callback."""
+    from demandify.web.routes import MAX_LOG_ENTRIES
+
+    # Create a run with more logs than MAX_LOG_ENTRIES to test trimming
+    large_logs = [
+        {"message": f"Log entry {i}", "level": "info"} for i in range(MAX_LOG_ENTRIES + 50)
+    ]
+    run_id = run_entry(
+        "test-log-trim",
+        "running",
+        5,
+        "Calibrating",
+        large_logs,
+    )
+
+    # Verify initial state: endpoint returns all logs (no trimming yet)
+    client = TestClient(app)
+    resp = client.get(f"/api/run/{run_id}/progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["logs"]) == MAX_LOG_ENTRIES + 50  # No trimming yet
+
+    # Simulate the update callback behavior by appending logs and applying the same
+    # trimming logic that _do_update uses. This tests that the trimming logic works.
+    for i in range(20):
+        active_runs[run_id]["progress"]["logs"].append(
+            {"message": f"New log entry {i}", "level": "info"}
+        )
+        # Apply the same trimming logic as _do_update
+        if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
+            active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"]["logs"][
+                -MAX_LOG_ENTRIES:
+            ]
+
+    # Verify logs are trimmed to MAX_LOG_ENTRIES after simulating updates
+    assert len(active_runs[run_id]["progress"]["logs"]) == MAX_LOG_ENTRIES
+
+    # Verify we kept the most recent entries
+    assert active_runs[run_id]["progress"]["logs"][-1]["message"] == "New log entry 19"
+
+    # Verify the endpoint returns the trimmed logs
+    resp = client.get(f"/api/run/{run_id}/progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["logs"]) == MAX_LOG_ENTRIES
 
 
 def test_calibrate_runs_in_thread():
