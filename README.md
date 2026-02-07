@@ -4,25 +4,28 @@
 
 # Welcome to demandify!
 
-**Turn real-world traffic data into accurate SUMO simulations.**
+**Turn real-world traffic data into accurate, agent-based SUMO simulations.**
 
-Have you ever wanted to create a realistic traffic simulation but got stuck figuring out where the cars should go? **demandify** solves that.
+Do you want to simulate real-world city traffic but don't have access to precious driver trip data? **demandify** solves that.
 
 It's simple: Pick a spot on the map and demandify will:
 1.  Fetch real-time congestion data from TomTom 🗺️
 2.  Build a clean SUMO network 🛣️
 3.  Use the Genetic Algorithm to figure out the demand pattern to match that traffic 🧬
 
-The result? A ready-to-run SUMO scenario that allows you to test your urban routing policies, even for your CAVs! ([wink](https://github.com/COeXISTENCE-PROJECT/URB) [wink](https://github.com/COeXISTENCE-PROJECT/RouteRL)).
+The result? A ready-to-run SUMO scenario in agent-level precision that allows you to test your urban routing policies, even for your CAVs! ([wink](https://github.com/COeXISTENCE-PROJECT/URB) [wink](https://github.com/COeXISTENCE-PROJECT/RouteRL)).
+
+![Workflow](static/schema.gif)
 
 ## Features
 
 - 🌍 **Real-world calibration**: Uses TomTom Traffic Flow API for live congestion data
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
-- 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering
+- 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
 - 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (magnitude penalty, immigrants, assortative mating, adaptive mutation boost)
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
+- ⌨️ **CLI native**: Live in the terminal? No problem.
 - 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
 
 ![GUI Screenshot](static/gui.png)
