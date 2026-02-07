@@ -111,23 +111,41 @@ def test_log_trimming_in_progress_endpoint(run_entry):
         large_logs,
     )
 
-    # Simulate appending more logs (like the log file tailing does)
+    # Call the actual progress endpoint
+    client = TestClient(app)
+    resp = client.get(f"/api/run/{run_id}/progress")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # The endpoint should return all logs since we're within MAX_LOG_ENTRIES
+    # (the initial logs are MAX_LOG_ENTRIES + 50)
+    # However, after calling the endpoint, if it triggered trimming, check active_runs
+    # Since the endpoint itself doesn't trim for simple retrieval without log file,
+    # let's verify the behavior with the update callback which does trim
+
+    # Simulate the update callback behavior (this is what trims logs)
+    # by directly appending logs and checking they get trimmed
     for i in range(20):
         active_runs[run_id]["progress"]["logs"].append(
             {"message": f"New log entry {i}", "level": "info"}
         )
-
-    # Manually trigger the trimming logic
-    if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
-        active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"]["logs"][
-            -MAX_LOG_ENTRIES:
-        ]
+        # Simulate the trimming that happens in _do_update
+        if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
+            active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"]["logs"][
+                -MAX_LOG_ENTRIES:
+            ]
 
     # Verify logs are trimmed to MAX_LOG_ENTRIES
     assert len(active_runs[run_id]["progress"]["logs"]) == MAX_LOG_ENTRIES
 
     # Verify we kept the most recent entries
     assert active_runs[run_id]["progress"]["logs"][-1]["message"] == "New log entry 19"
+
+    # Now call the endpoint again to ensure it returns the trimmed logs
+    resp = client.get(f"/api/run/{run_id}/progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["logs"]) == MAX_LOG_ENTRIES
 
 
 def test_calibrate_runs_in_thread():

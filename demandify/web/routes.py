@@ -286,12 +286,14 @@ async def get_progress(run_id: str):
                     recent_lines = lines[-30:] if len(lines) > 30 else lines
 
                 # Parse and add to logs
+                # Create set of recent messages for efficient deduplication
+                recent_messages = {
+                    log_entry["message"] for log_entry in run["progress"]["logs"][-10:]
+                }
                 for line in recent_lines:
                     if " - INFO - " in line or " - WARNING - " in line:
                         msg = line.split(" - ", 3)[-1].strip()
-                        if msg and msg not in [
-                            log_entry["message"] for log_entry in run["progress"]["logs"][-10:]
-                        ]:
+                        if msg and msg not in recent_messages:
                             level = "warning" if "WARNING" in line else "info"
                             run["progress"]["logs"].append({"message": msg, "level": level})
 
