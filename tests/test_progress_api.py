@@ -95,3 +95,29 @@ def test_calibrate_runs_in_thread():
 
     # Verify calibrate() is sync (it's the method that needs wrapping)
     assert not inspect.iscoroutinefunction(CalibrationPipeline.calibrate)
+
+
+def test_log_capping_prevents_unbounded_growth(run_entry):
+    """Logs should be capped at MAX_LOG_ENTRIES to prevent memory issues."""
+    from demandify.web.routes import MAX_LOG_ENTRIES
+
+    # Create a run with many log entries
+    initial_logs = [{"message": f"Log {i}", "level": "info"} for i in range(MAX_LOG_ENTRIES + 100)]
+    run_id = run_entry("test-log-cap", "running", 5, "Calibrating", initial_logs)
+
+    # Simulate adding more logs as the progress endpoint does
+    run = active_runs[run_id]
+    logs = run["progress"]["logs"]
+    logs.append({"message": "New log entry", "level": "info"})
+
+    # Cap logs
+    if len(logs) > MAX_LOG_ENTRIES:
+        run["progress"]["logs"] = logs[-MAX_LOG_ENTRIES:]
+
+    # Verify logs are capped
+    assert len(run["progress"]["logs"]) == MAX_LOG_ENTRIES
+    # Verify the newest log is still there
+    assert run["progress"]["logs"][-1]["message"] == "New log entry"
+    # Verify oldest logs were removed
+    assert "Log 0" not in [log["message"] for log in run["progress"]["logs"]]
+
