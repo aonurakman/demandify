@@ -239,8 +239,8 @@ class GeneticAlgorithm:
                 best_metrics = getattr(best_ind_gen, 'metrics', {})
                 
                 # Genome magnitude stats
-                magnitudes = [np.sum(np.array(ind)) for ind in population]
-                best_magnitude = np.sum(np.array(best_ind_gen))
+                magnitudes = [sum(ind) for ind in population]
+                best_magnitude = sum(best_ind_gen)
                 mean_magnitude = np.mean(magnitudes)
                 
                 # Aggregate population-level metrics
