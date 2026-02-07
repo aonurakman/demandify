@@ -652,19 +652,12 @@ class CalibrationPipeline:
             init_prob=init_prob
         )
         
-        # Progress callback
-        def progress_callback(gen: int, best_loss: float, mean_loss: float):
-            msg = f"  🔄 GA Gen {gen}/{self.ga_generations}: best_loss={best_loss:.2f} km/h, mean={mean_loss:.2f}"
-            logger.info(msg)
-            # print(msg, flush=True) # logger handles this now
-        
         # Start optimization
         from demandify.calibration.worker import evaluate_for_ga
         evaluate_func_clean = partial(evaluate_for_ga, config=sim_config)
         
         best_genome, best_loss, loss_history, generation_stats = ga.optimize(
             evaluate_func_clean, 
-            progress_callback=progress_callback
         )
         
         logger.info(f"✅ Calibration complete: loss={best_loss:.2f} km/h, vehicles={int(best_genome.sum())}")

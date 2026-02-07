@@ -288,7 +288,7 @@ class GeneticAlgorithm:
                     metric_str = f" | ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, Fail={trip_fail}"
 
                 logger.info(
-                    f"✅ Gen {gen+1} Stats: Best Loss={current_best:.2f}, Mean={current_mean:.2f}{metric_str}"
+                    f"✅ Gen {gen+1}/{self.num_generations}: best={current_best:.2f}, mean={current_mean:.2f}{metric_str}"
                 )
 
                 if progress_callback:
