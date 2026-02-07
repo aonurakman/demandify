@@ -20,7 +20,7 @@ The result? A ready-to-run SUMO scenario that allows you to test your urban rout
 - 🌍 **Real-world calibration**: Uses TomTom Traffic Flow API for live congestion data
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering
-- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds
+- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (magnitude penalty, immigrants, assortative mating, adaptive mutation boost)
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
@@ -98,6 +98,15 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
   --gen 50 \
   --mutation 0.5 \
   --elitism 2
+
+# With advanced GA dynamics
+demandify run "2.2961,48.8469,2.3071,48.8532" \
+  --name Paris_Advanced \
+  --pop 100 \
+  --gen 100 \
+  --immigrant-rate 0.05 \
+  --magnitude-penalty 0.002 \
+  --stagnation-patience 15
 ```
 
 > **Note:** The CLI will pause after fetching/matching data to show matching statistics and ask for confirmation before starting the intensive calibration.
@@ -127,6 +136,22 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 | `--bin-size` | Int | 5 | Time bin size in minutes |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
 
+#### Advanced GA Dynamics
+
+These parameters control diversity mechanisms and adaptive behavior in the genetic algorithm, addressing local optima stagnation and trip count explosion.
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--immigrant-rate` | Float | 0.03 | Fraction of random individuals injected per generation (0–1) |
+| `--elite-top-pct` | Float | 0.1 | Top % of individuals for secondary sorting by magnitude (0–1) |
+| `--magnitude-penalty` | Float | 0.001 | Weight for penalizing excessive trip counts (higher = fewer trips preferred) |
+| `--stagnation-patience` | Int | 20 | Generations without improvement before mutation boost activates |
+| `--stagnation-boost` | Float | 1.5 | Multiplier for mutation sigma and rate during stagnation |
+| `--no-assortative-mating` | Flag | off | Disable assortative mating (dissimilar parent pairing, on by default) |
+| `--no-deterministic-crowding` | Flag | off | Disable deterministic crowding (diversity-preserving replacement, on by default) |
+
+All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable individual features by passing the corresponding `--no-*` flag, or set weights to `0` to turn off penalties.
+
 ## How It Works
 
 demandify follows an 8-stage pipeline:
@@ -139,6 +164,18 @@ demandify follows an 8-stage pipeline:
 6. **Initialize demand** - Select routable OD pairs (lane-permission aware) and time bins
 7. **Calibrate demand** - Run GA to optimize vehicle counts
 8. **Export scenario** - Generate `demand.csv`, `trips.xml`, config, and report
+
+### Advanced GA Dynamics
+
+The genetic algorithm includes several mechanisms to avoid common pitfalls like local optima stagnation and trip count explosion:
+
+- **Magnitude penalty**: Among the top-performing individuals (configurable `elite_top_pct`), solutions with fewer total trips are preferred at comparable loss. The final output is always selected on the raw objective only (no penalty applied to the ultimate best).
+- **Random immigrants**: A small fraction of completely random individuals is injected each generation to maintain genetic diversity and escape local optima.
+- **Assortative mating**: Parents are paired by dissimilarity (by genome magnitude) for crossover, promoting exploration of the search space.
+- **Deterministic crowding**: Offspring compete with similar parents for population slots, preserving niche diversity.
+- **Adaptive mutation boost**: If the best fitness stagnates for K generations, mutation sigma and rate are temporarily increased by a configurable multiplier. They reset automatically when improvement resumes.
+
+The calibration report includes plots for **genotypic diversity** (mean pairwise L2 distance) and **phenotypic diversity** (σ of fitness values) across generations, along with markers indicating when mutation boost was active.
 
 ### Variability & Consistency
       

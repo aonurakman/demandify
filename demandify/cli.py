@@ -2,6 +2,7 @@
 """
 demandify CLI entry point.
 """
+
 import argparse
 import subprocess
 from pathlib import Path
@@ -25,32 +26,32 @@ def cmd_cache_clear(args):
     """Clear the cache."""
     from demandify.config import get_config
     import shutil
-    
+
     config = get_config()
     cache_dir = config.cache_dir
-    
+
     if not cache_dir.exists():
         print("Cache is already empty")
         return
-    
+
     # Count items
-    count = sum(1 for _ in cache_dir.rglob('*') if _.is_file())
-    
+    count = sum(1 for _ in cache_dir.rglob("*") if _.is_file())
+
     # Clear
     shutil.rmtree(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print(f"✅ Cleared {count} cached items")
 
 
 def cmd_set_key(args):
     """Update TomTom API key."""
     from demandify.config import save_api_key, get_config
-    
+
     save_api_key("tomtom", args.api_key)
     config = get_config()
     config_path = config.cache_dir.parent / "config.json"
-    
+
     print(f"✅ TomTom API key updated: {args.api_key[:8]}...")
     print(f"   Key saved to {config_path}")
 
@@ -58,20 +59,20 @@ def cmd_set_key(args):
 def cmd_doctor(args):
     """Run system diagnostics."""
     from demandify.config import get_config
-    
+
     print("🏥 Running demandify diagnostics...\n")
-    
+
     # Check SUMO tools
     print("Checking SUMO installation:")
     try:
-        result = subprocess.run(['netconvert', '--version'], capture_output=True, text=True)
+        result = subprocess.run(["netconvert", "--version"], capture_output=True, text=True)
         if result.returncode == 0:
             print("  ✅ SUMO tools found")
         else:
             print("  ❌ SUMO tools not working")
     except FileNotFoundError:
         print("  ❌ SUMO not found in PATH")
-    
+
     # Check config
     print("\nChecking configuration:")
     config = get_config()
@@ -79,9 +80,9 @@ def cmd_doctor(args):
         print(f"  ✅ TomTom API key configured ({config.tomtom_api_key[:8]}...)")
     else:
         print("  ⚠️  TomTom API key not configured")
-    
+
     print(f"  ✅ Cache directory: {config.cache_dir}")
-    
+
     print("\n✅ Diagnostics complete")
 
 
@@ -90,7 +91,7 @@ def _prompt_restart():
     print("\n" + "─" * 60)
     try:
         response = input("🔄 Run another calibration? [y/N] ").strip().lower()
-        return response == 'y'
+        return response == "y"
     except EOFError:
         return False
 
@@ -99,10 +100,10 @@ async def cmd_run(args):
     """Run calibration in headless mode."""
     from demandify.pipeline import CalibrationPipeline
     import time
-    
+
     # Parse bbox
     try:
-        bbox_parts = [float(x.strip()) for x in args.bbox.split(',')]
+        bbox_parts = [float(x.strip()) for x in args.bbox.split(",")]
         if len(bbox_parts) != 4:
             raise ValueError
         bbox = tuple(bbox_parts)
@@ -110,7 +111,7 @@ async def cmd_run(args):
         print("❌ Invalid bbox format. Expected: west,south,east,north")
         print("   Example: 2.29,48.84,2.31,48.86")
         return
-        
+
     print(ASCII_ART)
     print(f"demandify v{__version__}")
 
@@ -121,9 +122,9 @@ async def cmd_run(args):
         print(f"   Seed: {args.seed}")
         print(f"   Run ID: {args.name if args.name else 'Auto-generated'}")
         print("-" * 50)
-        
+
         start_time = time.time()
-        
+
         try:
             pipeline = CalibrationPipeline(
                 bbox=bbox,
@@ -140,56 +141,67 @@ async def cmd_run(args):
                 ga_elitism=args.elitism,
                 ga_mutation_sigma=args.sigma,
                 ga_mutation_indpb=args.indpb,
+                ga_immigrant_rate=args.immigrant_rate,
+                ga_elite_top_pct=args.elite_top_pct,
+                ga_magnitude_penalty_weight=args.magnitude_penalty,
+                ga_stagnation_patience=args.stagnation_patience,
+                ga_stagnation_boost=args.stagnation_boost,
+                ga_assortative_mating=not args.no_assortative_mating,
+                ga_deterministic_crowding=not args.no_deterministic_crowding,
                 num_origins=args.origins,
                 num_destinations=args.destinations,
                 max_od_pairs=args.max_ods,
                 bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
-                run_id=args.name
+                run_id=args.name,
             )
-            
+
             def confirm_stats(stats):
                 print("\n📊 Traffic Data Check:")
                 print(f"   - Fetched Segments: {stats['fetched_segments']}")
                 print(f"   - Matched Edges:    {stats['matched_edges']}")
                 print(f"   - Total Graph Edges: {stats.get('total_network_edges', '-')}")
-                
-                if stats['matched_edges'] == 0:
+
+                if stats["matched_edges"] == 0:
                     print("\n❌ CRITICAL: No edges matched! Run will fail.")
-                elif stats['matched_edges'] < 5:
+                elif stats["matched_edges"] < 5:
                     print("\n⚠️  WARNING: Very few edges matched (<5). Results may be poor.")
-                
+
                 print(f"\n   Logs: {pipeline.output_dir}/logs/pipeline.log")
-                    
+
                 try:
                     response = input("\nProceed with calibration? [y/N] ").strip().lower()
-                    return response == 'y'
+                    return response == "y"
                 except EOFError:
                     return False
-            
+
             result = await pipeline.run(confirm_callback=confirm_stats)
-            
+
             if result is not None:
                 elapsed = time.time() - start_time
-                run_dir_name = Path(result['run_dir']).name if 'run_dir' in result else pipeline.output_dir.name
+                run_dir_name = (
+                    Path(result["run_dir"]).name
+                    if "run_dir" in result
+                    else pipeline.output_dir.name
+                )
                 run_id = pipeline.run_id
-                
-                print("\n" + "="*60)
+
+                print("\n" + "=" * 60)
                 print(f"✅ CALIBRATION SUCCESSFUL")
-                print("="*60)
+                print("=" * 60)
                 print(f"⏱️  Time: {elapsed:.1f}s")
                 print(f"📂 Folder: {pipeline.output_dir}")
-                
+
                 # High visibility box for Run ID
-                print("\n" + "╔" + "═"*58 + "╗")
+                print("\n" + "╔" + "═" * 58 + "╗")
                 print(f"║{'RUN COMPLETE'.center(58)}║")
-                print("║" + " "*58 + "║")
+                print("║" + " " * 58 + "║")
                 print(f"║  Run ID: {run_id:<48}║")
                 print(f"║  Path:   {run_dir_name:<48}║")
-                print("║" + " "*58 + "║")
-                print("╚" + "═"*58 + "╝")
+                print("║" + " " * 58 + "║")
+                print("╚" + "═" * 58 + "╝")
                 print(f"\n📄 Report available at: {pipeline.output_dir}/report.html\n")
-            
+
         except KeyboardInterrupt:
             print("\n🛑 Run aborted by user")
 
@@ -209,21 +221,17 @@ def cmd_serve(args):
     """Start the web server."""
     import uvicorn
     from demandify.config import get_config
-    
+
     config = get_config()
-    
+
     print(ASCII_ART)
     print(f"demandify v{__version__}")
     print(f"Cache directory: {config.cache_dir}")
     print(f"\n🌐 Starting server at http://{args.host}:{args.port}")
     print("   Press Ctrl+C to stop\n")
-    
+
     uvicorn.run(
-        "demandify.app:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info"
+        "demandify.app:app", host=args.host, port=args.port, reload=args.reload, log_level="info"
     )
 
 
@@ -231,62 +239,132 @@ def cli():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         description="demandify - SUMO traffic calibration tool",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"demandify {__version__}")
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
+
     # cache command
     cache_parser = subparsers.add_parser("cache", help="Cache management")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command")
     cache_subparsers.add_parser("clear", help="Clear all cached data")
-    
+
     # doctor command
     subparsers.add_parser("doctor", help="Check system requirements")
-    
+
     # set-key command
     key_parser = subparsers.add_parser("set-key", help="Update TomTom API key")
     key_parser.add_argument("api_key", help="TomTom API key")
-    
+
     # run command (headless)
     run_parser = subparsers.add_parser("run", help="Run calibration (headless mode)")
     run_parser.add_argument("bbox", help="Bounding box (west,south,east,north)")
     run_parser.add_argument("--name", help="Custom run ID/name")
-    run_parser.add_argument("--window", type=int, default=15, help="Simulation window minutes (default: 15)")
+    run_parser.add_argument(
+        "--window", type=int, default=15, help="Simulation window minutes (default: 15)"
+    )
     run_parser.add_argument("--warmup", type=int, default=5, help="Warmup minutes (default: 5)")
     run_parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    run_parser.add_argument("--step-length", type=float, default=1.0, help="SUMO step length seconds (default: 1.0)")
-    run_parser.add_argument("--workers", type=int, default=None, help="Parallel GA workers (default: auto)")
-    run_parser.add_argument("--tile-zoom", type=int, default=12, help="TomTom tile zoom (default: 12)")
+    run_parser.add_argument(
+        "--step-length", type=float, default=1.0, help="SUMO step length seconds (default: 1.0)"
+    )
+    run_parser.add_argument(
+        "--workers", type=int, default=None, help="Parallel GA workers (default: auto)"
+    )
+    run_parser.add_argument(
+        "--tile-zoom", type=int, default=12, help="TomTom tile zoom (default: 12)"
+    )
     run_parser.add_argument("--pop", type=int, default=50, help="GA population size (default: 50)")
     run_parser.add_argument("--gen", type=int, default=20, help="GA generations (default: 20)")
-    run_parser.add_argument("--mutation", type=float, default=0.5, help="Mutation rate (default: 0.5)")
-    run_parser.add_argument("--crossover", type=float, default=0.7, help="Crossover rate (default: 0.7)")
+    run_parser.add_argument(
+        "--mutation", type=float, default=0.5, help="Mutation rate (default: 0.5)"
+    )
+    run_parser.add_argument(
+        "--crossover", type=float, default=0.7, help="Crossover rate (default: 0.7)"
+    )
     run_parser.add_argument("--elitism", type=int, default=2, help="Elitism count (default: 2)")
     run_parser.add_argument("--sigma", type=int, default=20, help="Mutation sigma (default: 20)")
-    run_parser.add_argument("--indpb", type=float, default=0.3, help="Mutation gene probability (default: 0.3)")
-    run_parser.add_argument("--origins", type=int, default=10, help="Number of origin candidates (default: 10)")
-    run_parser.add_argument("--destinations", type=int, default=10, help="Number of destination candidates (default: 10)")
-    run_parser.add_argument("--max-ods", type=int, default=1000, help="Max OD pairs to generate (default: 1000)")
-    run_parser.add_argument("--bin-size", type=float, default=1.0, help="Time bin size in minutes (default: 1.0)")
-    run_parser.add_argument("--initial-population", type=int, default=1000, help="Target initial vehicles (default: 1000)")
-    
+    run_parser.add_argument(
+        "--indpb", type=float, default=0.3, help="Mutation gene probability (default: 0.3)"
+    )
+    run_parser.add_argument(
+        "--immigrant-rate",
+        type=float,
+        default=0.03,
+        help="Random immigrant fraction per generation (default: 0.03)",
+    )
+    run_parser.add_argument(
+        "--elite-top-pct",
+        type=float,
+        default=0.1,
+        help="Top %% for secondary sorting by magnitude (default: 0.1)",
+    )
+    run_parser.add_argument(
+        "--magnitude-penalty",
+        type=float,
+        default=0.001,
+        help="Magnitude penalty weight (default: 0.001)",
+    )
+    run_parser.add_argument(
+        "--stagnation-patience",
+        type=int,
+        default=20,
+        help="Generations before mutation boost (default: 20)",
+    )
+    run_parser.add_argument(
+        "--stagnation-boost",
+        type=float,
+        default=1.5,
+        help="Mutation boost multiplier on stagnation (default: 1.5)",
+    )
+    run_parser.add_argument(
+        "--no-assortative-mating",
+        action="store_true",
+        help="Disable assortative mating (default: enabled)",
+    )
+    run_parser.add_argument(
+        "--no-deterministic-crowding",
+        action="store_true",
+        help="Disable deterministic crowding (default: enabled)",
+    )
+    run_parser.add_argument(
+        "--origins", type=int, default=10, help="Number of origin candidates (default: 10)"
+    )
+    run_parser.add_argument(
+        "--destinations",
+        type=int,
+        default=10,
+        help="Number of destination candidates (default: 10)",
+    )
+    run_parser.add_argument(
+        "--max-ods", type=int, default=1000, help="Max OD pairs to generate (default: 1000)"
+    )
+    run_parser.add_argument(
+        "--bin-size", type=float, default=1.0, help="Time bin size in minutes (default: 1.0)"
+    )
+    run_parser.add_argument(
+        "--initial-population",
+        type=int,
+        default=1000,
+        help="Target initial vehicles (default: 1000)",
+    )
+
     # serve command (default)
     serve_parser = subparsers.add_parser("serve", help="Start web server (default)")
     serve_parser.add_argument("--host", default="127.0.0.1", help="Host address")
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
     serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
-    
+
     args = parser.parse_args()
-    
+
     # Default to serve if no command specified
     if args.command is None:
         args.command = "serve"
         args.host = "127.0.0.1"
         args.port = 8000
         args.reload = False
-    
+
     # Route to appropriate handler
     if args.command == "cache":
         if args.cache_command == "clear":
@@ -300,6 +378,7 @@ def cli():
     elif args.command == "run":
         try:
             import asyncio
+
             asyncio.run(cmd_run(args))
         except KeyboardInterrupt:
             print("\n🛑 Run aborted by user")
