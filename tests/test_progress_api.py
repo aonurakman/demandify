@@ -96,10 +96,10 @@ def test_progress_response_failed_status(run_entry):
 
 
 def test_log_trimming_in_progress_endpoint(run_entry):
-    """Logs should be trimmed to MAX_LOG_ENTRIES when read via progress endpoint."""
+    """Logs should be trimmed to MAX_LOG_ENTRIES when appended via update callback."""
     from demandify.web.routes import MAX_LOG_ENTRIES
 
-    # Create a run with more logs than MAX_LOG_ENTRIES
+    # Create a run with more logs than MAX_LOG_ENTRIES to test trimming
     large_logs = [
         {"message": f"Log entry {i}", "level": "info"} for i in range(MAX_LOG_ENTRIES + 50)
     ]
@@ -111,37 +111,32 @@ def test_log_trimming_in_progress_endpoint(run_entry):
         large_logs,
     )
 
-    # Call the actual progress endpoint
+    # Verify initial state: endpoint returns all logs (no trimming yet)
     client = TestClient(app)
     resp = client.get(f"/api/run/{run_id}/progress")
     assert resp.status_code == 200
     data = resp.json()
+    assert len(data["logs"]) == MAX_LOG_ENTRIES + 50  # No trimming yet
 
-    # The endpoint should return all logs since we're within MAX_LOG_ENTRIES
-    # (the initial logs are MAX_LOG_ENTRIES + 50)
-    # However, after calling the endpoint, if it triggered trimming, check active_runs
-    # Since the endpoint itself doesn't trim for simple retrieval without log file,
-    # let's verify the behavior with the update callback which does trim
-
-    # Simulate the update callback behavior (this is what trims logs)
-    # by directly appending logs and checking they get trimmed
+    # Simulate the update callback behavior by appending logs and applying the same
+    # trimming logic that _do_update uses. This tests that the trimming logic works.
     for i in range(20):
         active_runs[run_id]["progress"]["logs"].append(
             {"message": f"New log entry {i}", "level": "info"}
         )
-        # Simulate the trimming that happens in _do_update
+        # Apply the same trimming logic as _do_update
         if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
             active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"]["logs"][
                 -MAX_LOG_ENTRIES:
             ]
 
-    # Verify logs are trimmed to MAX_LOG_ENTRIES
+    # Verify logs are trimmed to MAX_LOG_ENTRIES after simulating updates
     assert len(active_runs[run_id]["progress"]["logs"]) == MAX_LOG_ENTRIES
 
     # Verify we kept the most recent entries
     assert active_runs[run_id]["progress"]["logs"][-1]["message"] == "New log entry 19"
 
-    # Now call the endpoint again to ensure it returns the trimmed logs
+    # Verify the endpoint returns the trimmed logs
     resp = client.get(f"/api/run/{run_id}/progress")
     assert resp.status_code == 200
     data = resp.json()
