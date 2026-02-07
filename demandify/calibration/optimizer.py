@@ -175,7 +175,10 @@ class GeneticAlgorithm:
     def _create_immigrant(self) -> list:
         """Create a random immigrant individual within bounds."""
         ind = creator.Individual(
-            [int(self.rng.randint(self.bounds[0], self.bounds[1] + 1)) for _ in range(self.genome_size)]
+            [
+                int(self.rng.randint(self.bounds[0], self.bounds[1] + 1))
+                for _ in range(self.genome_size)
+            ]
         )
         return ind
 
@@ -197,19 +200,35 @@ class GeneticAlgorithm:
         return pairs
 
     def _apply_magnitude_penalty(self, population):
-        """Apply magnitude penalty: among top elite_top_pct, prefer fewer trips."""
+        """Apply magnitude penalty: among top elite_top_pct, prefer fewer trips.
+
+        Stores raw loss as ``ind.raw_loss`` so that the penalty never accumulates
+        across generations.  After selection / stats the caller can restore fitness
+        via ``_restore_raw_fitness``.
+        """
+        # Always store the current (raw) loss before any penalty
+        for ind in population:
+            if not hasattr(ind, "raw_loss"):
+                ind.raw_loss = ind.fitness.values[0]
+
         if self.magnitude_penalty_weight <= 0 or self.elite_top_pct <= 0:
             return
 
-        sorted_pop = sorted(population, key=lambda ind: ind.fitness.values[0])
+        sorted_pop = sorted(population, key=lambda ind: ind.raw_loss)
         top_n = max(1, int(len(sorted_pop) * self.elite_top_pct))
         top_individuals = sorted_pop[:top_n]
 
         for ind in top_individuals:
             magnitude = sum(ind)
             penalty = magnitude * self.magnitude_penalty_weight
-            original_loss = ind.fitness.values[0]
-            ind.fitness.values = (original_loss + penalty,)
+            ind.fitness.values = (ind.raw_loss + penalty,)
+
+    @staticmethod
+    def _restore_raw_fitness(population):
+        """Restore fitness values to their raw (un-penalized) loss."""
+        for ind in population:
+            if hasattr(ind, "raw_loss"):
+                ind.fitness.values = (ind.raw_loss,)
 
     def optimize(
         self,
@@ -354,6 +373,7 @@ class GeneticAlgorithm:
                         if self.rng.random() < self.crossover_rate:
                             self.toolbox.mate(child1, child2)
                             del child1.fitness.values
+                            del child2.fitness.values
                             if hasattr(child1, "metrics"):
                                 del child1.metrics
                             if hasattr(child2, "metrics"):
@@ -396,17 +416,43 @@ class GeneticAlgorithm:
                             ind.fitness.values = (loss,)
                             ind.metrics = {}
 
-                # --- Deterministic crowding or standard elitism ---
-                if self.deterministic_crowding and num_immigrants == 0:
-                    # Preserve elites, then let offspring replace similar parents
-                    elites = tools.selBest(population, self.elitism)
-                    # Simple crowding: offspring compete with random population members
-                    # based on similarity, but we use standard elitism + offspring
-                    population = elites + offspring[: -self.elitism]
+                # --- Replacement: deterministic crowding or standard elitism ---
+                elites = tools.selBest(population, self.elitism)
+
+                if self.deterministic_crowding:
+                    # Similarity-based replacement: each offspring replaces the
+                    # most similar member of the *non-elite* population if it is
+                    # fitter, preserving niche diversity.
+                    remaining = [ind for ind in population if ind not in elites]
+                    for child in offspring:
+                        if not child.fitness.valid:
+                            continue
+                        if not remaining:
+                            break
+                        # Find the most similar individual in remaining (L2)
+                        child_arr = np.array(child, dtype=float)
+                        best_idx = 0
+                        best_dist = float("inf")
+                        for idx, parent in enumerate(remaining):
+                            dist = float(np.linalg.norm(child_arr - np.array(parent, dtype=float)))
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_idx = idx
+                        # Replace if child is fitter
+                        if child.fitness.values[0] < remaining[best_idx].fitness.values[0]:
+                            remaining[best_idx] = child
+                    population = elites + remaining
                 else:
-                    # Standard elitism + add immigrants to population
-                    combined = offspring + immigrants
-                    population = tools.selBest(population, self.elitism) + combined[: -self.elitism]
+                    # Standard elitism
+                    population = elites + offspring[: self.population_size - self.elitism]
+
+                # --- Inject immigrants by replacing worst individuals ---
+                if num_immigrants > 0 and immigrants:
+                    # Sort population by fitness (worst last), replace tail
+                    population.sort(key=lambda ind: ind.fitness.values[0])
+                    for i, imm in enumerate(immigrants):
+                        if imm.fitness.valid:
+                            population[-(i + 1)] = imm
 
                 # Ensure population size is maintained
                 population = population[: self.population_size]
@@ -422,7 +468,11 @@ class GeneticAlgorithm:
                             overall_best_ind.metrics = ind.metrics
 
                 # --- Apply magnitude penalty for elite re-ranking ---
+                # Penalty is used only for selection pressure within this gen;
+                # raw fitness is restored afterwards so it never accumulates.
                 self._apply_magnitude_penalty(population)
+                # ... (selection pressure happens implicitly in the next
+                #      tournament-select at top of loop)
 
                 # Stats (use raw losses for reporting)
                 current_best = float(min(raw_fits))
@@ -493,6 +543,9 @@ class GeneticAlgorithm:
                     generations_without_improvement = 0
                 else:
                     generations_without_improvement += 1
+
+                # Restore raw fitness so penalties never accumulate into next gen
+                self._restore_raw_fitness(population)
 
         # Ultimate best is solely on the main objective (raw loss, no magnitude penalty)
         if overall_best_ind is not None:

@@ -148,9 +148,10 @@ class TestMagnitudePenalty:
             magnitude_penalty_weight=0.01,
         )
         pop = []
+        # Use equal base losses for the top-2 so the penalty alone decides order
         for vals, loss in [
             ([10, 10, 10], 5.0),  # magnitude=30, in top 50%
-            ([1, 1, 1], 5.5),  # magnitude=3, in top 50%
+            ([1, 1, 1], 5.0),  # magnitude=3,  in top 50%, same raw loss
             ([20, 20, 20], 10.0),  # magnitude=60
             ([5, 5, 5], 15.0),  # magnitude=15
         ]:
@@ -160,14 +161,13 @@ class TestMagnitudePenalty:
 
         ga._apply_magnitude_penalty(pop)
 
-        # Top 50% = first 2 individuals (sorted by fitness)
-        # Individual with magnitude=30 gets penalty: 30 * 0.01 = 0.3
-        # Individual with magnitude=3 gets penalty: 3 * 0.01 = 0.03
-        # The one with fewer trips should have lower penalized fitness
-        top_two = sorted(pop[:2], key=lambda x: x.fitness.values[0])
-        assert top_two[0].fitness.values[0] < top_two[1].fitness.values[0] or sum(
-            top_two[0]
-        ) <= sum(top_two[1])
+        # Both elite individuals started at loss=5.0.
+        # After penalty:  ind0 -> 5.0 + 30*0.01 = 5.30
+        #                 ind1 -> 5.0 +  3*0.01 = 5.03
+        # The one with fewer trips must now have strictly lower penalized fitness.
+        penalized = sorted(pop[:2], key=lambda x: x.fitness.values[0])
+        assert sum(penalized[0]) < sum(penalized[1])
+        assert penalized[0].fitness.values[0] < penalized[1].fitness.values[0]
 
     def test_magnitude_penalty_disabled(self):
         ga = GeneticAlgorithm(
@@ -187,6 +187,30 @@ class TestMagnitudePenalty:
         new_fits = [ind.fitness.values[0] for ind in pop]
 
         assert original_fits == new_fits
+
+    def test_restore_raw_fitness(self):
+        """Restoring raw fitness undoes the magnitude penalty."""
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=2,
+            elite_top_pct=1.0,
+            magnitude_penalty_weight=0.1,
+        )
+        pop = []
+        for vals, loss in [([10, 10, 10], 5.0), ([1, 1, 1], 6.0)]:
+            ind = creator.Individual(vals)
+            ind.fitness.values = (loss,)
+            pop.append(ind)
+
+        ga._apply_magnitude_penalty(pop)
+        # Fitness should now include penalty
+        assert pop[0].fitness.values[0] > 5.0
+
+        ga._restore_raw_fitness(pop)
+        # Fitness should be back to raw values
+        assert pop[0].fitness.values[0] == 5.0
+        assert pop[1].fitness.values[0] == 6.0
 
 
 # ---------------------------------------------------------------------------
