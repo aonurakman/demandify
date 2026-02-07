@@ -447,16 +447,14 @@ class ReportGenerator:
         # Mark stagnation boost generations if available
         boosted_gens = [s["generation"] for s in generation_stats if s.get("mutation_boosted")]
         if boosted_gens:
-            for bg in boosted_gens:
-                ax1.axvline(x=bg, color="#f59e0b", alpha=0.3, linestyle="--")
-            # Add single legend entry for boost markers
-            ax1.axvline(
-                x=boosted_gens[0],
-                color="#f59e0b",
-                alpha=0.3,
-                linestyle="--",
-                label="Mutation Boost Active",
-            )
+            for i, bg in enumerate(boosted_gens):
+                ax1.axvline(
+                    x=bg,
+                    color="#f59e0b",
+                    alpha=0.3,
+                    linestyle="--",
+                    label="Mutation Boost Active" if i == 0 else None,
+                )
 
         # Combined legend
         lines1, labels1 = ax1.get_legend_handles_labels()

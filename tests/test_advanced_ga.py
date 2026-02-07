@@ -122,7 +122,7 @@ class TestImmigrants:
         imm = ga._create_immigrant()
         assert len(imm) == 20
         # All values should be within bounds
-        assert all(0 <= v <= 500 for v in imm)  # 10x upper bound
+        assert all(0 <= v <= 50 for v in imm)
 
     def test_immigrant_count_in_generation(self):
         """Verify correct number of immigrants based on rate."""

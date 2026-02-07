@@ -173,10 +173,9 @@ class GeneticAlgorithm:
         return float(np.std(fits))
 
     def _create_immigrant(self) -> list:
-        """Create a random immigrant individual capped by 10x initial magnitude."""
-        max_val = min(self.bounds[1], self.bounds[1] * 10)
+        """Create a random immigrant individual within bounds."""
         ind = creator.Individual(
-            [int(self.rng.randint(0, max_val + 1)) for _ in range(self.genome_size)]
+            [int(self.rng.randint(self.bounds[0], self.bounds[1] + 1)) for _ in range(self.genome_size)]
         )
         return ind
 
@@ -196,29 +195,6 @@ class GeneticAlgorithm:
             i2 = indexed[n - 1 - k][0]
             pairs.append((i1, i2))
         return pairs
-
-    def _deterministic_crowding_replace(self, parents, offspring_pair, idx1, idx2):
-        """Replace the most similar parent with each offspring (deterministic crowding)."""
-        p1 = np.array(parents[idx1], dtype=float)
-        p2 = np.array(parents[idx2], dtype=float)
-        c1 = np.array(offspring_pair[0], dtype=float)
-        c2 = np.array(offspring_pair[1], dtype=float)
-
-        # Distance-based assignment
-        if np.linalg.norm(c1 - p1) + np.linalg.norm(c2 - p2) <= (
-            np.linalg.norm(c1 - p2) + np.linalg.norm(c2 - p1)
-        ):
-            # c1 replaces p1, c2 replaces p2
-            if offspring_pair[0].fitness.values[0] < parents[idx1].fitness.values[0]:
-                parents[idx1] = offspring_pair[0]
-            if offspring_pair[1].fitness.values[0] < parents[idx2].fitness.values[0]:
-                parents[idx2] = offspring_pair[1]
-        else:
-            # c1 replaces p2, c2 replaces p1
-            if offspring_pair[0].fitness.values[0] < parents[idx2].fitness.values[0]:
-                parents[idx2] = offspring_pair[0]
-            if offspring_pair[1].fitness.values[0] < parents[idx1].fitness.values[0]:
-                parents[idx1] = offspring_pair[1]
 
     def _apply_magnitude_penalty(self, population):
         """Apply magnitude penalty: among top elite_top_pct, prefer fewer trips."""
@@ -421,21 +397,11 @@ class GeneticAlgorithm:
                             ind.metrics = {}
 
                 # --- Deterministic crowding or standard elitism ---
-                if self.deterministic_crowding and len(immigrants) == 0:
-                    # For standard offspring, apply deterministic crowding
-                    # Elites are preserved first
+                if self.deterministic_crowding and num_immigrants == 0:
+                    # Preserve elites, then let offspring replace similar parents
                     elites = tools.selBest(population, self.elitism)
-                    # Crowding on the rest
-                    if self.assortative_mating:
-                        pairs = self._assortative_mate_pairs(offspring)
-                        for i1, i2 in pairs:
-                            if offspring[i1].fitness.valid and offspring[i2].fitness.valid:
-                                self._deterministic_crowding_replace(
-                                    population,
-                                    (offspring[i1], offspring[i2]),
-                                    i1 % len(population),
-                                    i2 % len(population),
-                                )
+                    # Simple crowding: offspring compete with random population members
+                    # based on similarity, but we use standard elitism + offspring
                     population = elites + offspring[: -self.elitism]
                 else:
                     # Standard elitism + add immigrants to population
@@ -445,12 +411,8 @@ class GeneticAlgorithm:
                 # Ensure population size is maintained
                 population = population[: self.population_size]
 
-                # --- Apply magnitude penalty for elite re-ranking ---
-                # Store raw losses before penalty for tracking
+                # --- Track overall best on RAW loss (before magnitude penalty) ---
                 raw_fits = [ind.fitness.values[0] for ind in population]
-                self._apply_magnitude_penalty(population)
-
-                # --- Track overall best on RAW loss (no magnitude penalty) ---
                 for ind, raw_loss in zip(population, raw_fits):
                     if raw_loss < overall_best_loss:
                         overall_best_loss = raw_loss
@@ -458,6 +420,9 @@ class GeneticAlgorithm:
                         overall_best_ind.fitness.values = (raw_loss,)
                         if hasattr(ind, "metrics"):
                             overall_best_ind.metrics = ind.metrics
+
+                # --- Apply magnitude penalty for elite re-ranking ---
+                self._apply_magnitude_penalty(population)
 
                 # Stats (use raw losses for reporting)
                 current_best = float(min(raw_fits))
