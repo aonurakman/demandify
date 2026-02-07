@@ -101,23 +101,41 @@ def test_log_capping_prevents_unbounded_growth(run_entry):
     """Logs should be capped at MAX_LOG_ENTRIES to prevent memory issues."""
     from demandify.web.routes import MAX_LOG_ENTRIES
 
-    # Create a run with many log entries
-    initial_logs = [{"message": f"Log {i}", "level": "info"} for i in range(MAX_LOG_ENTRIES + 100)]
+    # Create a run with more logs than the cap
+    num_logs = MAX_LOG_ENTRIES + 100
+    initial_logs = [{"message": f"Log {i}", "level": "info"} for i in range(num_logs)]
     run_id = run_entry("test-log-cap", "running", 5, "Calibrating", initial_logs)
 
-    # Simulate adding more logs as the progress endpoint does
+    # Get the run data
     run = active_runs[run_id]
+    
+    # The initial logs should already exceed MAX_LOG_ENTRIES
+    assert len(run["progress"]["logs"]) == num_logs
+    
+    # Simulate what _do_update does: append a log and cap
     logs = run["progress"]["logs"]
     logs.append({"message": "New log entry", "level": "info"})
-
-    # Cap logs
+    
+    # Apply the capping logic used in routes.py
     if len(logs) > MAX_LOG_ENTRIES:
         run["progress"]["logs"] = logs[-MAX_LOG_ENTRIES:]
 
-    # Verify logs are capped
+    # Verify logs are capped at MAX_LOG_ENTRIES
     assert len(run["progress"]["logs"]) == MAX_LOG_ENTRIES
+    
     # Verify the newest log is still there
     assert run["progress"]["logs"][-1]["message"] == "New log entry"
-    # Verify oldest logs were removed
+    
+    # Verify boundary: oldest logs were removed
+    # With 600 initial logs + 1 new = 601 total, we keep last 500
+    # So logs 0-100 should be removed, logs 101-600 should remain
     assert "Log 0" not in [log["message"] for log in run["progress"]["logs"]]
+    assert "Log 100" not in [log["message"] for log in run["progress"]["logs"]]
+    assert "Log 101" in [log["message"] for log in run["progress"]["logs"]]
+    
+    # Verify we kept the most recent entries
+    log_messages = [log["message"] for log in run["progress"]["logs"]]
+    # Should have logs 101-599 (499 entries) plus "New log entry" = 500 total
+    assert f"Log {num_logs - 1}" in log_messages  # Last of initial logs
+
 
