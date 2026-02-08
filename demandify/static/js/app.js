@@ -388,6 +388,11 @@ function initEventListeners() {
         document.getElementById('run-btn').disabled = true;
 
         const formData = new FormData(runForm);
+        // Handle boolean checkboxes: set to true/false explicitly
+        ['ga_assortative_mating', 'ga_deterministic_crowding'].forEach(function(name) {
+            var cb = document.getElementById(name);
+            if (cb) formData.set(name, cb.checked ? 'true' : 'false');
+        });
         // Ensure we use the SAME run_id
         formData.set('run_id', pendingRunId);
 

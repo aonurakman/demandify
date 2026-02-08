@@ -392,6 +392,95 @@
                                                 min="0" max="1">
                                         </div>
                                     </div>
+                                    <div class="row mb-0 border-top pt-2">
+                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Advanced GA
+                                                Dynamics</small></div>
+                                        <div class="col-6 mb-2">
+                                            <label for="ga_immigrant_rate" class="form-label small">
+                                                Immigrants %
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Fraction of random individuals injected per generation to maintain diversity (0-1).">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_immigrant_rate" name="ga_immigrant_rate" value="0.03" step="0.01"
+                                                min="0" max="0.5">
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <label for="ga_elite_top_pct" class="form-label small">
+                                                Elite Top %
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Top percentage of individuals for secondary sorting by magnitude (fewer trips preferred).">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_elite_top_pct" name="ga_elite_top_pct" value="0.1" step="0.05"
+                                                min="0" max="1">
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <label for="ga_magnitude_penalty_weight" class="form-label small">
+                                                Magnitude Penalty
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Weight for penalizing excessive trip counts. Higher = stronger preference for fewer trips.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_magnitude_penalty_weight" name="ga_magnitude_penalty_weight" value="0.001" step="0.001"
+                                                min="0" max="1">
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <label for="ga_stagnation_patience" class="form-label small">
+                                                Stagnation K
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Generations without improvement before mutation is boosted.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_stagnation_patience" name="ga_stagnation_patience" value="20" min="1">
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <label for="ga_stagnation_boost" class="form-label small">
+                                                Stagnation Boost
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Multiplier for mutation sigma and rate when stagnation is detected.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_stagnation_boost" name="ga_stagnation_boost" value="1.5" step="0.1"
+                                                min="1" max="5">
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <div class="form-check mt-3">
+                                                <input class="form-check-input" type="checkbox" id="ga_assortative_mating"
+                                                    name="ga_assortative_mating" checked>
+                                                <label class="form-check-label small" for="ga_assortative_mating">
+                                                    Assortative Mating
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Prefer crossover between dissimilar parents to promote diversity.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <div class="form-check mt-3">
+                                                <input class="form-check-input" type="checkbox" id="ga_deterministic_crowding"
+                                                    name="ga_deterministic_crowding" checked>
+                                                <label class="form-check-label small" for="ga_deterministic_crowding">
+                                                    Deterministic Crowding
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Offspring replace the most similar parent, maintaining population diversity.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                     </div>
