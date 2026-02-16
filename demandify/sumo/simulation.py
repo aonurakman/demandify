@@ -376,14 +376,33 @@ class SUMOSimulation:
         try:
             tree = ET.parse(stat_file)
             root = tree.getroot()
+            veh = None
+            teleports_elem = None
+            for child in root:
+                tag_name = child.tag.split('}')[-1]  # tolerate optional XML namespace
+                if tag_name == 'vehicles':
+                    veh = child
+                elif tag_name == 'teleports':
+                    teleports_elem = child
+
+            # Vehicle counts:
             # <vehicles loaded="1500" inserted="1450" running="1300" waiting="50" teleports="0"/>
-            veh = root.find('vehicles')
             if veh is not None:
                 stats['loaded'] = int(veh.get('loaded', 0))
                 stats['inserted'] = int(veh.get('inserted', 0))
                 stats['running'] = int(veh.get('running', 0))
                 stats['waiting'] = int(veh.get('waiting', 0))
-                stats['teleports'] = int(veh.get('teleports', 0))
+
+                # Older SUMO versions may provide teleports here.
+                legacy_teleports = veh.get('teleports')
+                if legacy_teleports is not None:
+                    stats['teleports'] = int(legacy_teleports)
+
+            # SUMO 1.26+ reports teleports in a dedicated element:
+            # <teleports total="120" jam="..." yield="..." wrongLane="..."/>
+            if teleports_elem is not None:
+                stats['teleports'] = int(teleports_elem.get('total', 0))
+
             return stats
         except Exception as e:
             logger.debug(f"Failed to parse statistics: {e}")

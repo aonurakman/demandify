@@ -22,7 +22,12 @@ from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.simulation import SUMOSimulation
 from demandify.calibration.objective import EdgeSpeedObjective
 from demandify.calibration.optimizer import GeneticAlgorithm
-from demandify.calibration.worker import run_simulation_worker, SimulationConfig, evaluate_for_ga
+from demandify.calibration.worker import (
+    run_simulation_worker,
+    SimulationConfig,
+    evaluate_for_ga,
+    _stable_seed,
+)
 from functools import partial
 from demandify.cache.manager import CacheManager
 from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key, matching_key
@@ -336,7 +341,14 @@ class CalibrationPipeline:
         self._report_progress(
             8, "Exporting Results", "Running final simulation and generating reports..."
         )
-        simulated_speeds = self._run_final_simulation(network_file, trips_file)
+        # Use the same seed policy as GA evaluation for the selected genome.
+        final_sim_seed = int(_stable_seed(np.asarray(best_genome), self.seed))
+        logger.info(f"Final simulation seed (genome-aligned): {final_sim_seed}")
+        simulated_speeds = self._run_final_simulation(
+            network_file,
+            trips_file,
+            simulation_seed=final_sim_seed,
+        )
 
         # Calculate final metrics
         if len(observed_edges) > 0:
@@ -376,6 +388,7 @@ class CalibrationPipeline:
             loss_history,
             quality_metrics,
             generation_stats,
+            final_sim_seed=final_sim_seed,
         )
 
         # Note: With dynamic routing, we don't generate routes.rou.xml
@@ -748,15 +761,21 @@ class CalibrationPipeline:
 
         return demand_csv, trips_file
 
-    def _run_final_simulation(self, network_file: Path, trips_file: Path) -> Dict[str, float]:
+    def _run_final_simulation(
+        self,
+        network_file: Path,
+        trips_file: Path,
+        simulation_seed: Optional[int] = None,
+    ) -> Dict[str, float]:
         """Run final simulation to get edge speeds with dynamic routing."""
+        seed_to_use = self.seed if simulation_seed is None else int(simulation_seed)
         sim = SUMOSimulation(
             network_file,
             trips_file,  # Pass trips.xml
             step_length=self.step_length,
             warmup_time=self.warmup_minutes * 60,
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
-            seed=self.seed,
+            seed=seed_to_use,
             use_dynamic_routing=True,
         )
 
@@ -781,6 +800,7 @@ class CalibrationPipeline:
         loss_history: List[float],
         quality_metrics: Dict,
         generation_stats: Optional[List[Dict[str, Any]]] = None,
+        final_sim_seed: Optional[int] = None,
     ) -> Dict:
         """Export scenario and generate report with comprehensive metadata."""
         # Comprehensive metadata per user request
@@ -794,6 +814,7 @@ class CalibrationPipeline:
                     "north": self.bbox[3],
                 },
                 "seed": self.seed,
+                "sumo_seed": final_sim_seed if final_sim_seed is not None else self.seed,
                 "routing_mode": "dynamic",  # NEW: Indicate dynamic routing
             },
             "simulation_config": {

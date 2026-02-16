@@ -202,13 +202,12 @@ class GeneticAlgorithm:
     def _apply_magnitude_penalty(self, population):
         """Apply magnitude penalty: among top elite_top_pct, prefer fewer trips.
 
-        Stores raw loss as ``ind.raw_loss`` so that the penalty never accumulates
-        across generations.  After selection / stats the caller can restore fitness
-        via ``_restore_raw_fitness``.
+        Stores current raw loss as ``ind.raw_loss`` for every valid individual.
+        This is refreshed on each call to avoid stale values after cloning/mutation.
         """
-        # Always store the current (raw) loss before any penalty
+        # Always refresh the current (raw) loss before any penalty.
         for ind in population:
-            if not hasattr(ind, "raw_loss"):
+            if ind.fitness.valid:
                 ind.raw_loss = ind.fitness.values[0]
 
         if self.magnitude_penalty_weight <= 0 or self.elite_top_pct <= 0:
@@ -229,6 +228,16 @@ class GeneticAlgorithm:
         for ind in population:
             if hasattr(ind, "raw_loss"):
                 ind.fitness.values = (ind.raw_loss,)
+
+    @staticmethod
+    def _invalidate_individual(individual):
+        """Invalidate fitness and clear derived attributes after variation."""
+        if individual.fitness.valid:
+            del individual.fitness.values
+        if hasattr(individual, "metrics"):
+            del individual.metrics
+        if hasattr(individual, "raw_loss"):
+            del individual.raw_loss
 
     def optimize(
         self,
@@ -352,9 +361,17 @@ class GeneticAlgorithm:
                     indpb=self.mutation_indpb,
                 )
 
-                # Select
+                # Apply a temporary magnitude re-ranking before parent selection.
+                # This only affects mate selection pressure for this generation.
+                self._apply_magnitude_penalty(population)
+
+                # Select (using temporarily penalized fitness)
                 offspring = self.toolbox.select(population, len(population))
                 offspring = list(map(self.toolbox.clone, offspring))
+
+                # Return both parent and cloned offspring fitness to raw values.
+                self._restore_raw_fitness(population)
+                self._restore_raw_fitness(offspring)
 
                 # --- Crossover (with optional assortative mating) ---
                 if self.assortative_mating:
@@ -362,30 +379,20 @@ class GeneticAlgorithm:
                     for i1, i2 in pairs:
                         if self.rng.random() < self.crossover_rate:
                             self.toolbox.mate(offspring[i1], offspring[i2])
-                            del offspring[i1].fitness.values
-                            del offspring[i2].fitness.values
-                            if hasattr(offspring[i1], "metrics"):
-                                del offspring[i1].metrics
-                            if hasattr(offspring[i2], "metrics"):
-                                del offspring[i2].metrics
+                            self._invalidate_individual(offspring[i1])
+                            self._invalidate_individual(offspring[i2])
                 else:
                     for child1, child2 in zip(offspring[::2], offspring[1::2]):
                         if self.rng.random() < self.crossover_rate:
                             self.toolbox.mate(child1, child2)
-                            del child1.fitness.values
-                            del child2.fitness.values
-                            if hasattr(child1, "metrics"):
-                                del child1.metrics
-                            if hasattr(child2, "metrics"):
-                                del child2.metrics
+                            self._invalidate_individual(child1)
+                            self._invalidate_individual(child2)
 
                 # Mutation
                 for mutant in offspring:
                     if self.rng.random() < self.mutation_rate:
                         self.toolbox.mutate(mutant)
-                        del mutant.fitness.values
-                        if hasattr(mutant, "metrics"):
-                            del mutant.metrics
+                        self._invalidate_individual(mutant)
 
                 # Identify invalid (new) individuals
                 invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
@@ -467,13 +474,6 @@ class GeneticAlgorithm:
                         if hasattr(ind, "metrics"):
                             overall_best_ind.metrics = ind.metrics
 
-                # --- Apply magnitude penalty for elite re-ranking ---
-                # Penalty is used only for selection pressure within this gen;
-                # raw fitness is restored afterwards so it never accumulates.
-                self._apply_magnitude_penalty(population)
-                # ... (selection pressure happens implicitly in the next
-                #      tournament-select at top of loop)
-
                 # Stats (use raw losses for reporting)
                 current_best = float(min(raw_fits))
                 current_mean = float(np.mean(raw_fits))
@@ -543,9 +543,6 @@ class GeneticAlgorithm:
                     generations_without_improvement = 0
                 else:
                     generations_without_improvement += 1
-
-                # Restore raw fitness so penalties never accumulate into next gen
-                self._restore_raw_fitness(population)
 
         # Ultimate best is solely on the main objective (raw loss, no magnitude penalty)
         if overall_best_ind is not None:

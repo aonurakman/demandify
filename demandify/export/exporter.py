@@ -74,8 +74,10 @@ class ScenarioExporter:
         # We prefer to put it alongside the network file (usually in sumo/)
         sumocfg_path = final_net.parent / "scenario.sumocfg"
         
-        # Get seed from metadata for deterministic routing
-        seed = run_metadata.get('run_info', {}).get('seed', 42)
+        # Get deterministic routing seed from metadata.
+        # Prefer SUMO seed used for final evaluation when available.
+        run_info = run_metadata.get('run_info', {})
+        seed = run_info.get('sumo_seed', run_info.get('seed', 42))
         
         # Generate sumocfg with dynamic routing configuration
         self._create_sumocfg(

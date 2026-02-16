@@ -212,6 +212,41 @@ class TestMagnitudePenalty:
         assert pop[0].fitness.values[0] == 5.0
         assert pop[1].fitness.values[0] == 6.0
 
+    def test_magnitude_penalty_refreshes_raw_loss_each_call(self):
+        """raw_loss should be refreshed to current fitness on every penalty call."""
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=1,
+            elite_top_pct=1.0,
+            magnitude_penalty_weight=0.1,
+        )
+        ind = creator.Individual([1, 1, 1])
+        ind.fitness.values = (10.0,)
+
+        ga._apply_magnitude_penalty([ind])
+        assert ind.raw_loss == 10.0
+        assert ind.fitness.values[0] == 10.3
+
+        # Simulate a new raw evaluation in a later generation.
+        ind.fitness.values = (2.0,)
+        ga._apply_magnitude_penalty([ind])
+        assert ind.raw_loss == 2.0
+        assert ind.fitness.values[0] == 2.3
+
+    def test_invalidate_individual_clears_stale_attrs(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=1)
+        ind = creator.Individual([1, 2, 3])
+        ind.fitness.values = (5.0,)
+        ind.metrics = {"routing_failures": 1}
+        ind.raw_loss = 5.0
+
+        ga._invalidate_individual(ind)
+
+        assert not ind.fitness.valid
+        assert not hasattr(ind, "metrics")
+        assert not hasattr(ind, "raw_loss")
+
 
 # ---------------------------------------------------------------------------
 # Assortative mating
