@@ -22,7 +22,7 @@ The result? A ready-to-run SUMO scenario in agent-level precision that allows yo
 - 🌍 **Real-world calibration**: Uses TomTom Traffic Flow API for live congestion data
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
-- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (magnitude penalty, immigrants, assortative mating, adaptive mutation boost)
+- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (feasible-elite parent selection, immigrants, assortative mating, adaptive mutation boost)
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
@@ -146,14 +146,14 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--immigrant-rate` | Float | 0.03 | Fraction of random individuals injected per generation (0–1) |
-| `--elite-top-pct` | Float | 0.1 | Top % of individuals for secondary sorting by magnitude (0–1) |
-| `--magnitude-penalty` | Float | 0.001 | Weight for penalizing excessive trip counts (higher = fewer trips preferred) |
+| `--elite-top-pct` | Float | 0.1 | Defines feasible elite size per generation: `n=max(1, elite_top_pct * population)` |
+| `--magnitude-penalty` | Float | 0.001 | Weight for magnitude in feasible-elite parent ranking (`weight*magnitude + E-rank term`) |
 | `--stagnation-patience` | Int | 20 | Generations without improvement before mutation boost activates |
 | `--stagnation-boost` | Float | 1.5 | Multiplier for mutation sigma and rate during stagnation |
 | `--no-assortative-mating` | Flag | off | Disable assortative mating (dissimilar parent pairing, on by default) |
 | `--no-deterministic-crowding` | Flag | off | Disable deterministic crowding (diversity-preserving replacement, on by default) |
 
-All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable individual features by passing the corresponding `--no-*` flag, or set weights to `0` to turn off penalties.
+All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable individual features by passing the corresponding `--no-*` flag, or set `--magnitude-penalty 0` to remove magnitude pressure inside feasible-elite ranking.
 
 ## How It Works
 
@@ -172,11 +172,13 @@ demandify follows an 8-stage pipeline:
 
 The genetic algorithm includes several mechanisms to avoid common pitfalls like local optima stagnation and trip count explosion:
 
-- **Magnitude penalty**: Among the top-performing individuals (configurable `elite_top_pct`), solutions with fewer total trips are preferred at comparable loss. The final output is always selected on the raw objective only (no penalty applied to the ultimate best).
+- **Feasible-elite parent selection (with fallback)**: Individuals are first ordered by flow-fit error `E`, then filtered by feasibility (`fail_total = routing_failures + teleports`). If enough feasible candidates exist (`>= n` from `elite_top_pct`), parent tournaments are run only on that feasible elite slice using `magnitude_penalty_weight * magnitude + E-rank term`. If not, selection temporarily falls back to full-population tournaments on `E + reliability_penalty`. This fallback auto-stops once enough feasible individuals are present.
 - **Random immigrants**: A small fraction of completely random individuals is injected each generation to maintain genetic diversity and escape local optima.
 - **Assortative mating**: Parents are paired by dissimilarity (by genome magnitude) for crossover, promoting exploration of the search space.
 - **Deterministic crowding**: Offspring compete with similar parents for population slots, preserving niche diversity.
 - **Adaptive mutation boost**: If the best fitness stagnates for K generations, mutation sigma and rate are temporarily increased by a configurable multiplier. They reset automatically when improvement resumes.
+
+The final return policy is **feasible-first**: if any feasible individual appears during the run, demandify returns the best feasible one by `E`; otherwise it returns the best raw objective and logs a warning.
 
 The calibration report includes plots for **genotypic diversity** (mean pairwise L2 distance) and **phenotypic diversity** (σ of fitness values) across generations, along with markers indicating when mutation boost was active.
 

@@ -3,12 +3,11 @@ Genetic algorithm for demand calibration.
 Fully seeded for reproducibility with parallel evaluation.
 
 Advanced features:
-- Magnitude penalty: penalize excessive trip counts among top individuals
+- Feasible-elite parent selection with fallback (E -> feasibility -> magnitude)
 - Random immigrants: inject random individuals each generation to maintain diversity
 - Assortative mating: prefer crossover between dissimilar parents
 - Deterministic crowding: offspring replace most similar parents
 - Adaptive mutation boost: increase mutation on stagnation
-- Elite re-ranking: secondary sort top x% by magnitude (fewer trips preferred)
 - Diversity tracking: genotypic (L2) and phenotypic diversity per generation
 """
 
@@ -64,8 +63,8 @@ class GeneticAlgorithm:
             mutation_indpb: Mutation probability (per gene)
             num_workers: Number of parallel workers (None = cpu_count)
             immigrant_rate: Fraction of population replaced by random immigrants (0-1)
-            elite_top_pct: Top percentage for secondary sorting by magnitude (0-1)
-            magnitude_penalty_weight: Weight for magnitude penalty in fitness
+            elite_top_pct: Fraction used to define feasible elite slice size (0-1)
+            magnitude_penalty_weight: Weight for magnitude term in elite parent ranking
             stagnation_patience: Generations without improvement before mutation boost
             stagnation_boost: Multiplier for mutation sigma/rate on stagnation
             assortative_mating: Prefer crossover between dissimilar parents
@@ -97,6 +96,10 @@ class GeneticAlgorithm:
         self._base_mutation_sigma = mutation_sigma
         self._base_mutation_rate = mutation_rate
         self._mutation_boosted = False
+        self.last_best_selection_mode = None
+        self.last_best_selection_value = None
+        self.last_best_raw_loss = None
+        self.last_best_feasible_e_loss = None
 
         # Seeded RNG
         self.rng = np.random.RandomState(seed)
@@ -136,14 +139,6 @@ class GeneticAlgorithm:
         )
 
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
-
-    def _make_evaluator(self, evaluate_func):
-        """Create a picklable evaluator wrapper."""
-
-        def evaluator(individual):
-            return (evaluate_func(np.array(individual)),)
-
-        return evaluator
 
     def _compute_genotypic_diversity(self, population) -> float:
         """Compute mean pairwise L2 distance across the population."""
@@ -199,35 +194,240 @@ class GeneticAlgorithm:
             pairs.append((i1, i2))
         return pairs
 
-    def _apply_magnitude_penalty(self, population):
-        """Apply magnitude penalty: among top elite_top_pct, prefer fewer trips.
-
-        Stores current raw loss as ``ind.raw_loss`` for every valid individual.
-        This is refreshed on each call to avoid stale values after cloning/mutation.
-        """
-        # Always refresh the current (raw) loss before any penalty.
-        for ind in population:
-            if ind.fitness.valid:
-                ind.raw_loss = ind.fitness.values[0]
-
-        if self.magnitude_penalty_weight <= 0 or self.elite_top_pct <= 0:
-            return
-
-        sorted_pop = sorted(population, key=lambda ind: ind.raw_loss)
-        top_n = max(1, int(len(sorted_pop) * self.elite_top_pct))
-        top_individuals = sorted_pop[:top_n]
-
-        for ind in top_individuals:
-            magnitude = sum(ind)
-            penalty = magnitude * self.magnitude_penalty_weight
-            ind.fitness.values = (ind.raw_loss + penalty,)
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Parse numeric value with fallback."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
 
     @staticmethod
-    def _restore_raw_fitness(population):
-        """Restore fitness values to their raw (un-penalized) loss."""
+    def _safe_int(value: Any, default: int = 0) -> int:
+        """Parse integer value with fallback."""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    @staticmethod
+    def _has_worker_error(individual) -> bool:
+        """Return True when worker reported an explicit evaluation failure."""
+        metrics = getattr(individual, "metrics", {}) or {}
+        if bool(metrics.get("worker_error", False)):
+            return True
+        return bool(metrics.get("error"))
+
+    def _individual_e_loss(self, individual) -> float:
+        """Get flow-fit error E for an individual (fallback to fitness)."""
+        if self._has_worker_error(individual):
+            return float("inf")
+        metrics = getattr(individual, "metrics", {}) or {}
+        e_loss = metrics.get("e_loss")
+        if e_loss is None:
+            if individual.fitness.valid:
+                return self._safe_float(individual.fitness.values[0], default=float("inf"))
+            return float("inf")
+        return self._safe_float(e_loss, default=float("inf"))
+
+    def _individual_fail_total(self, individual) -> int:
+        """Get fail_total (routing failures + teleports) with backward-compatible fallback."""
+        metrics = getattr(individual, "metrics", {}) or {}
+
+        fail_total = metrics.get("fail_total")
+        if fail_total is not None:
+            return self._safe_int(fail_total, default=0)
+
+        routing_raw = metrics.get("routing_failures")
+        teleports_raw = metrics.get("teleports")
+        routing_failures = self._safe_int(routing_raw, default=0)
+        teleports = self._safe_int(teleports_raw, default=0)
+        fallback_total = routing_failures + teleports
+        if fallback_total == 0 and routing_raw is None and teleports_raw is None and self._has_worker_error(individual):
+            return 1
+        return fallback_total
+
+    def _is_feasible_individual(self, individual) -> bool:
+        """
+        Strict feasibility predicate used by parent selection and best tracking.
+
+        Feasible requires:
+            - valid finite fitness
+            - no explicit worker error marker
+            - fail_total == 0 (with backward-compatible fallback)
+        """
+        if not individual.fitness.valid:
+            return False
+        raw_fitness = self._safe_float(individual.fitness.values[0], default=float("inf"))
+        if not np.isfinite(raw_fitness):
+            return False
+        if self._has_worker_error(individual):
+            return False
+        return self._individual_fail_total(individual) == 0
+
+    def _individual_reliability_penalty(self, individual) -> float:
+        """Get reliability penalty with fallback to (fitness - e_loss)."""
+        if self._has_worker_error(individual):
+            return float("inf")
+        metrics = getattr(individual, "metrics", {}) or {}
+        penalty = metrics.get("reliability_penalty")
+        if penalty is not None:
+            return self._safe_float(penalty, default=0.0)
+
+        if not individual.fitness.valid:
+            return 0.0
+
+        raw_loss = self._safe_float(individual.fitness.values[0], default=float("inf"))
+        e_loss = self._individual_e_loss(individual)
+        if np.isfinite(raw_loss) and np.isfinite(e_loss):
+            return max(0.0, raw_loss - e_loss)
+        return 0.0
+
+    def _build_parent_selection_plan(self, population) -> Dict[str, Any]:
+        """
+        Build a per-generation parent-selection plan.
+
+        Priority:
+            1) E (ascending)
+            2) Feasibility (fail_total == 0)
+            3) Magnitude among feasible elites
+        """
+        pop_size = len(population)
+        if pop_size == 0:
+            return {
+                "mode": "empty",
+                "candidate_pool": [],
+                "score_by_id": {},
+                "population_size": 0,
+                "elite_count": 0,
+                "feasible_count": 0,
+            }
+
+        elite_count = max(1, int(self.elite_top_pct * pop_size))
+        e_sorted = sorted(population, key=self._individual_e_loss)
+        feasible_sorted = [ind for ind in e_sorted if self._is_feasible_individual(ind)]
+        feasible_count = len(feasible_sorted)
+
+        score_by_id: Dict[int, float] = {}
+
+        if feasible_count >= elite_count:
+            denominator = max(1, pop_size - 1)
+            e_rank_by_id = {id(ind): idx for idx, ind in enumerate(e_sorted)}
+            elite_slice = feasible_sorted[:elite_count]
+            for ind in elite_slice:
+                magnitude = float(sum(ind))
+                e_rank_idx = e_rank_by_id[id(ind)]
+                rank_term = e_rank_idx / denominator
+                score_by_id[id(ind)] = (self.magnitude_penalty_weight * magnitude) + rank_term
+
+            return {
+                "mode": "feasible_elite",
+                "candidate_pool": elite_slice,
+                "score_by_id": score_by_id,
+                "population_size": pop_size,
+                "elite_count": elite_count,
+                "feasible_count": feasible_count,
+            }
+
+        for ind in e_sorted:
+            e_loss = self._individual_e_loss(ind)
+            reliability_penalty = self._individual_reliability_penalty(ind)
+            score_by_id[id(ind)] = e_loss + reliability_penalty
+
+        return {
+            "mode": "fallback",
+            "candidate_pool": e_sorted,
+            "score_by_id": score_by_id,
+            "population_size": pop_size,
+            "elite_count": elite_count,
+            "feasible_count": feasible_count,
+        }
+
+    def _tournament_select_by_score(self, candidates, score_by_id, k, tournsize: int = 3):
+        """Tournament selection minimizing explicit score (without mutating fitness)."""
+        if not candidates:
+            return []
+
+        tournsize = max(1, min(int(tournsize), len(candidates)))
+        selected = []
+        for _ in range(k):
+            aspirants = [candidates[int(self.rng.randint(0, len(candidates)))] for _ in range(tournsize)]
+            winner = min(aspirants, key=lambda ind: score_by_id.get(id(ind), float("inf")))
+            selected.append(winner)
+        return selected
+
+    def _select_parents(self, population, tournsize: int = 3):
+        """Select parents using feasible-elite mode or fallback mode for this generation."""
+        plan = self._build_parent_selection_plan(population)
+        parents = self._tournament_select_by_score(
+            plan["candidate_pool"],
+            plan["score_by_id"],
+            len(population),
+            tournsize=tournsize,
+        )
+        return parents, plan
+
+    def _clone_individual_snapshot(self, individual):
+        """Clone an individual with stable fitness/metrics snapshot."""
+        cloned = self.toolbox.clone(individual)
+        if individual.fitness.valid:
+            cloned.fitness.values = (float(individual.fitness.values[0]),)
+        if hasattr(individual, "metrics"):
+            cloned.metrics = dict(individual.metrics)
+        return cloned
+
+    def _update_best_trackers(
+        self,
+        population,
+        overall_best_ind,
+        overall_best_loss: float,
+        overall_best_feasible_ind,
+        overall_best_feasible_e: float,
+    ):
+        """Update best raw and best feasible trackers from a population snapshot."""
         for ind in population:
-            if hasattr(ind, "raw_loss"):
-                ind.fitness.values = (ind.raw_loss,)
+            if not ind.fitness.valid:
+                continue
+
+            raw_loss = self._safe_float(ind.fitness.values[0], default=float("inf"))
+            if raw_loss < overall_best_loss:
+                overall_best_loss = raw_loss
+                overall_best_ind = self._clone_individual_snapshot(ind)
+
+            e_loss = self._individual_e_loss(ind)
+            if self._is_feasible_individual(ind) and e_loss < overall_best_feasible_e:
+                overall_best_feasible_e = e_loss
+                overall_best_feasible_ind = self._clone_individual_snapshot(ind)
+
+        return (
+            overall_best_ind,
+            overall_best_loss,
+            overall_best_feasible_ind,
+            overall_best_feasible_e,
+        )
+
+    @staticmethod
+    def _resolve_return_best(
+        population,
+        overall_best_ind,
+        overall_best_loss: float,
+        overall_best_feasible_ind,
+        overall_best_feasible_e: float,
+    ):
+        """
+        Resolve final best individual with feasible-first policy.
+
+        Returns:
+            (best_individual, best_loss, mode) where mode is "feasible" or "raw".
+        """
+        if overall_best_feasible_ind is not None:
+            return overall_best_feasible_ind, float(overall_best_feasible_e), "feasible"
+
+        if overall_best_ind is not None:
+            return overall_best_ind, float(overall_best_loss), "raw"
+
+        best_ind = tools.selBest(population, 1)[0]
+        return best_ind, float(best_ind.fitness.values[0]), "raw"
 
     @staticmethod
     def _invalidate_individual(individual):
@@ -236,8 +436,6 @@ class GeneticAlgorithm:
             del individual.fitness.values
         if hasattr(individual, "metrics"):
             del individual.metrics
-        if hasattr(individual, "raw_loss"):
-            del individual.raw_loss
 
     def optimize(
         self,
@@ -264,16 +462,9 @@ class GeneticAlgorithm:
         )
         logger.info(
             f"Advanced GA: immigrants={self.immigrant_rate:.0%}, elite_top={self.elite_top_pct:.0%}, "
-            f"mag_penalty={self.magnitude_penalty_weight}, stagnation_K={self.stagnation_patience}, "
+            f"elite_mag_weight={self.magnitude_penalty_weight}, stagnation_K={self.stagnation_patience}, "
             f"assortative={self.assortative_mating}, crowding={self.deterministic_crowding}"
         )
-
-        # Helper to unpack single-element tuple return from evaluate if needed
-        # But evaluate_func is expected to return float
-        def fitness_wrapper(ind):
-            return (evaluate_func(np.array(ind)),)
-
-        self.toolbox.register("evaluate", fitness_wrapper)
 
         # Genetic operators
         self.toolbox.register("mate", tools.cxTwoPoint)
@@ -284,7 +475,6 @@ class GeneticAlgorithm:
             sigma=self.mutation_sigma,
             indpb=self.mutation_indpb,
         )
-        self.toolbox.register("select", tools.selTournament, tournsize=3)
 
         # Create population
         population = self.toolbox.population(n=self.population_size)
@@ -297,6 +487,10 @@ class GeneticAlgorithm:
         # Track the actual best individual across all generations (on raw loss only)
         overall_best_ind = None
         overall_best_loss = float("inf")
+        # Track best feasible individual across all generations (fail_total == 0), ranked by E.
+        overall_best_feasible_ind = None
+        overall_best_feasible_e = float("inf")
+        selection_mode_prev = None
 
         # Context manager for Pool ensures cleanup
         # We use map_async or imap for better control
@@ -331,6 +525,19 @@ class GeneticAlgorithm:
                     ind.fitness.values = (loss,)
                     ind.metrics = {}
 
+            (
+                overall_best_ind,
+                overall_best_loss,
+                overall_best_feasible_ind,
+                overall_best_feasible_e,
+            ) = self._update_best_trackers(
+                population,
+                overall_best_ind,
+                overall_best_loss,
+                overall_best_feasible_ind,
+                overall_best_feasible_e,
+            )
+
             # Evolution loop
             for gen in range(self.num_generations):
                 # --- Adaptive mutation boost on stagnation ---
@@ -361,17 +568,26 @@ class GeneticAlgorithm:
                     indpb=self.mutation_indpb,
                 )
 
-                # Apply a temporary magnitude re-ranking before parent selection.
-                # This only affects mate selection pressure for this generation.
-                self._apply_magnitude_penalty(population)
-
-                # Select (using temporarily penalized fitness)
-                offspring = self.toolbox.select(population, len(population))
+                # Parent selection uses feasible-elite mode with per-generation fallback.
+                offspring, selection_plan = self._select_parents(population, tournsize=3)
                 offspring = list(map(self.toolbox.clone, offspring))
 
-                # Return both parent and cloned offspring fitness to raw values.
-                self._restore_raw_fitness(population)
-                self._restore_raw_fitness(offspring)
+                if selection_plan["mode"] != selection_mode_prev:
+                    if selection_plan["mode"] == "fallback":
+                        logger.info(
+                            "⚠️ Parent selection fallback active at gen %s: feasible=%s < elite_n=%s",
+                            gen + 1,
+                            selection_plan["feasible_count"],
+                            selection_plan["elite_count"],
+                        )
+                    elif selection_plan["mode"] == "feasible_elite":
+                        logger.info(
+                            "✅ Parent selection feasible-elite active at gen %s: feasible=%s, elite_n=%s",
+                            gen + 1,
+                            selection_plan["feasible_count"],
+                            selection_plan["elite_count"],
+                        )
+                    selection_mode_prev = selection_plan["mode"]
 
                 # --- Crossover (with optional assortative mating) ---
                 if self.assortative_mating:
@@ -464,15 +680,20 @@ class GeneticAlgorithm:
                 # Ensure population size is maintained
                 population = population[: self.population_size]
 
-                # --- Track overall best on RAW loss (before magnitude penalty) ---
+                # --- Track overall best (raw and feasible-by-E) ---
                 raw_fits = [ind.fitness.values[0] for ind in population]
-                for ind, raw_loss in zip(population, raw_fits):
-                    if raw_loss < overall_best_loss:
-                        overall_best_loss = raw_loss
-                        overall_best_ind = self.toolbox.clone(ind)
-                        overall_best_ind.fitness.values = (raw_loss,)
-                        if hasattr(ind, "metrics"):
-                            overall_best_ind.metrics = ind.metrics
+                (
+                    overall_best_ind,
+                    overall_best_loss,
+                    overall_best_feasible_ind,
+                    overall_best_feasible_e,
+                ) = self._update_best_trackers(
+                    population,
+                    overall_best_ind,
+                    overall_best_loss,
+                    overall_best_feasible_ind,
+                    overall_best_feasible_e,
+                )
 
                 # Stats (use raw losses for reporting)
                 current_best = float(min(raw_fits))
@@ -482,6 +703,7 @@ class GeneticAlgorithm:
                 # Aggregate metrics for best individual
                 best_ind_gen = min(zip(population, raw_fits), key=lambda x: x[1])[0]
                 best_metrics = getattr(best_ind_gen, "metrics", {})
+                best_fail_total = self._individual_fail_total(best_ind_gen)
 
                 # Genome magnitude stats
                 magnitudes = [sum(ind) for ind in population]
@@ -495,12 +717,18 @@ class GeneticAlgorithm:
                 # Aggregate population-level metrics
                 pop_zero_flows = []
                 pop_failures = []
+                pop_fail_totals = []
                 for ind in population:
                     m = getattr(ind, "metrics", {})
-                    if "zero_flow_edges" in m:
-                        pop_zero_flows.append(m["zero_flow_edges"])
+                    zero_flow_value = m.get("zero_flow_edges")
+                    if zero_flow_value is not None:
+                        # Skip non-numeric/invalid values (e.g. worker-error placeholders)
+                        zf = self._safe_float(zero_flow_value, default=float("inf"))
+                        if np.isfinite(zf):
+                            pop_zero_flows.append(zf)
                     if "routing_failures" in m:
                         pop_failures.append(m["routing_failures"])
+                    pop_fail_totals.append(self._individual_fail_total(ind))
 
                 gen_stat = {
                     "generation": gen + 1,
@@ -513,6 +741,8 @@ class GeneticAlgorithm:
                     "mean_zero_flow": float(np.mean(pop_zero_flows)) if pop_zero_flows else None,
                     "best_routing_failures": best_metrics.get("routing_failures", None),
                     "mean_routing_failures": float(np.mean(pop_failures)) if pop_failures else None,
+                    "best_fail_total": best_fail_total,
+                    "mean_fail_total": float(np.mean(pop_fail_totals)) if pop_fail_totals else None,
                     "genotypic_diversity": float(genotypic_diversity),
                     "phenotypic_diversity": float(phenotypic_diversity),
                     "mutation_boosted": self._mutation_boosted,
@@ -526,8 +756,10 @@ class GeneticAlgorithm:
                 if best_metrics:
                     zero_flow = best_metrics.get("zero_flow_edges", "?")
                     avg_dur = best_metrics.get("avg_trip_duration", 0.0)
-                    trip_fail = best_metrics.get("routing_failures", 0)
-                    metric_str = f" | ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, Fail={trip_fail}"
+                    metric_str = (
+                        f" | ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, "
+                        f"FailTotal={best_fail_total}"
+                    )
 
                 boost_str = " [BOOSTED]" if self._mutation_boosted else ""
                 logger.info(
@@ -544,16 +776,27 @@ class GeneticAlgorithm:
                 else:
                     generations_without_improvement += 1
 
-        # Ultimate best is solely on the main objective (raw loss, no magnitude penalty)
-        if overall_best_ind is not None:
-            best_genome = np.array(overall_best_ind)
-            best_loss = overall_best_loss
+        best_individual, best_loss, best_mode = self._resolve_return_best(
+            population,
+            overall_best_ind,
+            overall_best_loss,
+            overall_best_feasible_ind,
+            overall_best_feasible_e,
+        )
+        best_genome = np.array(best_individual)
+        if best_mode == "feasible":
+            logger.info(f"GA complete: best feasible E = {best_loss:.2f}")
         else:
-            best_ind = tools.selBest(population, 1)[0]
-            best_genome = np.array(best_ind)
-            best_loss = best_ind.fitness.values[0]
-
-        logger.info(f"GA complete: best loss = {best_loss:.2f}")
+            logger.warning(
+                "GA complete without feasible individual (fail_total == 0); "
+                f"returning best raw loss = {best_loss:.2f}"
+            )
+        self.last_best_selection_mode = best_mode
+        self.last_best_selection_value = float(best_loss)
+        self.last_best_raw_loss = float(overall_best_loss)
+        self.last_best_feasible_e_loss = (
+            float(overall_best_feasible_e) if overall_best_feasible_ind is not None else None
+        )
 
         return best_genome, best_loss, loss_history, generation_stats
 

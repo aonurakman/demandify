@@ -166,3 +166,100 @@ def test_magnitude_plot_with_no_data(tmp_path):
     gen = ReportGenerator(tmp_path)
     result = gen._create_magnitude_plot(stats)
     assert result is None
+
+
+def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path, monkeypatch):
+    """final_loss_mae_kmh should reflect final simulation MAE, not GA optimization score."""
+    from demandify.pipeline import CalibrationPipeline
+
+    class _DummyScenarioExporter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export(self, *_args, **_kwargs):
+            return None
+
+    class _DummyURBExporter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export(self, *_args, **_kwargs):
+            return None
+
+    class _DummyReportGenerator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def generate(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("demandify.pipeline.ScenarioExporter", _DummyScenarioExporter)
+    monkeypatch.setattr("demandify.pipeline.URBDataExporter", _DummyURBExporter)
+    monkeypatch.setattr("demandify.pipeline.ReportGenerator", _DummyReportGenerator)
+    monkeypatch.setattr("demandify.export.visualize.visualize_network", lambda *_args, **_kwargs: None)
+
+    pipeline = CalibrationPipeline(
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        window_minutes=10,
+        seed=42,
+        output_dir=tmp_path / "run_semantics",
+        run_id="semantics",
+    )
+
+    network_file = pipeline.output_dir / "sumo" / "network.net.xml"
+    network_file.write_text("<net></net>", encoding="utf-8")
+    demand_csv = pipeline.output_dir / "data" / "demand.csv"
+    demand_csv.write_text("ID,origin link id,destination link id,departure timestep\n", encoding="utf-8")
+    trips_file = pipeline.output_dir / "sumo" / "trips.xml"
+    trips_file.write_text("<routes></routes>", encoding="utf-8")
+    observed_edges_file = pipeline.output_dir / "data" / "observed_edges.csv"
+    observed_edges_file.write_text("edge_id,current_speed,freeflow_speed,match_confidence\n", encoding="utf-8")
+    traffic_data_file = pipeline.output_dir / "data" / "traffic_data_raw.csv"
+    pd.DataFrame({"segment": [1]}).to_csv(traffic_data_file, index=False)
+
+    observed_edges = pd.DataFrame(
+        {
+            "edge_id": ["e1"],
+            "current_speed": [30.0],
+            "freeflow_speed": [50.0],
+            "match_confidence": [0.9],
+        }
+    )
+    simulated_speeds = {"e1": 35.0}
+    quality_metrics = {
+        "mae": 12.34,
+        "mse": 200.0,
+        "matched_edges": 1,
+        "missing_edges": 0,
+        "total_edges": 1,
+    }
+    pipeline._last_optimization_result = {
+        "selected_mode": "feasible",
+        "selected_value": 5.55,
+        "selected_value_label": "feasible flow-fit error E",
+        "best_raw_loss": 9.99,
+        "best_feasible_e_loss": 5.55,
+        "loss_history_metric": "best_loss (raw objective per generation)",
+    }
+
+    metadata = pipeline._export_results(
+        network_file=network_file,
+        demand_csv=demand_csv,
+        trips_file=trips_file,
+        observed_edges_file=observed_edges_file,
+        traffic_data_file=traffic_data_file,
+        observed_edges=observed_edges,
+        simulated_speeds=simulated_speeds,
+        best_loss=9.99,
+        loss_history=[9.99, 8.88],
+        quality_metrics=quality_metrics,
+        generation_stats=[],
+        final_sim_seed=123,
+    )
+
+    results = metadata["results"]
+    assert results["final_loss_mae_kmh"] == 12.34
+    assert results["loss_history"] == [9.99, 8.88]
+    assert results["optimization_result"]["selected_mode"] == "feasible"
+    assert results["optimization_result"]["selected_value"] == 5.55
+    assert results["optimization_result"]["best_raw_loss"] == 9.99

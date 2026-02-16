@@ -298,13 +298,13 @@ def cli():
         "--elite-top-pct",
         type=float,
         default=0.1,
-        help="Top %% for secondary sorting by magnitude (default: 0.1)",
+        help="Fraction defining feasible elite parent pool size (default: 0.1)",
     )
     run_parser.add_argument(
         "--magnitude-penalty",
         type=float,
         default=0.001,
-        help="Magnitude penalty weight (default: 0.001)",
+        help="Weight for magnitude term in feasible-elite parent ranking (default: 0.001)",
     )
     run_parser.add_argument(
         "--stagnation-patience",

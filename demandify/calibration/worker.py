@@ -25,6 +25,28 @@ from demandify.calibration.objective import EdgeSpeedObjective
 # But on Spawn (Windows/Mac sometimes) they need setup.
 # We rely on the parent process setting up logging before pool creation or basicConfig.
 logger = logging.getLogger(__name__)
+WORKER_FAILURE_FAIL_TOTAL_SENTINEL = 1
+
+
+def build_worker_error_metrics(error_message: str, worker_idx: Optional[int] = None) -> Dict[str, Any]:
+    """Build structured metrics for failed worker evaluations."""
+    metrics = {
+        "worker_error": True,
+        "error": error_message,
+        "routing_failures": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
+        "teleports": 0,
+        "fail_total": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
+        "reliability_penalty": float("inf"),
+        "e_loss": float("inf"),
+        "loss": float("inf"),
+        "zero_flow_edges": None,
+        "total_vehicles": 0,
+        "avg_trip_duration": 0.0,
+        "avg_waiting_time": 0.0,
+    }
+    if worker_idx is not None:
+        metrics["worker_id"] = worker_idx
+    return metrics
 
 @dataclass
 class SimulationConfig:
@@ -179,27 +201,31 @@ def run_simulation_worker(
         
         # We pass output_dir=temp_dir so SUMOSimulation generates artifacts there
         # and doesn't delete them immediately if we want to debug
-        # We pass output_dir=temp_dir so SUMOSimulation generates artifacts there
-        # and doesn't delete them immediately if we want to debug
         simulated_speeds, trip_stats = sim.run(
             output_dir=temp_dir,
             expected_vehicles=expected_vehicles
         )
         
-        routing_failures = trip_stats.get('routing_failures', 0)
-
-        
         # 3. Calculate Objective
         objective = EdgeSpeedObjective(config.observed_edges)
-        loss = objective.calculate_loss(
+        loss_components = objective.calculate_loss_components(
             simulated_speeds,
             trip_stats=trip_stats,
             expected_vehicles=expected_vehicles
         )
+        loss = loss_components["loss"]
+
+        routing_failures = int(trip_stats.get("routing_failures", 0) or 0)
+        teleports = int(trip_stats.get("teleports", 0) or 0)
+        fail_total = int(loss_components.get("fail_total", routing_failures + teleports))
         
         # 4. Metrics
         metrics = objective.calculate_metrics(simulated_speeds)
         metrics['routing_failures'] = routing_failures
+        metrics['teleports'] = teleports
+        metrics['fail_total'] = fail_total
+        metrics['reliability_penalty'] = float(loss_components.get("reliability_penalty", 0.0))
+        metrics['e_loss'] = float(loss_components.get("e_loss", metrics.get("mae", loss)))
         metrics['total_vehicles'] = expected_vehicles
         metrics['zero_flow_edges'] = metrics['missing_edges'] # Same thing essentially
         metrics['avg_trip_duration'] = trip_stats.get('avg_duration', 0.0)
@@ -225,5 +251,5 @@ def run_simulation_worker(
         logger.error(f"Worker {worker_idx} failed: {e}")
         # Clean up even on fail
         shutil.rmtree(temp_dir, ignore_errors=True)
-        # Return infinite loss
-        return float('inf'), {"error": str(e)}
+        # Return infinite loss with explicit infeasible/error marker metrics
+        return float("inf"), build_worker_error_metrics(str(e), worker_idx=worker_idx)

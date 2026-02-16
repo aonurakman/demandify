@@ -23,7 +23,6 @@ from demandify.sumo.simulation import SUMOSimulation
 from demandify.calibration.objective import EdgeSpeedObjective
 from demandify.calibration.optimizer import GeneticAlgorithm
 from demandify.calibration.worker import (
-    run_simulation_worker,
     SimulationConfig,
     evaluate_for_ga,
     _stable_seed,
@@ -89,8 +88,8 @@ class CalibrationPipeline:
             ga_population: GA population size
             ga_generations: GA generations
             ga_immigrant_rate: Fraction of random immigrants per generation
-            ga_elite_top_pct: Top percentage for secondary sorting by magnitude
-            ga_magnitude_penalty_weight: Weight for magnitude penalty in fitness
+            ga_elite_top_pct: Fraction defining feasible elite parent pool size
+            ga_magnitude_penalty_weight: Weight for magnitude term in feasible-elite ranking
             ga_stagnation_patience: Generations without improvement before mutation boost
             ga_stagnation_boost: Multiplier for mutation on stagnation
             ga_assortative_mating: Prefer crossover between dissimilar parents
@@ -135,6 +134,7 @@ class CalibrationPipeline:
         self.traffic_bucket = None
         self.provider_meta: Dict = {}
         self.network_cache_key = None
+        self._last_optimization_result: Dict[str, Any] = {}
 
         if output_dir is None:
             if run_id:
@@ -328,7 +328,11 @@ class CalibrationPipeline:
         best_genome, best_loss, loss_history, generation_stats = self._calibrate_demand(
             demand_gen, od_pairs, departure_bins, observed_edges, network_file
         )
-        self._report_progress(6, "Calibrating Demand", f"✓ Complete: loss={best_loss:.2f} km/h")
+        self._report_progress(
+            6,
+            "Calibrating Demand",
+            f"✓ Complete: optimization={best_loss:.2f}",
+        )
 
         # Stage 7: Generate final demand files
         self._report_progress(7, "Generating Demand", "Creating final trip files...")
@@ -685,8 +689,6 @@ class CalibrationPipeline:
             seed=self.seed,
         )
 
-        evaluate_func = partial(run_simulation_worker, config=sim_config)
-
         # Run GA
         genome_size = len(od_pairs) * len(departure_bins)
         # Dynamic Bounds & Init Prob Logic
@@ -729,16 +731,38 @@ class CalibrationPipeline:
         )
 
         # Start optimization
-        from demandify.calibration.worker import evaluate_for_ga
-
         evaluate_func_clean = partial(evaluate_for_ga, config=sim_config)
 
         best_genome, best_loss, loss_history, generation_stats = ga.optimize(
             evaluate_func_clean,
         )
+        selected_mode = getattr(ga, "last_best_selection_mode", None) or "raw"
+        selected_value = getattr(ga, "last_best_selection_value", best_loss)
+        best_raw_loss = getattr(ga, "last_best_raw_loss", best_loss)
+        best_feasible_e_loss = getattr(ga, "last_best_feasible_e_loss", None)
+
+        def _normalize_float(value: Any) -> Optional[float]:
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            return value_f if np.isfinite(value_f) else None
+
+        self._last_optimization_result = {
+            "selected_mode": selected_mode,
+            "selected_value": _normalize_float(selected_value),
+            "selected_value_label": (
+                "feasible flow-fit error E"
+                if selected_mode == "feasible"
+                else "raw objective loss"
+            ),
+            "best_raw_loss": _normalize_float(best_raw_loss),
+            "best_feasible_e_loss": _normalize_float(best_feasible_e_loss),
+            "loss_history_metric": "best_loss (raw objective per generation)",
+        }
 
         logger.info(
-            f"✅ Calibration complete: loss={best_loss:.2f} km/h, vehicles={int(best_genome.sum())}"
+            f"✅ Calibration complete: optimization={best_loss:.2f}, vehicles={int(best_genome.sum())}"
         )
 
         return best_genome, best_loss, loss_history, generation_stats
@@ -846,19 +870,50 @@ class CalibrationPipeline:
                 "bin_minutes": self.bin_minutes,
             },
             "results": {
-                "final_loss_mae_kmh": round(best_loss, 2) if best_loss != float("inf") else None,
+                "final_loss_mae_kmh": (
+                    round(quality_metrics["mae"], 2)
+                    if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
+                    else None
+                ),
                 "loss_history": (
                     [round(x, 2) for x in loss_history] if loss_history[0] != float("inf") else []
                 ),
+                "loss_history_label": "best raw objective value per generation",
+                "optimization_result": {
+                    "selected_mode": self._last_optimization_result.get("selected_mode", "raw"),
+                    "selected_value": (
+                        round(self._last_optimization_result["selected_value"], 2)
+                        if self._last_optimization_result.get("selected_value") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "selected_value_label": self._last_optimization_result.get(
+                        "selected_value_label",
+                        "raw objective loss",
+                    ),
+                    "best_raw_loss": (
+                        round(self._last_optimization_result["best_raw_loss"], 2)
+                        if self._last_optimization_result.get("best_raw_loss") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "best_feasible_e_loss": (
+                        round(self._last_optimization_result["best_feasible_e_loss"], 2)
+                        if self._last_optimization_result.get("best_feasible_e_loss") is not None
+                        else None
+                    ),
+                    "loss_history_metric": self._last_optimization_result.get(
+                        "loss_history_metric",
+                        "best_loss (raw objective per generation)",
+                    ),
+                },
                 "quality_metrics": {
                     "mae_kmh": (
                         round(quality_metrics["mae"], 2)
-                        if quality_metrics["mae"] and quality_metrics["mae"] != float("inf")
+                        if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
                         else None
                     ),
                     "mse_kmh2": (
                         round(quality_metrics["mse"], 2)
-                        if quality_metrics["mse"] and quality_metrics["mse"] != float("inf")
+                        if quality_metrics.get("mse") is not None and np.isfinite(quality_metrics["mse"])
                         else None
                     ),
                     "matched_edges": quality_metrics["matched_edges"],

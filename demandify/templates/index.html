@@ -411,7 +411,7 @@
                                             <label for="ga_elite_top_pct" class="form-label small">
                                                 Elite Top %
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Top percentage of individuals for secondary sorting by magnitude (fewer trips preferred).">
+                                                    title="Defines feasible elite size n=max(1, pct*population). If feasible individuals are at least n, parent tournaments use that feasible elite slice.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
@@ -421,9 +421,9 @@
                                         </div>
                                         <div class="col-6 mb-2">
                                             <label for="ga_magnitude_penalty_weight" class="form-label small">
-                                                Magnitude Penalty
+                                                Elite Magnitude Weight
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Weight for penalizing excessive trip counts. Higher = stronger preference for fewer trips.">
+                                                    title="Used only in feasible-elite mode: elite score = weight*magnitude + E-rank term. Higher values favor lower total trips among feasible elites.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
