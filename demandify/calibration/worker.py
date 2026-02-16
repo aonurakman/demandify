@@ -5,7 +5,6 @@ Functionality is isolated here to avoid pickling complications with multiprocess
 import logging
 import time
 import shutil
-import math
 import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -15,6 +14,10 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional
 
 from demandify.sumo.simulation import SUMOSimulation
+from demandify.sumo.departure_schedule import (
+    sequential_departure_times,
+    format_departure_time,
+)
 from demandify.calibration.objective import EdgeSpeedObjective
 
 # Setup logger for the worker process
@@ -62,7 +65,6 @@ def generate_demand_files(
     Returns:
         Path to trips.xml
     """
-    demand_csv = output_dir / "demand.csv"
     trips_file = output_dir / "trips.xml"
     
     num_od = len(od_pairs)
@@ -73,36 +75,37 @@ def generate_demand_files(
     
     trips = []
     trip_id = 0
+
+    # Kept for API compatibility: demand timing is now deterministic and seed-independent.
+    _ = seed
     
     # Generate trips
-    base_seed = seed
     for od_idx, (origin, dest) in enumerate(od_pairs):
         for bin_idx, (start_time, end_time) in enumerate(departure_bins):
             # Ensure non-negative integer count
             count = int(max(0, round(counts[od_idx, bin_idx])))
             
             if count > 0:
-                # Seeded random jitter for this specific bin/OD combo
-                local_seed = (base_seed + od_idx * 1000 + bin_idx * 100000) % (2**32)
-                bin_rng = np.random.RandomState(local_seed)
-                
-                departure_times = bin_rng.uniform(start_time, end_time, size=count)
-                
+                departure_times = sequential_departure_times(start_time, end_time, count)
+
                 for dep_time in departure_times:
                     trips.append({
                         'ID': f't_{od_idx}_{bin_idx}_{trip_id}',
-                        'depart': f"{dep_time:.2f}",
+                        'depart_value': float(dep_time),
                         'from': origin,
                         'to': dest
                     })
                     trip_id += 1
+
+    # SUMO is more robust when trip departures are non-decreasing.
+    trips.sort(key=lambda trip: trip['depart_value'])
     
     # Create XML directly (faster than CSV -> XML)
     root = ET.Element('routes')
     for trip in trips:
         t = ET.SubElement(root, 'trip')
         t.set('id', trip['ID'])
-        t.set('depart', trip['depart'])
+        t.set('depart', format_departure_time(trip['depart_value']))
         t.set('from', trip['from'])
         t.set('to', trip['to'])
         
