@@ -100,26 +100,65 @@ def _prompt_restart():
 async def cmd_run(args):
     """Run calibration in headless mode."""
     from demandify.pipeline import CalibrationPipeline
+    from demandify.offline_data import resolve_offline_dataset
     import time
-    non_interactive = bool(getattr(args, "non_interactive", False))
 
-    # Parse bbox
-    try:
-        bbox_parts = [float(x.strip()) for x in args.bbox.split(",")]
-        if len(bbox_parts) != 4:
-            raise ValueError
-        bbox = tuple(bbox_parts)
-    except ValueError:
-        print("❌ Invalid bbox format. Expected: west,south,east,north")
-        print("   Example: 2.29,48.84,2.31,48.86")
-        return
+    non_interactive = bool(getattr(args, "non_interactive", False))
+    run_defaults = get_run_defaults()
+    import_dataset_ref = getattr(args, "import_dataset", None)
+    resolved_import_dataset = None
+    bbox = None
+
+    if import_dataset_ref:
+        if args.bbox:
+            print("❌ Cannot use positional bbox when --import is provided.")
+            print("   Use: demandify run --import <dataset_name>")
+            return
+        if args.tile_zoom != run_defaults["traffic_tile_zoom"]:
+            print("❌ --tile-zoom cannot be used with --import mode.")
+            print("   Imported mode uses the bundled dataset snapshot directly.")
+            return
+        try:
+            resolved_import_dataset = resolve_offline_dataset(import_dataset_ref)
+        except ValueError as exc:
+            print(f"❌ {exc}")
+            return
+        bbox = (
+            resolved_import_dataset.bbox["west"],
+            resolved_import_dataset.bbox["south"],
+            resolved_import_dataset.bbox["east"],
+            resolved_import_dataset.bbox["north"],
+        )
+    else:
+        # Parse bbox
+        if not args.bbox:
+            print("❌ Missing bbox. Provide bbox or use --import <dataset_name>.")
+            print('   Example: demandify run "2.29,48.84,2.31,48.86"')
+            return
+
+        try:
+            bbox_parts = [float(x.strip()) for x in args.bbox.split(",")]
+            if len(bbox_parts) != 4:
+                raise ValueError
+            bbox = tuple(bbox_parts)
+        except ValueError:
+            print("❌ Invalid bbox format. Expected: west,south,east,north")
+            print("   Example: 2.29,48.84,2.31,48.86")
+            return
 
     print(ASCII_ART)
     print(f"demandify v{__version__}")
 
     while True:
         print("🚀 Starting headless calibration run")
-        print(f"   BBox: {bbox}")
+        if resolved_import_dataset:
+            print(
+                f"   Mode: Offline Import ({resolved_import_dataset.dataset_id})"
+            )
+            print(f"   BBox: {bbox}")
+        else:
+            print("   Mode: Create (live fetch)")
+            print(f"   BBox: {bbox}")
         print(f"   Window: {args.window} min")
         print(f"   Seed: {args.seed}")
         print(f"   Run ID: {args.name if args.name else 'Auto-generated'}")
@@ -155,6 +194,9 @@ async def cmd_run(args):
                 max_od_pairs=args.max_ods,
                 bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
+                offline_dataset=(
+                    resolved_import_dataset.dataset_id if resolved_import_dataset else None
+                ),
                 run_id=args.name,
             )
 
@@ -164,10 +206,30 @@ async def cmd_run(args):
                 print(f"   - Matched Edges:    {stats['matched_edges']}")
                 print(f"   - Total Graph Edges: {stats.get('total_network_edges', '-')}")
 
+                quality = stats.get("quality")
+                if quality:
+                    print(
+                        f"   - Data Quality:     {quality.get('label', 'unknown').upper()} "
+                        f"({quality.get('score', 0)}/100)"
+                    )
+                    summary = quality.get("summary")
+                    if summary:
+                        print(f"   - Quality Summary:  {summary}")
+                    warnings = quality.get("warnings") or []
+                    if warnings:
+                        print(f"   - Quality Flags:    {', '.join(warnings)}")
+
                 if stats["matched_edges"] == 0:
                     print("\n❌ CRITICAL: No edges matched! Run will fail.")
                 elif stats["matched_edges"] < 5:
                     print("\n⚠️  WARNING: Very few edges matched (<5). Results may be poor.")
+
+                if quality:
+                    recommendation = quality.get("recommendation")
+                    if recommendation == "do_not_proceed":
+                        print("\n❌ QUALITY CHECK: do_not_proceed")
+                    elif recommendation in {"high_risk", "caution"}:
+                        print(f"\n⚠️  QUALITY CHECK: {recommendation}")
 
                 print(f"\n   Logs: {pipeline.output_dir}/logs/pipeline.log")
                 if non_interactive:
@@ -269,7 +331,16 @@ def cli():
 
     # run command (headless)
     run_parser = subparsers.add_parser("run", help="Run calibration (headless mode)")
-    run_parser.add_argument("bbox", help="Bounding box (west,south,east,north)")
+    run_parser.add_argument(
+        "bbox",
+        nargs="?",
+        help="Bounding box (west,south,east,north). Optional when --import is used.",
+    )
+    run_parser.add_argument(
+        "--import",
+        dest="import_dataset",
+        help="Use an existing offline dataset by name (or source:name).",
+    )
     run_parser.add_argument("--name", help="Custom run ID/name")
     run_parser.add_argument(
         "--non-interactive",
