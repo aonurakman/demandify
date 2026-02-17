@@ -46,9 +46,12 @@ ENV/
 *.rou.xml
 *.sumocfg
 *.sumocfg
+*.osm
 *.log
 pipeline.log
 demandify_runs/
+demandify_datasets/
+
 .gemini/
 *.xml.gz
 sumo_temp_*/

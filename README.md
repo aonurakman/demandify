@@ -20,6 +20,7 @@ The result? A ready-to-run SUMO scenario in agent-level precision that allows yo
 ## Features
 
 - 🌍 **Real-world calibration**: Uses TomTom Traffic Flow API for live congestion data
+- 📦 **Offline calibration import**: Run from bundled/offline traffic+network snapshots
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
 - 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (feasible-elite parent selection, immigrants, assortative mating, adaptive mutation boost)
@@ -27,6 +28,7 @@ The result? A ready-to-run SUMO scenario in agent-level precision that allows yo
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
 - 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
+- ✅ **Data quality labeling**: Feasibility check now reports a quality score/label before calibration starts
 
 ![GUI Screenshot](static/gui.png)
 
@@ -73,16 +75,25 @@ This starts the web server at [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 ### 5. Calibrate a scenario
 
-1. **Draw a bounding box** on the map
-2. **Configure parameters** (defaults work well):
+1. **Choose mode** at the top:
+   - `Create`: live TomTom + OSM fetch
+   - `Import`: select existing offline dataset (bbox auto-loaded and locked)
+2. **Draw a bounding box** on the map (Create mode only)
+3. **Configure parameters** (defaults work well):
    - Time window: 15, 30, or 60 minutes
    - Seed: any integer for reproducibility
    - Warmup: a few minutes to populate the network
    - GA population/generations: controls quality vs speed
-3. **Paste your API key** (one-time, stored locally)
-4. **Click "Start Calibration"**
-5. **Watch the progress** through 8 stages
-6. **Download your scenario** with `demand.csv`, SUMO network, and report
+4. **Paste your API key** (Create mode only; one-time, stored locally)
+5. **Click "Start Calibration"**
+6. **Watch the progress** through 8 stages
+7. **Download your scenario** with `demand.csv`, SUMO network, and report
+
+Before calibration starts, demandify runs a preparation feasibility check and reports:
+- fetched traffic segments
+- matched observed edges
+- total network edges
+- data quality label + score + risk flags
    
 ### 6. Run Headless (Optional) 🤖
 
@@ -115,15 +126,39 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 demandify run "2.2961,48.8469,2.3071,48.8532" \
   --name Paris_Batch \
   --non-interactive
+
+# Import existing offline dataset (no live TomTom/OSM fetch)
+demandify run --import krakow_v1 --name Krakow_Offline
 ```
 
 > **Note:** By default, the CLI pauses after fetching/matching data and asks for confirmation, then asks whether to run another calibration. Pass `--non-interactive` to auto-approve and exit immediately after pipeline completion.
+
+### 7. Build Offline Dataset (Optional) 💾
+
+If you want a reusable prep bundle (for future no-key workflows), open:
+
+- [http://127.0.0.1:8000/dataset-builder](http://127.0.0.1:8000/dataset-builder)
+
+This dedicated page is separate from calibration runs. It executes preparation only (traffic snapshot + OSM + SUMO network + map matching) and stores files under:
+
+- `demandify_datasets/<dataset_name>/`
+
+Each dataset includes `data/traffic_data_raw.csv`, `data/observed_edges.csv`, `data/map.osm`, `sumo/network.net.xml`, and `dataset_meta.json`.
+
+`dataset_meta.json` now includes a computed data quality block (`score`, `label`, `recommendation`, and metrics) to help decide whether a dataset is strong enough for offline calibration.
+
+Bundled snapshot previews:
+
+| Den Haag (`den_haag_v1`) | Krakow (`krakow_v1`) | Eskisehir (`eskisehir_v1`) |
+|---|---|---|
+| ![Den Haag offline network](demandify/offline_datasets/den_haag_v1/plots/network.png) | ![Krakow offline network](demandify/offline_datasets/krakow_v1/plots/network.png) | ![Eskisehir offline network](demandify/offline_datasets/eskisehir_v1/plots/network.png) |
 
 #### Parameters
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `bbox` | String | (Req) | Bounding box (`west,south,east,north`) |
+| `bbox` | String | Req* | Bounding box (`west,south,east,north`) |
+| `--import` | String | None | Use an offline dataset by name (or `source:name`) |
 | `--name` | String | Auto | Custom Run ID/Name |
 | `--non-interactive` | Flag | off | Disable prompts (auto-approve and exit when pipeline completes) |
 | `--window` | Int | 15 | Simulation duration (min) |
@@ -145,6 +180,13 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 | `--bin-size` | Float | 5 | Time bin size in minutes |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
 
+\* `bbox` is required in create mode. In import mode, use `--import` and do not pass `bbox`.
+
+Import mode constraints:
+- positional `bbox` is rejected
+- `--tile-zoom` is rejected
+- all calibration controls (seed, GA params, warmup/window, etc.) remain available
+
 #### Advanced GA Dynamics
 
 These parameters control diversity mechanisms and adaptive behavior in the genetic algorithm, addressing local optima stagnation and trip count explosion.
@@ -165,16 +207,15 @@ All advanced dynamics are **enabled by default** with conservative values. For m
 
 ## How It Works
 
-demandify follows an 8-stage pipeline:
+demandify follows a multi-stage pipeline:
 
-1. **Validate inputs** - Check bbox, parameters, API key
-2. **Fetch traffic snapshot** - Get real-time speeds from TomTom (Vector Flow Tiles, cached by 5-min time bucket)
-3. **Fetch OSM extract** - Download road network data
-4. **Build SUMO network** - Convert OSM to car-only SUMO `.net.xml`
-5. **Map matching** - Match traffic segments to SUMO edges
-6. **Initialize demand** - Select routable OD pairs (lane-permission aware) and time bins
-7. **Calibrate demand** - Run GA to optimize vehicle counts
-8. **Export scenario** - Generate `demand.csv`, `trips.xml`, config, and report
+1. **Validate inputs** - Check mode/parameters and feasibility
+2. **Preparation**:
+   - `Create`: fetch traffic + OSM, build network, match edges
+   - `Import`: load/copy network + observed traffic files from offline dataset
+3. **Initialize demand** - Select routable OD pairs (lane-permission aware) and time bins
+4. **Calibrate demand** - Run GA to optimize vehicle counts
+5. **Export scenario** - Generate `demand.csv`, `trips.xml`, config, and report
 
 ### Advanced GA Dynamics
 
@@ -216,6 +257,9 @@ demandify
 
 # Run headless calibration
 demandify run "west,south,east,north"
+
+# Run headless from bundled offline dataset
+demandify run --import krakow_v1
 
 # Check system requirements
 demandify doctor
