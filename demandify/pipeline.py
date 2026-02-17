@@ -948,10 +948,11 @@ class CalibrationPipeline:
             init_prob = avg_trips_per_gene / max(0.1, avg_val_if_active)
             init_prob = min(1.0, max(0.001, init_prob))  # Clamp
 
-        dynamic_sigma = max(1, int(upper_bound * 0.2))
-
         logger.info(
             f"Dynamic GA Initialization: Target {self.initial_population} vehicles -> Bounds {bounds} (Avg {avg_trips_per_gene:.2f}/gene)"
+        )
+        logger.info(
+            f"GA mutation sigma: using user-configured sigma={self.ga_mutation_sigma}"
         )
 
         ga = GeneticAlgorithm(
@@ -963,7 +964,7 @@ class CalibrationPipeline:
             mutation_rate=self.ga_mutation_rate,
             crossover_rate=self.ga_crossover_rate,
             elitism=self.ga_elitism,
-            mutation_sigma=dynamic_sigma,
+            mutation_sigma=self.ga_mutation_sigma,
             mutation_indpb=self.ga_mutation_indpb,
             num_workers=self.parallel_workers or self.config.default_parallel_workers,
             init_prob=init_prob,

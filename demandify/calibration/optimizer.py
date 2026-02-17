@@ -801,10 +801,10 @@ class GeneticAlgorithm:
         return best_genome, best_loss, loss_history, generation_stats
 
     def _bounded_mutation(self, individual, mu, sigma, indpb):
-        """Gaussian mutation with bounds."""
+        """Gaussian mutation with lower-bound clipping only (no upper cap)."""
         for i in range(len(individual)):
             if self.rng.random() < indpb:
                 individual[i] += int(self.rng.normal(mu, sigma))
-                # Enforce bounds
-                individual[i] = max(self.bounds[0], min(self.bounds[1], individual[i]))
+                # Keep demand non-negative while allowing exploration above init bounds.
+                individual[i] = max(self.bounds[0], individual[i])
         return (individual,)

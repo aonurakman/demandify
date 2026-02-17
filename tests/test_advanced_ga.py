@@ -134,6 +134,33 @@ class TestImmigrants:
         expected_immigrants = int(20 * 0.1)
         assert expected_immigrants == 2
 
+    def test_immigrants_still_respect_init_bounds(self):
+        """Immigrants remain bounded even when mutation upper cap is removed."""
+        ga = GeneticAlgorithm(genome_size=10, seed=42, bounds=(0, 1))
+        for _ in range(100):
+            imm = ga._create_immigrant()
+            assert all(0 <= v <= 1 for v in imm)
+
+
+class TestMutationBounds:
+    """Test lower-only mutation clipping behavior."""
+
+    def test_mutation_can_exceed_upper_init_bound(self):
+        ga = GeneticAlgorithm(genome_size=1, seed=42, bounds=(0, 1))
+        ind = creator.Individual([1])
+
+        # Deterministic +5 jump: with upper clipping this would stay at 1.
+        ga._bounded_mutation(ind, mu=5, sigma=0, indpb=1.0)
+        assert ind[0] == 6
+
+    def test_mutation_still_clips_to_non_negative(self):
+        ga = GeneticAlgorithm(genome_size=1, seed=42, bounds=(0, 10))
+        ind = creator.Individual([0])
+
+        # Deterministic -5 jump should be clipped to lower bound 0.
+        ga._bounded_mutation(ind, mu=-5, sigma=0, indpb=1.0)
+        assert ind[0] == 0
+
 
 # ---------------------------------------------------------------------------
 # Parent selection
