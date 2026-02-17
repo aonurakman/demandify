@@ -80,7 +80,7 @@ class ReportGenerator:
 
         # Save
         report_file = self.output_dir / "report.html"
-        with open(report_file, "w") as f:
+        with open(report_file, "w", encoding="utf-8") as f:
             f.write(html)
 
         logger.info(f"Report generated: {report_file}")
@@ -571,6 +571,7 @@ class ReportGenerator:
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>demandify Calibration Report</title>
     <style>
         body {{

@@ -13,13 +13,14 @@ from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from demandify.config import get_config, save_api_key
+from demandify.config import get_config, get_run_defaults, save_api_key
 
 logger = logging.getLogger(__name__)
 
 # Setup router and templates
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
+RUN_DEFAULTS = get_run_defaults()
 
 # In-memory run storage (in production, use Redis or DB)
 active_runs = {}
@@ -34,7 +35,12 @@ async def index(request: Request):
     config = get_config()
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "config": config, "has_api_key": config.tomtom_api_key is not None},
+        {
+            "request": request,
+            "config": config,
+            "run_defaults": RUN_DEFAULTS,
+            "has_api_key": config.tomtom_api_key is not None,
+        },
     )
 
 
@@ -148,7 +154,7 @@ async def check_feasibility(
     bbox_east: float = Form(...),
     bbox_north: float = Form(...),
     run_id: Optional[str] = Form(None),
-    traffic_tile_zoom: int = Form(12),
+    traffic_tile_zoom: int = Form(RUN_DEFAULTS["traffic_tile_zoom"]),
 ):
     """Run preparation phase to check data quality."""
     from demandify.config import get_config
@@ -166,8 +172,8 @@ async def check_feasibility(
     try:
         pipeline = CalibrationPipeline(
             bbox=bbox,
-            window_minutes=15,  # Default for check
-            seed=42,  # Default
+            window_minutes=RUN_DEFAULTS["window_minutes"],
+            seed=RUN_DEFAULTS["seed"],
             traffic_tile_zoom=traffic_tile_zoom,
             run_id=actual_run_id,
         )
@@ -197,31 +203,31 @@ async def start_run(
     bbox_east: float = Form(...),
     bbox_north: float = Form(...),
     run_id: Optional[str] = Form(None),
-    window_minutes: int = Form(15),
-    seed: int = Form(42),
-    warmup_minutes: int = Form(5),
-    step_length: float = Form(1.0),
-    traffic_tile_zoom: int = Form(12),
-    ga_population: int = Form(50),
-    ga_generations: int = Form(20),
-    ga_mutation_rate: float = Form(0.5),
-    ga_crossover_rate: float = Form(0.7),
-    ga_elitism: int = Form(2),
-    ga_mutation_sigma: int = Form(20),
-    ga_mutation_indpb: float = Form(0.3),
-    ga_immigrant_rate: float = Form(0.03),
-    ga_elite_top_pct: float = Form(0.1),
-    ga_magnitude_penalty_weight: float = Form(0.001),
-    ga_stagnation_patience: int = Form(20),
-    ga_stagnation_boost: float = Form(1.5),
-    ga_assortative_mating: bool = Form(True),
-    ga_deterministic_crowding: bool = Form(True),
-    num_origins: int = Form(10),
-    num_destinations: int = Form(10),
-    max_od_pairs: int = Form(50),
-    bin_minutes: int = Form(5),
-    initial_population: int = Form(1000),
-    parallel_workers: Optional[int] = Form(None),
+    window_minutes: int = Form(RUN_DEFAULTS["window_minutes"]),
+    seed: int = Form(RUN_DEFAULTS["seed"]),
+    warmup_minutes: int = Form(RUN_DEFAULTS["warmup_minutes"]),
+    step_length: float = Form(RUN_DEFAULTS["step_length"]),
+    traffic_tile_zoom: int = Form(RUN_DEFAULTS["traffic_tile_zoom"]),
+    ga_population: int = Form(RUN_DEFAULTS["ga_population"]),
+    ga_generations: int = Form(RUN_DEFAULTS["ga_generations"]),
+    ga_mutation_rate: float = Form(RUN_DEFAULTS["ga_mutation_rate"]),
+    ga_crossover_rate: float = Form(RUN_DEFAULTS["ga_crossover_rate"]),
+    ga_elitism: int = Form(RUN_DEFAULTS["ga_elitism"]),
+    ga_mutation_sigma: int = Form(RUN_DEFAULTS["ga_mutation_sigma"]),
+    ga_mutation_indpb: float = Form(RUN_DEFAULTS["ga_mutation_indpb"]),
+    ga_immigrant_rate: float = Form(RUN_DEFAULTS["ga_immigrant_rate"]),
+    ga_elite_top_pct: float = Form(RUN_DEFAULTS["ga_elite_top_pct"]),
+    ga_magnitude_penalty_weight: float = Form(RUN_DEFAULTS["ga_magnitude_penalty_weight"]),
+    ga_stagnation_patience: int = Form(RUN_DEFAULTS["ga_stagnation_patience"]),
+    ga_stagnation_boost: float = Form(RUN_DEFAULTS["ga_stagnation_boost"]),
+    ga_assortative_mating: bool = Form(RUN_DEFAULTS["ga_assortative_mating"]),
+    ga_deterministic_crowding: bool = Form(RUN_DEFAULTS["ga_deterministic_crowding"]),
+    num_origins: int = Form(RUN_DEFAULTS["num_origins"]),
+    num_destinations: int = Form(RUN_DEFAULTS["num_destinations"]),
+    max_od_pairs: int = Form(RUN_DEFAULTS["max_od_pairs"]),
+    bin_minutes: int = Form(RUN_DEFAULTS["bin_minutes"]),
+    initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
+    parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
 ):
     """Start a new calibration run."""
     from demandify.utils.validation import calculate_bbox_area_km2, validate_bbox

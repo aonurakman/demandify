@@ -752,12 +752,12 @@ class GeneticAlgorithm:
                 generation_stats.append(gen_stat)
 
                 # Log stats with metrics if available
-                metric_str = ""
+                metric_str = f" | Trips={int(best_magnitude)}"
                 if best_metrics:
                     zero_flow = best_metrics.get("zero_flow_edges", "?")
                     avg_dur = best_metrics.get("avg_trip_duration", 0.0)
-                    metric_str = (
-                        f" | ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, "
+                    metric_str += (
+                        f", ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, "
                         f"FailTotal={best_fail_total}"
                     )
 

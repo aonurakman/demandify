@@ -263,3 +263,23 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert results["optimization_result"]["selected_mode"] == "feasible"
     assert results["optimization_result"]["selected_value"] == 5.55
     assert results["optimization_result"]["best_raw_loss"] == 9.99
+
+    user_inputs = metadata["user_inputs"]
+    assert user_inputs["run_id"] == "semantics"
+    assert user_inputs["window_minutes"] == 10
+    assert user_inputs["traffic_tile_zoom"] == 12
+    assert user_inputs["initial_population"] == 1000
+    assert user_inputs["parallel_workers"] is None
+
+    assert metadata["simulation_config"]["traffic_tile_zoom"] == 12
+    assert metadata["calibration_config"]["requested_parallel_workers"] is None
+
+    rerun_cmd = metadata["reproducibility"]["rerun_cli_command"]
+    assert rerun_cmd.startswith("demandify run ")
+    assert "--window 10" in rerun_cmd
+    assert "--warmup 5" in rerun_cmd
+    assert "--seed 42" in rerun_cmd
+    assert "--tile-zoom 12" in rerun_cmd
+    assert "--initial-population 1000" in rerun_cmd
+    assert "--name semantics" in rerun_cmd
+    assert "--workers" not in rerun_cmd
