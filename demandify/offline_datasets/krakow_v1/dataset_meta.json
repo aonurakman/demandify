@@ -1,0 +1,56 @@
+{
+  "dataset_name": "krakow_v1",
+  "created_at": "2026-02-17T13:58:34.712037",
+  "bbox": {
+    "west": 20.0174,
+    "south": 50.0702,
+    "east": 20.0566,
+    "north": 50.0875
+  },
+  "traffic_tile_zoom": 15,
+  "provider": {
+    "provider": "tomtom",
+    "api_version": "v4",
+    "style": "absolute",
+    "data_type": "vector_flow_tiles",
+    "tile_zoom": 15
+  },
+  "stats": {
+    "fetched_segments": 44,
+    "matched_edges": 41,
+    "total_network_edges": 1521
+  },
+  "quality": {
+    "score": 92,
+    "label": "excellent",
+    "recommendation": "proceed",
+    "summary": "EXCELLENT quality (92/100): 41 matched edges from 44 traffic segments (match rate 93.2%).",
+    "warnings": [],
+    "components": {
+      "availability": 35,
+      "match_rate": 22,
+      "confidence": 15,
+      "density": 12,
+      "network_coverage": 8
+    },
+    "metrics": {
+      "fetched_segments": 44,
+      "matched_edges": 41,
+      "total_network_edges": 1521,
+      "match_rate": 0.9318181818181818,
+      "observed_to_total_ratio": 0.02695595003287311,
+      "area_km2": 5.362068398183593,
+      "edges_per_km2": 7.6463030598208706,
+      "median_match_confidence": 1.0,
+      "low_confidence_share": 0.0
+    }
+  },
+  "files": {
+    "traffic_data_raw_csv": "data/traffic_data_raw.csv",
+    "observed_edges_csv": "data/observed_edges.csv",
+    "osm_file": "data/map.osm",
+    "sumo_network": "sumo/network.net.xml",
+    "network_plot": "plots/network.png",
+    "pipeline_log": "logs/pipeline.log"
+  }
+}
