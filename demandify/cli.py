@@ -101,6 +101,7 @@ async def cmd_run(args):
     """Run calibration in headless mode."""
     from demandify.pipeline import CalibrationPipeline
     import time
+    non_interactive = bool(getattr(args, "non_interactive", False))
 
     # Parse bbox
     try:
@@ -169,6 +170,9 @@ async def cmd_run(args):
                     print("\n⚠️  WARNING: Very few edges matched (<5). Results may be poor.")
 
                 print(f"\n   Logs: {pipeline.output_dir}/logs/pipeline.log")
+                if non_interactive:
+                    print("\nProceed with calibration? [auto-yes: --non-interactive]")
+                    return True
 
                 try:
                     response = input("\nProceed with calibration? [y/N] ").strip().lower()
@@ -211,6 +215,9 @@ async def cmd_run(args):
                 print("\n⚠️  WARNING: No traffic sensors in this area.")
             else:
                 print(f"\n❌ Error: {e}")
+
+        if non_interactive:
+            return
 
         if not _prompt_restart():
             return
@@ -264,6 +271,11 @@ def cli():
     run_parser = subparsers.add_parser("run", help="Run calibration (headless mode)")
     run_parser.add_argument("bbox", help="Bounding box (west,south,east,north)")
     run_parser.add_argument("--name", help="Custom run ID/name")
+    run_parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Disable prompts (auto-approve calibration check and exit after completion)",
+    )
     run_parser.add_argument(
         "--window",
         type=int,

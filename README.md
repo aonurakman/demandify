@@ -75,7 +75,7 @@ This starts the web server at [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 1. **Draw a bounding box** on the map
 2. **Configure parameters** (defaults work well):
-   - Time window: 15 or 30 minutes
+   - Time window: 15, 30, or 60 minutes
    - Seed: any integer for reproducibility
    - Warmup: a few minutes to populate the network
    - GA population/generations: controls quality vs speed
@@ -110,9 +110,14 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
   --immigrant-rate 0.05 \
   --magnitude-penalty 0.002 \
   --stagnation-patience 15
+
+# Fully non-interactive (automation/CI)
+demandify run "2.2961,48.8469,2.3071,48.8532" \
+  --name Paris_Batch \
+  --non-interactive
 ```
 
-> **Note:** The CLI will pause after fetching/matching data to show matching statistics and ask for confirmation before starting the intensive calibration.
+> **Note:** By default, the CLI pauses after fetching/matching data and asks for confirmation, then asks whether to run another calibration. Pass `--non-interactive` to auto-approve and exit immediately after pipeline completion.
 
 #### Parameters
 
@@ -120,11 +125,12 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 |----------|------|---------|-------------|
 | `bbox` | String | (Req) | Bounding box (`west,south,east,north`) |
 | `--name` | String | Auto | Custom Run ID/Name |
+| `--non-interactive` | Flag | off | Disable prompts (auto-approve and exit when pipeline completes) |
 | `--window` | Int | 15 | Simulation duration (min) |
 | `--warmup` | Int | 5 | Warmup duration before scoring (min) |
 | `--seed` | Int | 42 | Random seed |
 | `--step-length`| Float | 1.0 | SUMO step length (seconds) |
-| `--workers` | Int | Auto | Parallel GA workers |
+| `--workers` | Int | Auto (CPU count) | Parallel GA workers |
 | `--tile-zoom` | Int | 12 | TomTom vector flow tile zoom |
 | `--pop` | Int | 50 | GA Population size |
 | `--gen` | Int | 20 | GA Generations |
@@ -136,7 +142,7 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 | `--origins` | Int | 10 | Number of origin candidates |
 | `--destinations` | Int | 10 | Number of destination candidates |
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
-| `--bin-size` | Int | 5 | Time bin size in minutes |
+| `--bin-size` | Float | 5 | Time bin size in minutes |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
 
 #### Advanced GA Dynamics
@@ -150,10 +156,12 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | `--magnitude-penalty` | Float | 0.001 | Weight for magnitude in feasible-elite parent ranking (`weight*magnitude + E-rank term`) |
 | `--stagnation-patience` | Int | 20 | Generations without improvement before mutation boost activates |
 | `--stagnation-boost` | Float | 1.5 | Multiplier for mutation sigma and rate during stagnation |
+| `--assortative-mating` | Flag | off | Explicitly enable assortative mating |
 | `--no-assortative-mating` | Flag | off | Disable assortative mating (dissimilar parent pairing, on by default) |
+| `--deterministic-crowding` | Flag | off | Explicitly enable deterministic crowding |
 | `--no-deterministic-crowding` | Flag | off | Disable deterministic crowding (diversity-preserving replacement, on by default) |
 
-All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable individual features by passing the corresponding `--no-*` flag, or set `--magnitude-penalty 0` to remove magnitude pressure inside feasible-elite ranking.
+All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable features via the corresponding `--no-*` flags, explicitly force-enable them with `--assortative-mating` / `--deterministic-crowding`, or set `--magnitude-penalty 0` to remove magnitude pressure inside feasible-elite ranking.
 
 ## How It Works
 
