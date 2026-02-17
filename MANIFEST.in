@@ -22,3 +22,4 @@ recursive-exclude reference *
 # Ensure operational data is included (matching pyproject.toml)
 recursive-include demandify/templates *.html
 recursive-include demandify/static *
+recursive-include demandify/defaults *.json

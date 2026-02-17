@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Tuple, Dict, List, Optional
 from datetime import datetime
 import asyncio
+import shlex
 import pandas as pd
 import numpy as np
 import logging
@@ -810,6 +811,77 @@ class CalibrationPipeline:
         simulated_speeds, _ = sim.run(output_dir=sumo_dir)  # Ignore routing_failures for final sim
         return simulated_speeds
 
+    @staticmethod
+    def _format_cli_value(value: Any) -> str:
+        """Format CLI flag values with stable precision."""
+        if isinstance(value, float):
+            return f"{value:.12g}"
+        return str(value)
+
+    def _build_rerun_cli_command(self) -> str:
+        """Build a reproducible CLI command for this exact run configuration."""
+        bbox_arg = ",".join(self._format_cli_value(v) for v in self.bbox)
+        cmd_parts = [
+            "demandify",
+            "run",
+            bbox_arg,
+            "--window",
+            str(self.window_minutes),
+            "--warmup",
+            str(self.warmup_minutes),
+            "--seed",
+            str(self.seed),
+            "--step-length",
+            self._format_cli_value(self.step_length),
+            "--tile-zoom",
+            str(self.traffic_tile_zoom),
+            "--pop",
+            str(self.ga_population),
+            "--gen",
+            str(self.ga_generations),
+            "--mutation",
+            self._format_cli_value(self.ga_mutation_rate),
+            "--crossover",
+            self._format_cli_value(self.ga_crossover_rate),
+            "--elitism",
+            str(self.ga_elitism),
+            "--sigma",
+            str(self.ga_mutation_sigma),
+            "--indpb",
+            self._format_cli_value(self.ga_mutation_indpb),
+            "--immigrant-rate",
+            self._format_cli_value(self.ga_immigrant_rate),
+            "--elite-top-pct",
+            self._format_cli_value(self.ga_elite_top_pct),
+            "--magnitude-penalty",
+            self._format_cli_value(self.ga_magnitude_penalty_weight),
+            "--stagnation-patience",
+            str(self.ga_stagnation_patience),
+            "--stagnation-boost",
+            self._format_cli_value(self.ga_stagnation_boost),
+            "--origins",
+            str(self.num_origins),
+            "--destinations",
+            str(self.num_destinations),
+            "--max-ods",
+            str(self.max_od_pairs),
+            "--bin-size",
+            self._format_cli_value(self.bin_minutes),
+            "--initial-population",
+            str(self.initial_population),
+        ]
+
+        if self.parallel_workers is not None:
+            cmd_parts.extend(["--workers", str(self.parallel_workers)])
+        if not self.ga_assortative_mating:
+            cmd_parts.append("--no-assortative-mating")
+        if not self.ga_deterministic_crowding:
+            cmd_parts.append("--no-deterministic-crowding")
+        if self.run_id:
+            cmd_parts.extend(["--name", str(self.run_id)])
+
+        return " ".join(shlex.quote(part) for part in cmd_parts)
+
     def _export_results(
         self,
         network_file: Path,
@@ -845,6 +917,7 @@ class CalibrationPipeline:
                 "window_minutes": self.window_minutes,
                 "warmup_minutes": self.warmup_minutes,
                 "step_length_seconds": self.step_length,
+                "traffic_tile_zoom": self.traffic_tile_zoom,
             },
             "calibration_config": {
                 "ga_population": self.ga_population,
@@ -861,6 +934,7 @@ class CalibrationPipeline:
                 "ga_stagnation_boost": self.ga_stagnation_boost,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "requested_parallel_workers": self.parallel_workers,
                 "num_workers": self.parallel_workers or self.config.default_parallel_workers,
             },
             "demand_config": {
@@ -868,6 +942,7 @@ class CalibrationPipeline:
                 "num_destinations": self.num_destinations,
                 "max_od_pairs": self.max_od_pairs,
                 "bin_minutes": self.bin_minutes,
+                "initial_population": self.initial_population,
             },
             "results": {
                 "final_loss_mae_kmh": (
@@ -929,6 +1004,44 @@ class CalibrationPipeline:
                     ),
                     "description": "MAE (Mean Absolute Error) shows average speed error in km/h - lower is better. Match rate shows % of observed segments successfully matched to SUMO edges.",
                 },
+            },
+            "user_inputs": {
+                "bbox": {
+                    "west": self.bbox[0],
+                    "south": self.bbox[1],
+                    "east": self.bbox[2],
+                    "north": self.bbox[3],
+                },
+                "run_id": self.run_id,
+                "window_minutes": self.window_minutes,
+                "warmup_minutes": self.warmup_minutes,
+                "seed": self.seed,
+                "step_length": self.step_length,
+                "parallel_workers": self.parallel_workers,
+                "traffic_tile_zoom": self.traffic_tile_zoom,
+                "ga_population": self.ga_population,
+                "ga_generations": self.ga_generations,
+                "ga_mutation_rate": self.ga_mutation_rate,
+                "ga_crossover_rate": self.ga_crossover_rate,
+                "ga_elitism": self.ga_elitism,
+                "ga_mutation_sigma": self.ga_mutation_sigma,
+                "ga_mutation_indpb": self.ga_mutation_indpb,
+                "ga_immigrant_rate": self.ga_immigrant_rate,
+                "ga_elite_top_pct": self.ga_elite_top_pct,
+                "ga_magnitude_penalty_weight": self.ga_magnitude_penalty_weight,
+                "ga_stagnation_patience": self.ga_stagnation_patience,
+                "ga_stagnation_boost": self.ga_stagnation_boost,
+                "ga_assortative_mating": self.ga_assortative_mating,
+                "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "num_origins": self.num_origins,
+                "num_destinations": self.num_destinations,
+                "max_od_pairs": self.max_od_pairs,
+                "bin_minutes": self.bin_minutes,
+                "initial_population": self.initial_population,
+            },
+            "reproducibility": {
+                "rerun_cli_command": self._build_rerun_cli_command(),
+                "rerun_cli_note": "Change --name if the run directory already exists.",
             },
             "data_sources": {
                 "traffic_provider": "TomTom Flow (tiles preferred)",

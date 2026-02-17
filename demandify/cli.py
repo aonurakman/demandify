@@ -7,6 +7,7 @@ import argparse
 import subprocess
 from pathlib import Path
 from demandify import __version__
+from demandify.config import get_run_defaults
 
 ASCII_ART = r"""
           ▒▒▒                                                                ▒▒▒▓ ▒▒▒▒   ▒▒▒▒▒▒▒                               
@@ -146,8 +147,8 @@ async def cmd_run(args):
                 ga_magnitude_penalty_weight=args.magnitude_penalty,
                 ga_stagnation_patience=args.stagnation_patience,
                 ga_stagnation_boost=args.stagnation_boost,
-                ga_assortative_mating=not args.no_assortative_mating,
-                ga_deterministic_crowding=not args.no_deterministic_crowding,
+                ga_assortative_mating=args.ga_assortative_mating,
+                ga_deterministic_crowding=args.ga_deterministic_crowding,
                 num_origins=args.origins,
                 num_destinations=args.destinations,
                 max_od_pairs=args.max_ods,
@@ -237,6 +238,8 @@ def cmd_serve(args):
 
 def cli():
     """Main CLI entry point."""
+    run_defaults = get_run_defaults()
+
     parser = argparse.ArgumentParser(
         description="demandify - SUMO traffic calibration tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -262,92 +265,174 @@ def cli():
     run_parser.add_argument("bbox", help="Bounding box (west,south,east,north)")
     run_parser.add_argument("--name", help="Custom run ID/name")
     run_parser.add_argument(
-        "--window", type=int, default=15, help="Simulation window minutes (default: 15)"
-    )
-    run_parser.add_argument("--warmup", type=int, default=5, help="Warmup minutes (default: 5)")
-    run_parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    run_parser.add_argument(
-        "--step-length", type=float, default=1.0, help="SUMO step length seconds (default: 1.0)"
+        "--window",
+        type=int,
+        default=run_defaults["window_minutes"],
+        help=f"Simulation window minutes (default: {run_defaults['window_minutes']})",
     )
     run_parser.add_argument(
-        "--workers", type=int, default=None, help="Parallel GA workers (default: auto)"
+        "--warmup",
+        type=int,
+        default=run_defaults["warmup_minutes"],
+        help=f"Warmup minutes (default: {run_defaults['warmup_minutes']})",
     )
     run_parser.add_argument(
-        "--tile-zoom", type=int, default=12, help="TomTom tile zoom (default: 12)"
-    )
-    run_parser.add_argument("--pop", type=int, default=50, help="GA population size (default: 50)")
-    run_parser.add_argument("--gen", type=int, default=20, help="GA generations (default: 20)")
-    run_parser.add_argument(
-        "--mutation", type=float, default=0.5, help="Mutation rate (default: 0.5)"
+        "--seed",
+        type=int,
+        default=run_defaults["seed"],
+        help=f"Random seed (default: {run_defaults['seed']})",
     )
     run_parser.add_argument(
-        "--crossover", type=float, default=0.7, help="Crossover rate (default: 0.7)"
+        "--step-length",
+        type=float,
+        default=run_defaults["step_length"],
+        help=f"SUMO step length seconds (default: {run_defaults['step_length']})",
     )
-    run_parser.add_argument("--elitism", type=int, default=2, help="Elitism count (default: 2)")
-    run_parser.add_argument("--sigma", type=int, default=20, help="Mutation sigma (default: 20)")
     run_parser.add_argument(
-        "--indpb", type=float, default=0.3, help="Mutation gene probability (default: 0.3)"
+        "--workers",
+        type=int,
+        default=run_defaults["parallel_workers"],
+        help=f"Parallel GA workers (default: {run_defaults['parallel_workers']})",
+    )
+    run_parser.add_argument(
+        "--tile-zoom",
+        type=int,
+        default=run_defaults["traffic_tile_zoom"],
+        help=f"TomTom tile zoom (default: {run_defaults['traffic_tile_zoom']})",
+    )
+    run_parser.add_argument(
+        "--pop",
+        type=int,
+        default=run_defaults["ga_population"],
+        help=f"GA population size (default: {run_defaults['ga_population']})",
+    )
+    run_parser.add_argument(
+        "--gen",
+        type=int,
+        default=run_defaults["ga_generations"],
+        help=f"GA generations (default: {run_defaults['ga_generations']})",
+    )
+    run_parser.add_argument(
+        "--mutation",
+        type=float,
+        default=run_defaults["ga_mutation_rate"],
+        help=f"Mutation rate (default: {run_defaults['ga_mutation_rate']})",
+    )
+    run_parser.add_argument(
+        "--crossover",
+        type=float,
+        default=run_defaults["ga_crossover_rate"],
+        help=f"Crossover rate (default: {run_defaults['ga_crossover_rate']})",
+    )
+    run_parser.add_argument(
+        "--elitism",
+        type=int,
+        default=run_defaults["ga_elitism"],
+        help=f"Elitism count (default: {run_defaults['ga_elitism']})",
+    )
+    run_parser.add_argument(
+        "--sigma",
+        type=int,
+        default=run_defaults["ga_mutation_sigma"],
+        help=f"Mutation sigma (default: {run_defaults['ga_mutation_sigma']})",
+    )
+    run_parser.add_argument(
+        "--indpb",
+        type=float,
+        default=run_defaults["ga_mutation_indpb"],
+        help=f"Mutation gene probability (default: {run_defaults['ga_mutation_indpb']})",
     )
     run_parser.add_argument(
         "--immigrant-rate",
         type=float,
-        default=0.03,
-        help="Random immigrant fraction per generation (default: 0.03)",
+        default=run_defaults["ga_immigrant_rate"],
+        help=f"Random immigrant fraction per generation (default: {run_defaults['ga_immigrant_rate']})",
     )
     run_parser.add_argument(
         "--elite-top-pct",
         type=float,
-        default=0.1,
-        help="Fraction defining feasible elite parent pool size (default: 0.1)",
+        default=run_defaults["ga_elite_top_pct"],
+        help=f"Fraction defining feasible elite parent pool size (default: {run_defaults['ga_elite_top_pct']})",
     )
     run_parser.add_argument(
         "--magnitude-penalty",
         type=float,
-        default=0.001,
-        help="Weight for magnitude term in feasible-elite parent ranking (default: 0.001)",
+        default=run_defaults["ga_magnitude_penalty_weight"],
+        help=f"Weight for magnitude term in feasible-elite parent ranking (default: {run_defaults['ga_magnitude_penalty_weight']})",
     )
     run_parser.add_argument(
         "--stagnation-patience",
         type=int,
-        default=20,
-        help="Generations before mutation boost (default: 20)",
+        default=run_defaults["ga_stagnation_patience"],
+        help=f"Generations before mutation boost (default: {run_defaults['ga_stagnation_patience']})",
     )
     run_parser.add_argument(
         "--stagnation-boost",
         type=float,
-        default=1.5,
-        help="Mutation boost multiplier on stagnation (default: 1.5)",
+        default=run_defaults["ga_stagnation_boost"],
+        help=f"Mutation boost multiplier on stagnation (default: {run_defaults['ga_stagnation_boost']})",
     )
-    run_parser.add_argument(
+    default_assortative = run_defaults["ga_assortative_mating"]
+    default_crowding = run_defaults["ga_deterministic_crowding"]
+    run_parser.set_defaults(
+        ga_assortative_mating=default_assortative,
+        ga_deterministic_crowding=default_crowding,
+    )
+    assortative_group = run_parser.add_mutually_exclusive_group()
+    assortative_group.add_argument(
+        "--assortative-mating",
+        dest="ga_assortative_mating",
+        action="store_true",
+        help=f"Enable assortative mating (default: {'enabled' if default_assortative else 'disabled'})",
+    )
+    assortative_group.add_argument(
         "--no-assortative-mating",
-        action="store_true",
-        help="Disable assortative mating (default: enabled)",
+        dest="ga_assortative_mating",
+        action="store_false",
+        help=f"Disable assortative mating (default: {'enabled' if default_assortative else 'disabled'})",
     )
-    run_parser.add_argument(
+    crowding_group = run_parser.add_mutually_exclusive_group()
+    crowding_group.add_argument(
+        "--deterministic-crowding",
+        dest="ga_deterministic_crowding",
+        action="store_true",
+        help=f"Enable deterministic crowding (default: {'enabled' if default_crowding else 'disabled'})",
+    )
+    crowding_group.add_argument(
         "--no-deterministic-crowding",
-        action="store_true",
-        help="Disable deterministic crowding (default: enabled)",
+        dest="ga_deterministic_crowding",
+        action="store_false",
+        help=f"Disable deterministic crowding (default: {'enabled' if default_crowding else 'disabled'})",
     )
     run_parser.add_argument(
-        "--origins", type=int, default=10, help="Number of origin candidates (default: 10)"
+        "--origins",
+        type=int,
+        default=run_defaults["num_origins"],
+        help=f"Number of origin candidates (default: {run_defaults['num_origins']})",
     )
     run_parser.add_argument(
         "--destinations",
         type=int,
-        default=10,
-        help="Number of destination candidates (default: 10)",
+        default=run_defaults["num_destinations"],
+        help=f"Number of destination candidates (default: {run_defaults['num_destinations']})",
     )
     run_parser.add_argument(
-        "--max-ods", type=int, default=1000, help="Max OD pairs to generate (default: 1000)"
+        "--max-ods",
+        type=int,
+        default=run_defaults["max_od_pairs"],
+        help=f"Max OD pairs to generate (default: {run_defaults['max_od_pairs']})",
     )
     run_parser.add_argument(
-        "--bin-size", type=float, default=1.0, help="Time bin size in minutes (default: 1.0)"
+        "--bin-size",
+        type=float,
+        default=run_defaults["bin_minutes"],
+        help=f"Time bin size in minutes (default: {run_defaults['bin_minutes']})",
     )
     run_parser.add_argument(
         "--initial-population",
         type=int,
-        default=1000,
-        help="Target initial vehicles (default: 1000)",
+        default=run_defaults["initial_population"],
+        help=f"Target initial vehicles (default: {run_defaults['initial_population']})",
     )
 
     # serve command (default)
