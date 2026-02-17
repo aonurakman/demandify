@@ -39,7 +39,7 @@
                         <div id="map" style="height: 400px;"></div>
                     </div>
                     <div class="card-footer bg-white">
-                        <small class="text-muted">Draw a rectangle (or circle) on the map to select your calibration area</small>
+                        <small class="text-muted" id="bbox-help-text">Draw a rectangle (or circle) on the map to select your calibration area</small>
                         <span id="bbox-area" class="float-end fw-bold text-primary"></span>
                     </div>
                 </div>
@@ -51,8 +51,50 @@
                     </div>
                     <div class="card-body">
                         <form id="run-form">
-                            <!-- Bounding Box Manual Input -->
+                            <!-- Data Source Mode -->
                             <div class="mb-3">
+                                <label for="data_mode" class="form-label">
+                                    <i class="bi bi-database"></i> Data Source Mode
+                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                        title="Create: fetch fresh traffic/OSM data. Import: use a bundled/offline dataset snapshot.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <select class="form-select" id="data_mode" name="data_mode">
+                                    <option value="create" selected>Create</option>
+                                    <option value="import" {% if offline_datasets|length == 0 %}disabled{% endif %}>Import</option>
+                                </select>
+                                <div class="form-text">
+                                    {% if offline_datasets|length == 0 %}
+                                    No offline datasets discovered. Use "Create" mode.
+                                    {% else %}
+                                    Choose Import to calibrate from a pre-packaged/offline snapshot.
+                                    {% endif %}
+                                </div>
+                                <div class="mt-1 text-end">
+                                    <a href="/dataset-builder" class="small text-muted text-decoration-none">
+                                        <i class="bi bi-box-arrow-up-right"></i> offline dataset builder
+                                    </a>
+                                </div>
+                            </div>
+
+                            <div id="import-dataset-group" class="mb-3 d-none">
+                                <label for="offline_dataset" class="form-label">
+                                    <i class="bi bi-collection"></i> Offline Dataset
+                                </label>
+                                <select class="form-select" id="offline_dataset" name="offline_dataset">
+                                    <option value="">Select dataset</option>
+                                    {% for ds in offline_datasets %}
+                                    <option value="{{ ds.id }}">
+                                        {{ ds.name }} [{{ ds.source }}{% if ds.quality_label %}, {{ ds.quality_label }}{% if ds.quality_score is not none %} {{ ds.quality_score }}/100{% endif %}{% endif %}]
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                                <div id="offline-dataset-summary" class="form-text"></div>
+                            </div>
+
+                            <!-- Bounding Box Manual Input -->
+                            <div class="mb-3" id="bbox-group">
                                 <label class="form-label">
                                     <i class="bi bi-bounding-box-circles"></i> Region Bounds
                                     <span class="info-icon" data-bs-toggle="tooltip"
@@ -100,6 +142,7 @@
                                         target="_blank" class="alert-link">developer.tomtom.com</a></p>
                                 <p class="mb-2 small text-muted">Make sure your key has <strong>Traffic Flow
                                         API</strong> enabled</p>
+                                <p class="mb-2 small text-muted"><strong>Note:</strong> API key is required only for <code>Create</code> mode, not <code>Import</code> mode.</p>
                                 <div class="input-group">
                                     <input type="password" class="form-control" id="api-key-input"
                                         placeholder="Paste your API key here">
@@ -488,8 +531,7 @@
                     </div>
 
                     <!-- Run Button -->
-                    <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn" {% if not has_api_key
-                        %}disabled{% endif %}>
+                    <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn">
                         <i class="bi bi-rocket-takeoff"></i> Start Calibration
                     </button>
                     </form>
@@ -629,7 +671,17 @@
                             Total Graph Edges
                             <span class="badge bg-secondary rounded-pill" id="check-total-edges">-</span>
                         </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Data Quality
+                            <span class="badge bg-info rounded-pill" id="check-quality-label">-</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Quality Score
+                            <span class="badge bg-dark rounded-pill" id="check-quality-score">-</span>
+                        </li>
                     </ul>
+
+                    <div id="check-quality-summary" class="small text-muted mb-3">-</div>
 
                     <div id="check-warning" class="alert alert-warning d-none">
                         <i class="bi bi-exclamation-triangle"></i> <strong>Warning:</strong> Low match rate. The
@@ -639,6 +691,26 @@
                     <div id="check-critical" class="alert alert-danger d-none">
                         <i class="bi bi-x-circle"></i> <strong>Critical:</strong> No edges matched. Run will likely
                         fail.
+                    </div>
+
+                    <div id="save-offline-dataset-section">
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" value="true"
+                                id="save-offline-dataset-checkbox">
+                            <label class="form-check-label" for="save-offline-dataset-checkbox">
+                                Save network and traffic data
+                            </label>
+                        </div>
+                        <div id="save-offline-dataset-name-group" class="ms-4 mt-2 mb-3 d-none">
+                            <label for="save-offline-dataset-name" class="form-label form-label-sm mb-1">
+                                Dataset name
+                            </label>
+                            <input type="text" class="form-control form-control-sm" id="save-offline-dataset-name"
+                                placeholder="e.g. krakow_v2">
+                            <div class="form-text">
+                                Use letters, numbers, underscores, or hyphens. Name must be unique.
+                            </div>
+                        </div>
                     </div>
 
                     <p class="small text-muted mb-0">Proceed with calibration?</p>
@@ -657,6 +729,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script id="known-offline-datasets-json" type="application/json">{{ offline_datasets | tojson }}</script>
     <script src="/static/js/app.js"></script>
 
     <script>

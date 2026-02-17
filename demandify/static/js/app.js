@@ -2,14 +2,22 @@
 
 let map;
 let drawnItems;
+let drawControl;
+let drawControlAttached = false;
 let currentBbox = null;
 let currentRunId = null;
 let progressInterval = null;
+let progressRequestInFlight = false;
+let dataMode = 'create';
+let knownOfflineDatasets = [];
+const OFFLINE_DATASET_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 // Initialize map
 document.addEventListener('DOMContentLoaded', function () {
+    loadKnownOfflineDatasetsFromPage();
     initMap();
     initEventListeners();
+    setDataMode(document.getElementById('data_mode')?.value || 'create');
 });
 
 function initMap() {
@@ -26,7 +34,7 @@ function initMap() {
     drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
 
-    const drawControl = new L.Control.Draw({
+    drawControl = new L.Control.Draw({
         draw: {
             polyline: false,
             polygon: false,
@@ -50,10 +58,11 @@ function initMap() {
             remove: true
         }
     });
-    map.addControl(drawControl);
+    attachDrawControl();
 
     // Handle rectangle drawn
     map.on(L.Draw.Event.CREATED, function (event) {
+        if (dataMode !== 'create') return;
         const layer = event.layer;
 
         // Clear previous rectangles
@@ -125,6 +134,21 @@ function updateBboxForm() {
     }
 }
 
+function loadKnownOfflineDatasetsFromPage() {
+    try {
+        const el = document.getElementById('known-offline-datasets-json');
+        if (!el) {
+            knownOfflineDatasets = [];
+            return;
+        }
+        const parsed = JSON.parse(el.textContent || '[]');
+        knownOfflineDatasets = Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.error('Failed to parse offline dataset payload', error);
+        knownOfflineDatasets = [];
+    }
+}
+
 function calculateBboxArea(bbox) {
     const latKmPerDeg = 111.0;
     const avgLat = (bbox.south + bbox.north) / 2;
@@ -136,7 +160,113 @@ function calculateBboxArea(bbox) {
     return width * height;
 }
 
+function toggleSaveOfflineDatasetNameInput() {
+    const checkbox = document.getElementById('save-offline-dataset-checkbox');
+    const group = document.getElementById('save-offline-dataset-name-group');
+    const input = document.getElementById('save-offline-dataset-name');
+    if (!checkbox || !group || !input) return;
+
+    if (checkbox.checked) {
+        group.classList.remove('d-none');
+    } else {
+        group.classList.add('d-none');
+        input.value = '';
+    }
+}
+
+function isValidOfflineDatasetName(name) {
+    return OFFLINE_DATASET_NAME_PATTERN.test(name);
+}
+
+function attachDrawControl() {
+    if (drawControl && !drawControlAttached) {
+        map.addControl(drawControl);
+        drawControlAttached = true;
+    }
+}
+
+function detachDrawControl() {
+    if (drawControl && drawControlAttached) {
+        map.removeControl(drawControl);
+        drawControlAttached = false;
+    }
+}
+
+function applyBboxToMap(bbox, fitMap) {
+    const west = parseFloat(bbox.west);
+    const east = parseFloat(bbox.east);
+    const south = parseFloat(bbox.south);
+    const north = parseFloat(bbox.north);
+    if (isNaN(west) || isNaN(east) || isNaN(south) || isNaN(north)) return;
+    if (west >= east || south >= north) return;
+
+    const bounds = [[south, west], [north, east]];
+    drawnItems.clearLayers();
+    drawnItems.addLayer(L.rectangle(bounds, { color: '#2563eb', weight: 2 }));
+    if (fitMap) {
+        map.fitBounds(bounds);
+    }
+    currentBbox = { west, south, east, north };
+    updateBboxForm();
+}
+
+function setDataMode(mode) {
+    dataMode = (mode || 'create').toLowerCase() === 'import' ? 'import' : 'create';
+    const importGroup = document.getElementById('import-dataset-group');
+    const helpText = document.getElementById('bbox-help-text');
+    const summaryEl = document.getElementById('offline-dataset-summary');
+    const tileZoomInput = document.getElementById('traffic_tile_zoom');
+
+    const bboxInputs = document.querySelectorAll('.bbox-input');
+    if (dataMode === 'import') {
+        if (importGroup) importGroup.classList.remove('d-none');
+        detachDrawControl();
+        if (tileZoomInput) tileZoomInput.disabled = true;
+        bboxInputs.forEach(el => {
+            el.readOnly = true;
+            el.disabled = true;
+        });
+        if (helpText) helpText.textContent = 'Import mode: select a dataset to visualize its fixed calibration area.';
+        const selectedId = document.getElementById('offline_dataset')?.value || '';
+        if (selectedId) {
+            applySelectedOfflineDataset(selectedId);
+        } else {
+            currentBbox = null;
+            drawnItems.clearLayers();
+            updateBboxForm();
+            if (summaryEl) summaryEl.textContent = 'Select an offline dataset to import its bbox.';
+        }
+    } else {
+        if (importGroup) importGroup.classList.add('d-none');
+        attachDrawControl();
+        if (tileZoomInput) tileZoomInput.disabled = false;
+        bboxInputs.forEach(el => {
+            el.readOnly = false;
+            el.disabled = false;
+        });
+        if (helpText) helpText.textContent = 'Draw a rectangle (or circle) on the map to select your calibration area';
+        if (summaryEl) summaryEl.textContent = '';
+    }
+}
+
+function applySelectedOfflineDataset(datasetId) {
+    const dataset = knownOfflineDatasets.find(ds => ds.id === datasetId);
+    const summaryEl = document.getElementById('offline-dataset-summary');
+    if (!dataset || !dataset.bbox) {
+        if (summaryEl) summaryEl.textContent = 'Selected dataset is missing bbox metadata.';
+        return;
+    }
+    applyBboxToMap(dataset.bbox, true);
+    if (summaryEl) {
+        const quality = dataset.quality_label
+            ? `${String(dataset.quality_label).toUpperCase()}${dataset.quality_score !== null && dataset.quality_score !== undefined ? ` (${dataset.quality_score}/100)` : ''}`
+            : 'N/A';
+        summaryEl.textContent = `${dataset.name} [${dataset.source}] selected. Quality: ${quality}.`;
+    }
+}
+
 function updateMapFromInputs() {
+    if (dataMode !== 'create') return;
     const west = parseFloat(document.getElementById('bbox_west').value);
     const east = parseFloat(document.getElementById('bbox_east').value);
     const south = parseFloat(document.getElementById('bbox_south').value);
@@ -149,25 +279,7 @@ function updateMapFromInputs() {
         return;
     }
 
-    // Create bounds: [[south, west], [north, east]]
-    const bounds = [[south, west], [north, east]];
-
-    // Clear existing layers
-    drawnItems.clearLayers();
-
-    // Add new rectangle
-    const rect = L.rectangle(bounds, { color: '#2563eb', weight: 2 });
-    drawnItems.addLayer(rect);
-
-    // Pan map
-    map.fitBounds(bounds);
-
-    // Update state
-    currentBbox = { west, south, east, north };
-
-    // Update area display
-    const area = calculateBboxArea(currentBbox);
-    document.getElementById('bbox-area').textContent = `Area: ~${area.toFixed(2)} km²`;
+    applyBboxToMap({ west, south, east, north }, true);
 
     // Enable run button logic check
     const runBtn = document.getElementById('run-btn');
@@ -235,6 +347,28 @@ function initEventListeners() {
         } catch (e) {
             console.error('Failed to load runs', e);
         }
+    }
+
+    // Data mode and offline dataset selection
+    const dataModeSelect = document.getElementById('data_mode');
+    if (dataModeSelect) {
+        dataModeSelect.addEventListener('change', function () {
+            setDataMode(this.value);
+        });
+    }
+
+    const offlineDatasetSelect = document.getElementById('offline_dataset');
+    if (offlineDatasetSelect) {
+        offlineDatasetSelect.addEventListener('change', function () {
+            if (dataMode === 'import') {
+                applySelectedOfflineDataset(this.value);
+            }
+        });
+    }
+
+    const saveOfflineDatasetCheckbox = document.getElementById('save-offline-dataset-checkbox');
+    if (saveOfflineDatasetCheckbox) {
+        saveOfflineDatasetCheckbox.addEventListener('change', toggleSaveOfflineDatasetNameInput);
     }
 
     // Initial load
@@ -308,10 +442,22 @@ function initEventListeners() {
 
     runForm.addEventListener('submit', async function (e) {
         e.preventDefault();
+        const hasApiKeyConfigured = document.getElementById('api-key-input') === null;
 
-        if (!currentBbox) {
+        if (dataMode === 'create' && !currentBbox) {
             alert('Please draw a bounding box on the map');
             return;
+        }
+        if (dataMode === 'create' && !hasApiKeyConfigured) {
+            alert('TomTom API key is required in Create mode. Save your key or switch to Import mode.');
+            return;
+        }
+        if (dataMode === 'import') {
+            const selected = document.getElementById('offline_dataset')?.value || '';
+            if (!selected) {
+                alert('Please select an offline dataset to import.');
+                return;
+            }
         }
 
         // Show loading state
@@ -341,6 +487,9 @@ function initEventListeners() {
 
                 const totalEl = document.getElementById('check-total-edges');
                 if (totalEl) totalEl.textContent = data.stats.total_network_edges || '-';
+                const qualityLabelEl = document.getElementById('check-quality-label');
+                const qualityScoreEl = document.getElementById('check-quality-score');
+                const qualitySummaryEl = document.getElementById('check-quality-summary');
 
                 const warningEl = document.getElementById('check-warning');
                 const criticalEl = document.getElementById('check-critical');
@@ -348,12 +497,70 @@ function initEventListeners() {
                 warningEl.classList.add('d-none');
                 criticalEl.classList.add('d-none');
 
+                if (qualityLabelEl) {
+                    qualityLabelEl.textContent = '-';
+                    qualityLabelEl.className = 'badge bg-info rounded-pill';
+                }
+                if (qualityScoreEl) {
+                    qualityScoreEl.textContent = '-';
+                }
+                if (qualitySummaryEl) {
+                    qualitySummaryEl.textContent = '-';
+                }
+
+                const quality = data.quality || null;
+                if (quality) {
+                    const label = (quality.label || 'unknown').toUpperCase();
+                    const score = Number.isFinite(quality.score) ? quality.score : '-';
+                    const recommendation = quality.recommendation || '';
+                    const warnings = Array.isArray(quality.warnings) ? quality.warnings : [];
+
+                    if (qualityLabelEl) {
+                        qualityLabelEl.textContent = label;
+                        let badgeClass = 'bg-secondary';
+                        if (quality.label === 'excellent') badgeClass = 'bg-success';
+                        else if (quality.label === 'good') badgeClass = 'bg-primary';
+                        else if (quality.label === 'fair') badgeClass = 'bg-info';
+                        else if (quality.label === 'weak') badgeClass = 'bg-warning';
+                        else if (quality.label === 'poor') badgeClass = 'bg-danger';
+                        qualityLabelEl.className = `badge ${badgeClass} rounded-pill`;
+                    }
+
+                    if (qualityScoreEl) {
+                        qualityScoreEl.textContent = score !== '-' ? `${score}/100` : '-';
+                    }
+
+                    if (qualitySummaryEl) {
+                        let summary = quality.summary || '-';
+                        if (warnings.length > 0) {
+                            summary += ` Flags: ${warnings.join(', ')}`;
+                        }
+                        qualitySummaryEl.textContent = summary;
+                    }
+
+                    if (recommendation === 'do_not_proceed') {
+                        criticalEl.classList.remove('d-none');
+                    } else if (recommendation === 'high_risk' || recommendation === 'caution') {
+                        warningEl.classList.remove('d-none');
+                    }
+                }
+
                 const matched = data.stats.matched_edges;
                 if (matched === 0) {
                     criticalEl.classList.remove('d-none');
                 } else if (matched < 5) {
                     warningEl.classList.remove('d-none');
                 }
+
+                const saveSection = document.getElementById('save-offline-dataset-section');
+                const saveCheckbox = document.getElementById('save-offline-dataset-checkbox');
+                const saveNameInput = document.getElementById('save-offline-dataset-name');
+                if (saveSection) {
+                    saveSection.classList.toggle('d-none', dataMode !== 'create');
+                }
+                if (saveCheckbox) saveCheckbox.checked = false;
+                if (saveNameInput) saveNameInput.value = '';
+                toggleSaveOfflineDatasetNameInput();
 
                 // Show Modal
                 const modal = new bootstrap.Modal(document.getElementById('checkModal'));
@@ -374,13 +581,33 @@ function initEventListeners() {
 
     // Confirm Run Button in Modal
     document.getElementById('confirm-run-btn').addEventListener('click', async function () {
+        if (!pendingRunId) return;
+
+        const saveCheckbox = document.getElementById('save-offline-dataset-checkbox');
+        const saveNameInput = document.getElementById('save-offline-dataset-name');
+        const shouldSaveOffline = !!(saveCheckbox && saveCheckbox.checked);
+        const saveName = saveNameInput ? saveNameInput.value.trim() : '';
+
+        if (shouldSaveOffline) {
+            if (!saveName) {
+                alert('Please provide a dataset name to save offline data.');
+                return;
+            }
+            if (!isValidOfflineDatasetName(saveName)) {
+                alert('Dataset name must use only letters, numbers, underscores, and hyphens.');
+                return;
+            }
+            const existing = knownOfflineDatasets.some(ds => ds.name === saveName);
+            if (existing) {
+                alert(`Offline dataset '${saveName}' already exists. Choose a different name.`);
+                return;
+            }
+        }
+
         // Hide modal
         const modalEl = document.getElementById('checkModal');
         const modal = bootstrap.Modal.getInstance(modalEl);
         modal.hide();
-
-        // Start Actual Run
-        if (!pendingRunId) return;
 
         // Show progress panel
         document.getElementById('info-panel').style.display = 'none';
@@ -395,6 +622,10 @@ function initEventListeners() {
         });
         // Ensure we use the SAME run_id
         formData.set('run_id', pendingRunId);
+        formData.set('save_offline_dataset', shouldSaveOffline ? 'true' : 'false');
+        if (shouldSaveOffline) {
+            formData.set('save_offline_dataset_name', saveName);
+        }
 
         try {
             const response = await fetch('/api/run', {
@@ -445,13 +676,20 @@ function initEventListeners() {
 }
 
 function startProgressPolling() {
+    stopProgressPolling();
     progressInterval = setInterval(async function () {
         if (!currentRunId) return;
+        if (progressRequestInFlight) return;
 
+        progressRequestInFlight = true;
+        const runIdAtRequestStart = currentRunId;
         try {
-            const response = await fetch(`/api/run/${currentRunId}/progress`);
+            const response = await fetch(`/api/run/${runIdAtRequestStart}/progress?ts=${Date.now()}`, {
+                cache: 'no-store'
+            });
             if (response.ok) {
                 const progress = await response.json();
+                if (!currentRunId || currentRunId !== runIdAtRequestStart) return;
                 updateProgress(progress);
 
                 if (progress.status === 'completed') {
@@ -469,6 +707,8 @@ function startProgressPolling() {
             }
         } catch (error) {
             console.error('Error fetching progress:', error);
+        } finally {
+            progressRequestInFlight = false;
         }
     }, 1000);
 }
@@ -478,6 +718,7 @@ function stopProgressPolling() {
         clearInterval(progressInterval);
         progressInterval = null;
     }
+    progressRequestInFlight = false;
 }
 
 function showRestartOption(status) {

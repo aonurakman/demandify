@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>demandify - Offline Dataset Builder</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+    <div class="container-fluid">
+        <div class="row py-2 bg-white shadow-sm">
+            <div class="col-12 text-center">
+                <img src="/static/banner.png" alt="demandify" class="header-logo">
+                <div class="mt-2">
+                    <h4 class="mb-0">Offline Dataset Builder</h4>
+                    <small class="text-muted">Preparation-only workflow (separate from calibration runs)</small>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mt-4 g-4">
+            <div class="col-lg-6">
+                <div class="card mb-3 shadow-sm">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-map"></i> Select Dataset Area</h5>
+                        <a href="/" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-arrow-left"></i> Back to Calibration
+                        </a>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="map" style="height: 430px;"></div>
+                    </div>
+                    <div class="card-footer bg-white">
+                        <small class="text-muted">Draw a rectangle to define the bounding box</small>
+                        <span id="bbox-area" class="float-end fw-bold text-primary"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div id="info-panel">
+                    <div class="card shadow-sm mb-3">
+                        <div class="card-header bg-white">
+                            <h5 class="mb-0"><i class="bi bi-database"></i> Dataset Settings</h5>
+                        </div>
+                        <div class="card-body">
+                            {% if not has_api_key %}
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                TomTom API key is not configured. Set it first in the calibration UI.
+                            </div>
+                            {% else %}
+                            <div class="alert alert-success">
+                                <i class="bi bi-check-circle"></i> TomTom API key detected and ready.
+                            </div>
+                            {% endif %}
+
+                            <form id="dataset-form">
+                                <div class="mb-3">
+                                    <label for="existing_dataset_select" class="form-label">
+                                        <i class="bi bi-collection"></i> Import BBox from Existing Dataset
+                                    </label>
+                                    <select id="existing_dataset_select" class="form-select">
+                                        <option value="">Select dataset (optional)</option>
+                                        {% for ds in known_datasets %}
+                                        <option value="{{ ds.id }}">
+                                            {{ ds.name }} [{{ ds.source }}{% if ds.quality_label %}, {{ ds.quality_label }}{% if ds.quality_score is not none %} {{ ds.quality_score }}/100{% endif %}{% endif %}]
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    <div id="existing-dataset-info" class="form-text">
+                                        {% if known_datasets|length == 0 %}
+                                        No existing datasets with metadata found in <code>demandify_datasets</code> or <code>demandify/offline_datasets</code>.
+                                        {% else %}
+                                        Pick one to auto-fill and draw its bounding box.
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="dataset_name" class="form-label">
+                                        <i class="bi bi-tag"></i> Dataset Name
+                                    </label>
+                                    <input type="text" class="form-control" id="dataset_name" name="dataset_name"
+                                        placeholder="e.g. nowa_huta_sample_v1" required pattern="[A-Za-z0-9_-]+">
+                                    <div class="form-text">Letters, numbers, `_` and `-` only. Saved under <code>demandify_datasets/&lt;name&gt;</code>.</div>
+                                    <div id="dataset-name-warning" class="form-text text-warning d-none">
+                                        <i class="bi bi-exclamation-triangle"></i> A dataset with this name already exists.
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label">
+                                        <i class="bi bi-bounding-box-circles"></i> Region Bounds
+                                    </label>
+                                    <div class="row g-2">
+                                        <div class="col-6">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">W</span>
+                                                <input type="number" class="form-control bbox-input" id="bbox_west"
+                                                    name="bbox_west" step="0.0001" placeholder="West" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">N</span>
+                                                <input type="number" class="form-control bbox-input" id="bbox_north"
+                                                    name="bbox_north" step="0.0001" placeholder="North" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">S</span>
+                                                <input type="number" class="form-control bbox-input" id="bbox_south"
+                                                    name="bbox_south" step="0.0001" placeholder="South" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">E</span>
+                                                <input type="number" class="form-control bbox-input" id="bbox_east"
+                                                    name="bbox_east" step="0.0001" placeholder="East" required>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label for="traffic_tile_zoom" class="form-label">
+                                        <i class="bi bi-grid-3x3-gap"></i> TomTom Tile Zoom
+                                    </label>
+                                    <input type="number" class="form-control" id="traffic_tile_zoom"
+                                        name="traffic_tile_zoom" min="8" max="18"
+                                        value="{{ run_defaults.traffic_tile_zoom }}">
+                                </div>
+
+                                <button id="build-btn" type="submit" class="btn btn-primary w-100" {% if not has_api_key %}disabled{% endif %}>
+                                    <i class="bi bi-play-circle"></i> Build Offline Dataset
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="progress-panel" class="card shadow-sm" style="display: none;">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-activity"></i> Build Progress</h5>
+                        <span id="job-status-badge" class="badge bg-primary">running</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="progress-stepper mb-3">
+                            <div class="step" data-stage="0">
+                                <div class="step-number">1</div>
+                                <div class="step-label">Init</div>
+                            </div>
+                            <div class="step" data-stage="1">
+                                <div class="step-number">2</div>
+                                <div class="step-label">Traffic</div>
+                            </div>
+                            <div class="step" data-stage="2">
+                                <div class="step-number">3</div>
+                                <div class="step-label">OSM</div>
+                            </div>
+                            <div class="step" data-stage="3">
+                                <div class="step-number">4</div>
+                                <div class="step-label">Network</div>
+                            </div>
+                            <div class="step" data-stage="4">
+                                <div class="step-number">5</div>
+                                <div class="step-label">Match</div>
+                            </div>
+                            <div class="step" data-stage="5">
+                                <div class="step-number">6</div>
+                                <div class="step-label">Done</div>
+                            </div>
+                        </div>
+
+                        <div class="mb-2">
+                            <small class="text-muted">Current Stage</small>
+                            <div id="current-stage-name" class="fw-semibold">Initializing</div>
+                        </div>
+
+                        <div id="log-console" class="log-console"></div>
+
+                        <div id="completed-message" class="alert alert-success mt-3 d-none mb-0">
+                            <i class="bi bi-check-circle"></i>
+                            <span id="completed-text"></span>
+                        </div>
+
+                        <button id="new-build-btn" class="btn btn-outline-primary w-100 mt-3 d-none">
+                            <i class="bi bi-arrow-repeat"></i> Build Another Dataset
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script id="known-datasets-json" type="application/json">{{ known_datasets | tojson }}</script>
+    <script src="/static/js/dataset_builder.js"></script>
+</body>
+
+</html>

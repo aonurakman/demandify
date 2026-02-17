@@ -197,3 +197,50 @@ def test_log_capping_prevents_unbounded_growth(run_entry):
     assert f"Log {num_logs - 1}" in log_messages  # Last of initial logs
 
 
+def test_progress_log_ingestion_is_incremental(run_entry, tmp_path):
+    """Progress endpoint should ingest only newly appended log-file lines."""
+    run_dir = tmp_path / "run_incremental"
+    logs_dir = run_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "pipeline.log"
+    log_file.write_text(
+        "\n".join(
+            [
+                "2026-02-17 10:00:00 - demandify - INFO - First line",
+                "2026-02-17 10:00:01 - demandify - WARNING - Second line",
+                "2026-02-17 10:00:02 - demandify - DEBUG - Ignored debug",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_id = run_entry("test-incremental-logs", "running", 1, "Init", [])
+    active_runs[run_id]["output_dir"] = str(run_dir)
+
+    client = TestClient(app)
+
+    first = client.get(f"/api/run/{run_id}/progress")
+    assert first.status_code == 200
+    first_logs = first.json()["logs"]
+    assert [entry["message"] for entry in first_logs] == ["First line", "Second line"]
+
+    second = client.get(f"/api/run/{run_id}/progress")
+    assert second.status_code == 200
+    second_logs = second.json()["logs"]
+    assert [entry["message"] for entry in second_logs] == ["First line", "Second line"]
+
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write("2026-02-17 10:00:03 - demandify - ERROR - Third line\n")
+        f.write("2026-02-17 10:00:04 - demandify - INFO - Fourth line\n")
+
+    third = client.get(f"/api/run/{run_id}/progress")
+    assert third.status_code == 200
+    third_logs = third.json()["logs"]
+    assert [entry["message"] for entry in third_logs] == [
+        "First line",
+        "Second line",
+        "Third line",
+        "Fourth line",
+    ]
+

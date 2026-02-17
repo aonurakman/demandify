@@ -14,6 +14,15 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from demandify.config import get_config, get_run_defaults, save_api_key
+from demandify.offline_data import (
+    get_offline_dataset_catalog,
+    get_writable_offline_datasets_root,
+    normalize_offline_dataset_name,
+    offline_dataset_name_exists,
+    resolve_offline_dataset,
+)
+from demandify.utils.data_quality import assess_data_quality
+from demandify.utils.validation import calculate_bbox_area_km2, validate_bbox
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +38,77 @@ active_runs = {}
 MAX_LOG_ENTRIES = 100
 
 
+def _trim_run_logs(run_id: str) -> None:
+    """Cap in-memory logs for a run."""
+    logs = active_runs[run_id]["progress"]["logs"]
+    if len(logs) > MAX_LOG_ENTRIES:
+        active_runs[run_id]["progress"]["logs"] = logs[-MAX_LOG_ENTRIES:]
+
+
+def _parse_pipeline_log_line(line: str):
+    """Parse a pipeline log file line into a UI log entry."""
+    level = None
+    if " - INFO - " in line:
+        level = "info"
+    elif " - WARNING - " in line:
+        level = "warning"
+    elif " - ERROR - " in line:
+        level = "error"
+
+    if level is None:
+        return None
+
+    message = line.split(" - ", 3)[-1].strip()
+    if not message:
+        return None
+
+    return {"message": message, "level": level}
+
+
+def _ingest_new_log_file_lines(run_id: str) -> None:
+    """
+    Incrementally ingest newly appended pipeline log lines.
+
+    This avoids re-adding old lines on every progress poll.
+    """
+    run = active_runs[run_id]
+    output_dir = run.get("output_dir")
+    if not output_dir:
+        return
+
+    log_file = Path(output_dir) / "logs" / "pipeline.log"
+    if not log_file.exists():
+        return
+
+    cursor_key = "_pipeline_log_cursor"
+    current_cursor = run.get(cursor_key, 0)
+
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception as e:
+        logger.error(f"Error reading log file: {e}")
+        return
+
+    if current_cursor < 0 or current_cursor > len(lines):
+        # File may have been truncated or recreated.
+        current_cursor = 0
+
+    new_lines = lines[current_cursor:]
+    for line in new_lines:
+        parsed = _parse_pipeline_log_line(line)
+        if parsed is not None:
+            run["progress"]["logs"].append(parsed)
+
+    run[cursor_key] = len(lines)
+    _trim_run_logs(run_id)
+
+
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Main UI page."""
     config = get_config()
+    offline_datasets = get_offline_dataset_catalog(include_generated=True, include_packaged=True)
     return templates.TemplateResponse(
         "index.html",
         {
@@ -40,6 +116,7 @@ async def index(request: Request):
             "config": config,
             "run_defaults": RUN_DEFAULTS,
             "has_api_key": config.tomtom_api_key is not None,
+            "offline_datasets": offline_datasets,
         },
     )
 
@@ -68,11 +145,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
                 active_runs[run_id]["progress"]["stage"] = stage
                 active_runs[run_id]["progress"]["stage_name"] = stage_name
                 active_runs[run_id]["progress"]["logs"].append({"message": message, "level": level})
-                # Trim logs to max length
-                if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
-                    active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"][
-                        "logs"
-                    ][-MAX_LOG_ENTRIES:]
+                _trim_run_logs(run_id)
 
         def update_progress(stage: int, stage_name: str, message: str, level: str = "info"):
             loop.call_soon_threadsafe(_do_update, stage, stage_name, message, level)
@@ -86,7 +159,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
         active_runs[run_id]["output_dir"] = str(output_dir)
 
         # Initialize pipeline
-        bbox = tuple(params["bbox"])
+        bbox = tuple(params["bbox"]) if params.get("bbox") is not None else None
         pipeline = CalibrationPipeline(
             bbox=bbox,
             window_minutes=params["window_minutes"],
@@ -114,6 +187,10 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             max_od_pairs=params.get("max_od_pairs", 50),
             bin_minutes=params.get("bin_minutes", 5),
             initial_population=params.get("initial_population", 1000),
+            offline_dataset=params.get("offline_dataset"),
+            save_offline_dataset=params.get("save_offline_dataset", False),
+            save_offline_dataset_name=params.get("save_offline_dataset_name"),
+            save_offline_dataset_root=params.get("save_offline_dataset_root"),
             run_id=run_id,
             output_dir=output_dir,
             progress_callback=update_progress,
@@ -140,19 +217,17 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             active_runs[run_id]["progress"]["logs"].append(
                 {"message": f"Error: {str(e)}", "level": "error"}
             )
-            # Trim logs to max length
-            if len(active_runs[run_id]["progress"]["logs"]) > MAX_LOG_ENTRIES:
-                active_runs[run_id]["progress"]["logs"] = active_runs[run_id]["progress"]["logs"][
-                    -MAX_LOG_ENTRIES:
-                ]
+            _trim_run_logs(run_id)
 
 
 @router.post("/api/check_feasibility")
 async def check_feasibility(
-    bbox_west: float = Form(...),
-    bbox_south: float = Form(...),
-    bbox_east: float = Form(...),
-    bbox_north: float = Form(...),
+    data_mode: str = Form("create"),
+    offline_dataset: Optional[str] = Form(None),
+    bbox_west: Optional[float] = Form(None),
+    bbox_south: Optional[float] = Form(None),
+    bbox_east: Optional[float] = Form(None),
+    bbox_north: Optional[float] = Form(None),
     run_id: Optional[str] = Form(None),
     traffic_tile_zoom: int = Form(RUN_DEFAULTS["traffic_tile_zoom"]),
 ):
@@ -160,14 +235,40 @@ async def check_feasibility(
     from demandify.config import get_config
     from demandify.pipeline import CalibrationPipeline
 
-    config = get_config()
-    if not config.tomtom_api_key:
-        raise HTTPException(status_code=400, detail="TomTom API key not configured")
-
     # Use provided ID or generate temp one
     actual_run_id = run_id if run_id else f"check_{uuid.uuid4().hex}"
 
-    bbox = (bbox_west, bbox_south, bbox_east, bbox_north)
+    data_mode = (data_mode or "create").strip().lower()
+    bbox: Optional[tuple] = None
+    selected_dataset_ref: Optional[str] = None
+
+    if data_mode not in {"create", "import"}:
+        raise HTTPException(status_code=400, detail="Invalid data_mode. Use 'create' or 'import'.")
+
+    if data_mode == "import":
+        if not offline_dataset:
+            raise HTTPException(status_code=400, detail="offline_dataset is required in import mode")
+        try:
+            resolved = resolve_offline_dataset(offline_dataset)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        bbox = (
+            resolved.bbox["west"],
+            resolved.bbox["south"],
+            resolved.bbox["east"],
+            resolved.bbox["north"],
+        )
+        selected_dataset_ref = resolved.dataset_id
+    else:
+        if None in {bbox_west, bbox_south, bbox_east, bbox_north}:
+            raise HTTPException(status_code=400, detail="bbox is required in create mode")
+        is_valid, msg = validate_bbox(bbox_west, bbox_south, bbox_east, bbox_north)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=msg)
+        bbox = (bbox_west, bbox_south, bbox_east, bbox_north)
+        config = get_config()
+        if not config.tomtom_api_key:
+            raise HTTPException(status_code=400, detail="TomTom API key not configured")
 
     try:
         pipeline = CalibrationPipeline(
@@ -175,11 +276,18 @@ async def check_feasibility(
             window_minutes=RUN_DEFAULTS["window_minutes"],
             seed=RUN_DEFAULTS["seed"],
             traffic_tile_zoom=traffic_tile_zoom,
+            offline_dataset=selected_dataset_ref,
             run_id=actual_run_id,
         )
 
         # Run preparation
         context = await pipeline.prepare()
+        quality = assess_data_quality(
+            context["traffic_df"],
+            context["observed_edges"],
+            context.get("total_edges", 0),
+            bbox=bbox,
+        )
 
         return {
             "status": "success",
@@ -189,6 +297,9 @@ async def check_feasibility(
                 "matched_edges": len(context["observed_edges"]),
                 "total_network_edges": context.get("total_edges", 0),
             },
+            "data_mode": data_mode,
+            "offline_dataset": selected_dataset_ref,
+            "quality": quality,
         }
     except Exception as e:
         logger.error(f"Check failed: {e}")
@@ -198,10 +309,12 @@ async def check_feasibility(
 @router.post("/api/run")
 async def start_run(
     background_tasks: BackgroundTasks,
-    bbox_west: float = Form(...),
-    bbox_south: float = Form(...),
-    bbox_east: float = Form(...),
-    bbox_north: float = Form(...),
+    data_mode: str = Form("create"),
+    offline_dataset: Optional[str] = Form(None),
+    bbox_west: Optional[float] = Form(None),
+    bbox_south: Optional[float] = Form(None),
+    bbox_east: Optional[float] = Form(None),
+    bbox_north: Optional[float] = Form(None),
     run_id: Optional[str] = Form(None),
     window_minutes: int = Form(RUN_DEFAULTS["window_minutes"]),
     seed: int = Form(RUN_DEFAULTS["seed"]),
@@ -228,24 +341,85 @@ async def start_run(
     bin_minutes: int = Form(RUN_DEFAULTS["bin_minutes"]),
     initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
     parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
+    save_offline_dataset: bool = Form(False),
+    save_offline_dataset_name: Optional[str] = Form(None),
 ):
     """Start a new calibration run."""
-    from demandify.utils.validation import calculate_bbox_area_km2, validate_bbox
+    data_mode = (data_mode or "create").strip().lower()
+    if data_mode not in {"create", "import"}:
+        raise HTTPException(status_code=400, detail="Invalid data_mode. Use 'create' or 'import'.")
 
-    # Validate bbox
-    is_valid, msg = validate_bbox(bbox_west, bbox_south, bbox_east, bbox_north)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=msg)
-
-    # Check area
-    area_km2 = calculate_bbox_area_km2(bbox_west, bbox_south, bbox_east, bbox_north)
     config = get_config()
-    if area_km2 > config.max_bbox_area_km2:
-        logger.warning(f"Large bbox area: {area_km2:.2f} km²")
+    resolved_dataset_ref: Optional[str] = None
+    bbox_values: Optional[list] = None
+    resolved_save_dataset_name: Optional[str] = None
+    resolved_save_dataset_root: Optional[Path] = None
 
-    # Check API key
-    if not config.tomtom_api_key:
-        raise HTTPException(status_code=400, detail="TomTom API key not configured")
+    if data_mode == "import":
+        if not offline_dataset:
+            raise HTTPException(status_code=400, detail="offline_dataset is required in import mode")
+        try:
+            resolved = resolve_offline_dataset(offline_dataset)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        resolved_dataset_ref = resolved.dataset_id
+        bbox_values = [
+            resolved.bbox["west"],
+            resolved.bbox["south"],
+            resolved.bbox["east"],
+            resolved.bbox["north"],
+        ]
+    else:
+        if None in {bbox_west, bbox_south, bbox_east, bbox_north}:
+            raise HTTPException(status_code=400, detail="bbox is required in create mode")
+        is_valid, msg = validate_bbox(bbox_west, bbox_south, bbox_east, bbox_north)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=msg)
+
+        area_km2 = calculate_bbox_area_km2(bbox_west, bbox_south, bbox_east, bbox_north)
+        if area_km2 > config.max_bbox_area_km2:
+            logger.warning(f"Large bbox area: {area_km2:.2f} km²")
+
+        if not config.tomtom_api_key:
+            raise HTTPException(status_code=400, detail="TomTom API key not configured")
+        bbox_values = [bbox_west, bbox_south, bbox_east, bbox_north]
+
+    if save_offline_dataset:
+        if data_mode != "create":
+            raise HTTPException(
+                status_code=400,
+                detail="save_offline_dataset is only supported in create mode",
+            )
+        try:
+            resolved_save_dataset_name = normalize_offline_dataset_name(
+                save_offline_dataset_name or ""
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        if offline_dataset_name_exists(resolved_save_dataset_name):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Offline dataset '{resolved_save_dataset_name}' already exists. "
+                "Use a different name.",
+            )
+
+        try:
+            resolved_save_dataset_root = get_writable_offline_datasets_root()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        if (resolved_save_dataset_root / resolved_save_dataset_name).exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Offline dataset '{resolved_save_dataset_name}' already exists at "
+                f"{resolved_save_dataset_root}.",
+            )
+    elif save_offline_dataset_name and save_offline_dataset_name.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="save_offline_dataset_name requires save_offline_dataset=true",
+        )
 
     # Create or use run ID
     actual_run_id = run_id if run_id else str(uuid.uuid4())
@@ -259,7 +433,9 @@ async def start_run(
 
     # Parameters
     params = {
-        "bbox": [bbox_west, bbox_south, bbox_east, bbox_north],
+        "data_mode": data_mode,
+        "offline_dataset": resolved_dataset_ref,
+        "bbox": bbox_values,
         "window_minutes": window_minutes,
         "seed": seed,
         "warmup_minutes": warmup_minutes,
@@ -285,6 +461,11 @@ async def start_run(
         "bin_minutes": bin_minutes,
         "initial_population": initial_population,
         "parallel_workers": parallel_workers,
+        "save_offline_dataset": save_offline_dataset,
+        "save_offline_dataset_name": resolved_save_dataset_name,
+        "save_offline_dataset_root": (
+            str(resolved_save_dataset_root) if resolved_save_dataset_root else None
+        ),
     }
 
     # Start background task
@@ -293,42 +474,21 @@ async def start_run(
     return {"run_id": actual_run_id, "status": "started"}
 
 
+@router.get("/api/offline-datasets")
+async def list_offline_datasets():
+    """List all discovered offline datasets (generated + packaged)."""
+    datasets = get_offline_dataset_catalog(include_generated=True, include_packaged=True)
+    return {"datasets": datasets}
+
+
 @router.get("/api/run/{run_id}/progress")
 async def get_progress(run_id: str):
     """Get progress for a run."""
     if run_id not in active_runs:
         raise HTTPException(status_code=404, detail="Run not found")
 
+    _ingest_new_log_file_lines(run_id)
     run = active_runs[run_id]
-
-    # QUICK FIX: Also read from log file if available
-    output_dir = run.get("output_dir")
-    if output_dir:
-        log_file = Path(output_dir) / "logs" / "pipeline.log"
-        if log_file.exists():
-            try:
-                # Read last 30 lines
-                with open(log_file, "r") as f:
-                    lines = f.readlines()
-                    recent_lines = lines[-30:] if len(lines) > 30 else lines
-
-                # Parse and add to logs
-                # Create set of recent messages for efficient deduplication
-                recent_messages = {
-                    log_entry["message"] for log_entry in run["progress"]["logs"][-10:]
-                }
-                for line in recent_lines:
-                    if " - INFO - " in line or " - WARNING - " in line:
-                        msg = line.split(" - ", 3)[-1].strip()
-                        if msg and msg not in recent_messages:
-                            level = "warning" if "WARNING" in line else "info"
-                            run["progress"]["logs"].append({"message": msg, "level": level})
-
-                # Trim logs to max length after appending
-                if len(run["progress"]["logs"]) > MAX_LOG_ENTRIES:
-                    run["progress"]["logs"] = run["progress"]["logs"][-MAX_LOG_ENTRIES:]
-            except Exception as e:
-                logger.error(f"Error reading log file: {e}")
 
     return {
         **run["progress"],

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Tuple, Dict, List, Optional
 from datetime import datetime
 import asyncio
+import json
 import shlex
 import pandas as pd
 import numpy as np
@@ -35,6 +36,15 @@ from demandify.export.exporter import ScenarioExporter
 from demandify.export.report import ReportGenerator
 from demandify.utils.visualization import plot_network_geometry
 from demandify.export.custom_formats import URBDataExporter
+from demandify.utils.data_quality import assess_data_quality
+from demandify.offline_data import (
+    OfflineDatasetResolved,
+    copy_offline_dataset_to_output,
+    get_writable_offline_datasets_root,
+    normalize_offline_dataset_name,
+    offline_dataset_name_exists,
+    resolve_offline_dataset,
+)
 import shutil
 
 logger = logging.getLogger(__name__)
@@ -45,7 +55,7 @@ class CalibrationPipeline:
 
     def __init__(
         self,
-        bbox: Tuple[float, float, float, float],
+        bbox: Optional[Tuple[float, float, float, float]],
         window_minutes: int,
         seed: int,
         warmup_minutes: int = 5,
@@ -71,6 +81,10 @@ class CalibrationPipeline:
         max_od_pairs: int = 1000,
         bin_minutes: float = 1.0,
         initial_population: int = 1000,
+        offline_dataset: Optional[str] = None,
+        save_offline_dataset: bool = False,
+        save_offline_dataset_name: Optional[str] = None,
+        save_offline_dataset_root: Optional[Path] = None,
         output_dir: Path = None,
         run_id: str = None,
         progress_callback: callable = None,
@@ -79,7 +93,7 @@ class CalibrationPipeline:
         Initialize pipeline.
 
         Args:
-            bbox: (west, south, east, north)
+            bbox: (west, south, east, north). Required unless offline_dataset is provided.
             window_minutes: Simulation window in minutes
             seed: Random seed
             warmup_minutes: Warmup duration before measurements (min)
@@ -100,10 +114,28 @@ class CalibrationPipeline:
             max_od_pairs: Maximum number of OD pairs to generate
             bin_minutes: Duration of each demand time bin in minutes
             initial_population: Target initial number of vehicles (controls GA init bounds)
+            offline_dataset: Optional offline dataset id or name to import (source:name or name)
+            save_offline_dataset: Persist preparation artifacts as a reusable offline dataset
+            save_offline_dataset_name: Dataset name for saved offline bundle
+            save_offline_dataset_root: Optional explicit root directory for saved dataset bundle
             output_dir: Output directory for results
             run_id: Optional custom identifier for the run
             progress_callback: Optional callable(stage, name, msg, level) for UI updates
         """
+        self.offline_dataset_ref = offline_dataset.strip() if offline_dataset else None
+        self.offline_dataset: Optional[OfflineDatasetResolved] = None
+        self.data_mode = "create"
+        if self.offline_dataset_ref:
+            self.offline_dataset = resolve_offline_dataset(self.offline_dataset_ref)
+            self.data_mode = "import"
+            bbox = (
+                self.offline_dataset.bbox["west"],
+                self.offline_dataset.bbox["south"],
+                self.offline_dataset.bbox["east"],
+                self.offline_dataset.bbox["north"],
+            )
+        if bbox is None:
+            raise ValueError("bbox is required when offline_dataset is not provided")
         self.bbox = bbox
         self.window_minutes = window_minutes
         self.warmup_minutes = warmup_minutes
@@ -130,6 +162,21 @@ class CalibrationPipeline:
         self.max_od_pairs = max_od_pairs
         self.bin_minutes = bin_minutes
         self.initial_population = initial_population
+        self.save_offline_dataset = bool(save_offline_dataset)
+        self.save_offline_dataset_name = (
+            save_offline_dataset_name.strip() if save_offline_dataset_name else None
+        )
+        self.save_offline_dataset_root = (
+            Path(save_offline_dataset_root) if save_offline_dataset_root else None
+        )
+        self.saved_offline_dataset: Optional[Dict[str, str]] = None
+
+        if self.data_mode != "create" and self.save_offline_dataset:
+            logger.warning("save_offline_dataset requested in import mode; ignoring.")
+            self.save_offline_dataset = False
+            self.save_offline_dataset_name = None
+            self.save_offline_dataset_root = None
+
         self.run_id = run_id
         self.traffic_timestamp = None
         self.traffic_bucket = None
@@ -169,7 +216,9 @@ class CalibrationPipeline:
 
         self.progress_callback = progress_callback
 
-        logger.info(f"Pipeline initialized: bbox={bbox}, seed={seed}, run_id={self.run_id}")
+        logger.info(
+            f"Pipeline initialized: mode={self.data_mode}, bbox={bbox}, seed={seed}, run_id={self.run_id}"
+        )
 
     def _report_progress(self, stage: int, name: str, msg: str, level: str = "info"):
         """Report progress via callback if available."""
@@ -223,6 +272,9 @@ class CalibrationPipeline:
         Returns:
             Context dictionary required for calibration
         """
+        if self.offline_dataset is not None:
+            return await self._prepare_from_offline_dataset()
+
         self._report_progress(0, "Initializing", "Starting preparation phase")
 
         # Stage 1: Fetch traffic data
@@ -260,13 +312,14 @@ class CalibrationPipeline:
         )
         self._report_progress(3, "Building Network", "✓ SUMO network created")
 
-        # Cleanup OSM file to save space
-        try:
-            if osm_file.exists():
-                osm_file.unlink()
-                logger.debug(f"Deleted {osm_file} to save space")
-        except Exception as e:
-            logger.warning(f"Failed to delete OSM file: {e}")
+        # Cleanup OSM file to save space (unless user requested offline bundle save).
+        if not self.save_offline_dataset:
+            try:
+                if osm_file.exists():
+                    osm_file.unlink()
+                    logger.debug(f"Deleted {osm_file} to save space")
+            except Exception as e:
+                logger.warning(f"Failed to delete OSM file: {e}")
 
         # Stage 4: Map matching
         self._report_progress(4, "Matching Traffic", "Matching traffic data to road network...")
@@ -280,6 +333,81 @@ class CalibrationPipeline:
         self._report_progress(
             4, "Matching Traffic", f"✓ Matched {len(observed_edges)} traffic segments to SUMO edges"
         )
+
+        return {
+            "traffic_df": traffic_df,
+            "osm_file": osm_file,
+            "network_file": network_file,
+            "observed_edges": observed_edges,
+            "traffic_data_file": traffic_data_file,
+            "observed_edges_file": observed_edges_file,
+            "total_edges": total_edges,
+        }
+
+    async def _prepare_from_offline_dataset(self) -> Dict:
+        """Prepare context by importing artifacts from a bundled offline dataset."""
+        if self.offline_dataset is None:
+            raise RuntimeError("Offline dataset is not configured")
+
+        ds = self.offline_dataset
+        self._report_progress(
+            0,
+            "Initializing",
+            f"Starting preparation from offline dataset '{ds.name}' ({ds.source})",
+        )
+
+        # Stage 1: Import traffic data
+        self._report_progress(1, "Import Dataset", "Loading offline traffic snapshot...")
+        copied = copy_offline_dataset_to_output(ds, self.output_dir)
+        traffic_data_file = copied["data/traffic_data_raw.csv"]
+        traffic_df = pd.read_csv(traffic_data_file)
+        if len(traffic_df) > 0 and "geometry" in traffic_df.columns and isinstance(
+            traffic_df.iloc[0]["geometry"], str
+        ):
+            import ast
+
+            traffic_df["geometry"] = traffic_df["geometry"].apply(
+                lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+            )
+        self._report_progress(
+            1, "Import Dataset", f"✓ Imported {len(traffic_df)} traffic segments"
+        )
+
+        # Stage 2/3: Import network artifacts
+        self._report_progress(2, "Import Dataset", "Loading offline SUMO network...")
+        network_file = copied["sumo/network.net.xml"]
+        osm_file = copied.get("data/map.osm", self.output_dir / "data" / "map.osm")
+
+        net = SUMONetwork(network_file)
+        total_edges = len(net.edges)
+
+        network_plot = self.output_dir / "plots" / "network.png"
+        if not network_plot.exists():
+            await asyncio.to_thread(plot_network_geometry, network_file, network_plot)
+        self._report_progress(3, "Import Dataset", "✓ SUMO network imported")
+
+        # Stage 4: Import observed edge mapping
+        self._report_progress(4, "Import Dataset", "Loading offline matched observed edges...")
+        observed_edges_file = copied["data/observed_edges.csv"]
+        observed_edges = pd.read_csv(observed_edges_file)
+        self._report_progress(
+            4, "Import Dataset", f"✓ Imported {len(observed_edges)} matched observed edges"
+        )
+
+        # Import dataset metadata/provider context for reporting.
+        self.provider_meta = ds.provider or {}
+        traffic_ts = None
+        if "timestamp" in traffic_df.columns and len(traffic_df) > 0:
+            parsed = pd.to_datetime(traffic_df["timestamp"], errors="coerce")
+            if not parsed.isna().all():
+                traffic_ts = parsed.dropna().iloc[0].to_pydatetime()
+        if traffic_ts is None and ds.created_at:
+            parsed = pd.to_datetime(ds.created_at, errors="coerce")
+            if not pd.isna(parsed):
+                traffic_ts = parsed.to_pydatetime()
+        if traffic_ts is not None:
+            self.traffic_timestamp = traffic_ts
+            self.traffic_bucket = self.traffic_timestamp.strftime("%Y-%m-%dT%H:%M")
 
         return {
             "traffic_df": traffic_df,
@@ -422,11 +550,18 @@ class CalibrationPipeline:
         if confirm_callback:
             traffic_count = len(context["traffic_df"])
             matched_count = len(context["observed_edges"])
+            quality = assess_data_quality(
+                context["traffic_df"],
+                context["observed_edges"],
+                context.get("total_edges", 0),
+                bbox=self.bbox,
+            )
 
             stats = {
                 "fetched_segments": traffic_count,
                 "matched_edges": matched_count,
                 "total_network_edges": context.get("total_edges", 0),
+                "quality": quality,
             }
 
             should_proceed = confirm_callback(stats)
@@ -434,8 +569,118 @@ class CalibrationPipeline:
                 logger.info("🚫 Run aborted by user.")
                 return None
 
+        await self._maybe_save_offline_dataset(context)
+
         # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
         return await asyncio.to_thread(self.calibrate, context)
+
+    async def _maybe_save_offline_dataset(self, context: Dict) -> None:
+        """Persist preparation artifacts as an offline dataset bundle when requested."""
+        if not self.save_offline_dataset:
+            return
+
+        if self.data_mode != "create":
+            logger.info("Skipping offline dataset save in import mode.")
+            return
+
+        dataset_name = normalize_offline_dataset_name(self.save_offline_dataset_name or "")
+        dataset_root = self.save_offline_dataset_root or get_writable_offline_datasets_root()
+        dataset_dir = dataset_root / dataset_name
+
+        # Guard against ambiguous import names and filesystem collisions.
+        if offline_dataset_name_exists(dataset_name):
+            raise RuntimeError(
+                f"Offline dataset '{dataset_name}' already exists. "
+                "Use a different name."
+            )
+        if dataset_dir.exists():
+            raise RuntimeError(
+                f"Offline dataset target already exists: {dataset_dir}"
+            )
+
+        self._report_progress(
+            4,
+            "Matching Traffic",
+            f"Saving offline dataset bundle '{dataset_name}'...",
+        )
+
+        # Create bundle directories.
+        (dataset_dir / "data").mkdir(parents=True, exist_ok=True)
+        (dataset_dir / "sumo").mkdir(parents=True, exist_ok=True)
+        (dataset_dir / "plots").mkdir(parents=True, exist_ok=True)
+        (dataset_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+        # Copy core artifacts.
+        traffic_data_file = context["traffic_data_file"]
+        observed_edges_file = context["observed_edges_file"]
+        network_file = context["network_file"]
+        shutil.copy2(traffic_data_file, dataset_dir / "data" / "traffic_data_raw.csv")
+        shutil.copy2(observed_edges_file, dataset_dir / "data" / "observed_edges.csv")
+        shutil.copy2(network_file, dataset_dir / "sumo" / "network.net.xml")
+
+        # Ensure OSM is present in the bundle.
+        osm_file = context.get("osm_file")
+        osm_target = dataset_dir / "data" / "map.osm"
+        if osm_file is not None and Path(osm_file).exists():
+            shutil.copy2(osm_file, osm_target)
+        else:
+            osm_cache_path = await self._fetch_osm_data()
+            shutil.copy2(osm_cache_path, osm_target)
+
+        # Copy plot and log when available.
+        network_plot = self.output_dir / "plots" / "network.png"
+        if network_plot.exists():
+            shutil.copy2(network_plot, dataset_dir / "plots" / "network.png")
+
+        pipeline_log = self.output_dir / "logs" / "pipeline.log"
+        if pipeline_log.exists():
+            shutil.copy2(pipeline_log, dataset_dir / "logs" / "pipeline.log")
+
+        quality = assess_data_quality(
+            context["traffic_df"],
+            context["observed_edges"],
+            context.get("total_edges", 0),
+            bbox=self.bbox,
+        )
+        metadata = {
+            "dataset_name": dataset_name,
+            "created_at": datetime.now().isoformat(),
+            "bbox": {
+                "west": self.bbox[0],
+                "south": self.bbox[1],
+                "east": self.bbox[2],
+                "north": self.bbox[3],
+            },
+            "traffic_tile_zoom": self.traffic_tile_zoom,
+            "provider": self.provider_meta or {},
+            "stats": {
+                "fetched_segments": int(len(context["traffic_df"])),
+                "matched_edges": int(len(context["observed_edges"])),
+                "total_network_edges": int(context.get("total_edges", 0)),
+            },
+            "quality": quality,
+            "files": {
+                "traffic_data_raw_csv": "data/traffic_data_raw.csv",
+                "observed_edges_csv": "data/observed_edges.csv",
+                "osm_file": "data/map.osm",
+                "sumo_network": "sumo/network.net.xml",
+                "network_plot": "plots/network.png",
+                "pipeline_log": "logs/pipeline.log",
+            },
+        }
+        with open(dataset_dir / "dataset_meta.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+        self.saved_offline_dataset = {
+            "name": dataset_name,
+            "root": str(dataset_root),
+            "path": str(dataset_dir),
+        }
+        self._report_progress(
+            4,
+            "Matching Traffic",
+            f"✓ Offline dataset saved: {dataset_dir}",
+        )
 
     async def _fetch_traffic_data(self) -> pd.DataFrame:
         """Fetch traffic data from TomTom."""
@@ -820,11 +1065,15 @@ class CalibrationPipeline:
 
     def _build_rerun_cli_command(self) -> str:
         """Build a reproducible CLI command for this exact run configuration."""
-        bbox_arg = ",".join(self._format_cli_value(v) for v in self.bbox)
-        cmd_parts = [
-            "demandify",
-            "run",
-            bbox_arg,
+        cmd_parts = ["demandify", "run"]
+        if self.offline_dataset is not None:
+            cmd_parts.extend(["--import", self.offline_dataset.dataset_id])
+        else:
+            bbox_arg = ",".join(self._format_cli_value(v) for v in self.bbox)
+            cmd_parts.append(bbox_arg)
+
+        cmd_parts.extend(
+            [
             "--window",
             str(self.window_minutes),
             "--warmup",
@@ -833,8 +1082,6 @@ class CalibrationPipeline:
             str(self.seed),
             "--step-length",
             self._format_cli_value(self.step_length),
-            "--tile-zoom",
-            str(self.traffic_tile_zoom),
             "--pop",
             str(self.ga_population),
             "--gen",
@@ -869,7 +1116,10 @@ class CalibrationPipeline:
             self._format_cli_value(self.bin_minutes),
             "--initial-population",
             str(self.initial_population),
-        ]
+            ]
+        )
+        if self.offline_dataset is None:
+            cmd_parts.extend(["--tile-zoom", str(self.traffic_tile_zoom)])
 
         if self.parallel_workers is not None:
             cmd_parts.extend(["--workers", str(self.parallel_workers)])
@@ -917,7 +1167,7 @@ class CalibrationPipeline:
                 "window_minutes": self.window_minutes,
                 "warmup_minutes": self.warmup_minutes,
                 "step_length_seconds": self.step_length,
-                "traffic_tile_zoom": self.traffic_tile_zoom,
+                "traffic_tile_zoom": self.traffic_tile_zoom if self.data_mode == "create" else None,
             },
             "calibration_config": {
                 "ga_population": self.ga_population,
@@ -1006,6 +1256,16 @@ class CalibrationPipeline:
                 },
             },
             "user_inputs": {
+                "data_mode": self.data_mode,
+                "offline_dataset": (
+                    {
+                        "id": self.offline_dataset.dataset_id,
+                        "name": self.offline_dataset.name,
+                        "source": self.offline_dataset.source,
+                    }
+                    if self.offline_dataset
+                    else None
+                ),
                 "bbox": {
                     "west": self.bbox[0],
                     "south": self.bbox[1],
@@ -1018,7 +1278,7 @@ class CalibrationPipeline:
                 "seed": self.seed,
                 "step_length": self.step_length,
                 "parallel_workers": self.parallel_workers,
-                "traffic_tile_zoom": self.traffic_tile_zoom,
+                "traffic_tile_zoom": self.traffic_tile_zoom if self.data_mode == "create" else None,
                 "ga_population": self.ga_population,
                 "ga_generations": self.ga_generations,
                 "ga_mutation_rate": self.ga_mutation_rate,
@@ -1038,20 +1298,38 @@ class CalibrationPipeline:
                 "max_od_pairs": self.max_od_pairs,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
+                "save_offline_dataset": self.save_offline_dataset,
+                "save_offline_dataset_name": self.save_offline_dataset_name,
+                "saved_offline_dataset": self.saved_offline_dataset,
             },
             "reproducibility": {
                 "rerun_cli_command": self._build_rerun_cli_command(),
                 "rerun_cli_note": "Change --name if the run directory already exists.",
             },
             "data_sources": {
-                "traffic_provider": "TomTom Flow (tiles preferred)",
+                "traffic_provider": (
+                    "TomTom Flow (tiles preferred)"
+                    if self.offline_dataset is None
+                    else "offline_dataset"
+                ),
                 "traffic_provider_meta": self.provider_meta,
+                "offline_dataset": (
+                    {
+                        "id": self.offline_dataset.dataset_id,
+                        "name": self.offline_dataset.name,
+                        "source": self.offline_dataset.source,
+                    }
+                    if self.offline_dataset
+                    else None
+                ),
                 "traffic_snapshot_timestamp": (
                     self.traffic_timestamp.isoformat()
                     if self.traffic_timestamp
                     else datetime.now().isoformat()
                 ),
-                "osm_source": "Overpass API",
+                "osm_source": (
+                    "Overpass API" if self.offline_dataset is None else "offline_dataset_bundle"
+                ),
                 "traffic_segments_fetched": (
                     len(pd.read_csv(traffic_data_file)) if traffic_data_file.exists() else 0
                 ),
