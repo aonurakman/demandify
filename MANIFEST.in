@@ -11,6 +11,7 @@ exclude pipeline.log
 recursive-exclude .agent *
 recursive-exclude .gemini *
 recursive-exclude demandify_runs *
+recursive-exclude demandify_datasets *
 recursive-exclude logs *
 recursive-exclude cache *
 recursive-exclude .demandify *
@@ -22,3 +23,8 @@ recursive-exclude reference *
 # Ensure operational data is included (matching pyproject.toml)
 recursive-include demandify/templates *.html
 recursive-include demandify/static *
+recursive-include demandify/defaults *.json
+recursive-include demandify/offline_datasets *
+
+# Never ship raw OSM extracts in source distributions
+global-exclude *.osm

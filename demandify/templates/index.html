@@ -39,7 +39,7 @@
                         <div id="map" style="height: 400px;"></div>
                     </div>
                     <div class="card-footer bg-white">
-                        <small class="text-muted">Draw a rectangle (or circle) on the map to select your calibration area</small>
+                        <small class="text-muted" id="bbox-help-text">Draw a rectangle (or circle) on the map to select your calibration area</small>
                         <span id="bbox-area" class="float-end fw-bold text-primary"></span>
                     </div>
                 </div>
@@ -51,8 +51,50 @@
                     </div>
                     <div class="card-body">
                         <form id="run-form">
-                            <!-- Bounding Box Manual Input -->
+                            <!-- Data Source Mode -->
                             <div class="mb-3">
+                                <label for="data_mode" class="form-label">
+                                    <i class="bi bi-database"></i> Data Source Mode
+                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                        title="Create: fetch fresh traffic/OSM data. Import: use a bundled/offline dataset snapshot.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <select class="form-select" id="data_mode" name="data_mode">
+                                    <option value="create" selected>Create</option>
+                                    <option value="import" {% if offline_datasets|length == 0 %}disabled{% endif %}>Import</option>
+                                </select>
+                                <div class="form-text">
+                                    {% if offline_datasets|length == 0 %}
+                                    No offline datasets discovered. Use "Create" mode.
+                                    {% else %}
+                                    Choose Import to calibrate from a pre-packaged/offline snapshot.
+                                    {% endif %}
+                                </div>
+                                <div class="mt-1 text-end">
+                                    <a href="/dataset-builder" class="small text-muted text-decoration-none">
+                                        <i class="bi bi-box-arrow-up-right"></i> offline dataset builder
+                                    </a>
+                                </div>
+                            </div>
+
+                            <div id="import-dataset-group" class="mb-3 d-none">
+                                <label for="offline_dataset" class="form-label">
+                                    <i class="bi bi-collection"></i> Offline Dataset
+                                </label>
+                                <select class="form-select" id="offline_dataset" name="offline_dataset">
+                                    <option value="">Select dataset</option>
+                                    {% for ds in offline_datasets %}
+                                    <option value="{{ ds.id }}">
+                                        {{ ds.name }} [{{ ds.source }}{% if ds.quality_label %}, {{ ds.quality_label }}{% if ds.quality_score is not none %} {{ ds.quality_score }}/100{% endif %}{% endif %}]
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                                <div id="offline-dataset-summary" class="form-text"></div>
+                            </div>
+
+                            <!-- Bounding Box Manual Input -->
+                            <div class="mb-3" id="bbox-group">
                                 <label class="form-label">
                                     <i class="bi bi-bounding-box-circles"></i> Region Bounds
                                     <span class="info-icon" data-bs-toggle="tooltip"
@@ -100,6 +142,7 @@
                                         target="_blank" class="alert-link">developer.tomtom.com</a></p>
                                 <p class="mb-2 small text-muted">Make sure your key has <strong>Traffic Flow
                                         API</strong> enabled</p>
+                                <p class="mb-2 small text-muted"><strong>Note:</strong> API key is required only for <code>Create</code> mode, not <code>Import</code> mode.</p>
                                 <div class="input-group">
                                     <input type="password" class="form-control" id="api-key-input"
                                         placeholder="Paste your API key here">
@@ -130,9 +173,11 @@
                                     </span>
                                 </label>
                                 <select class="form-select" id="window_minutes" name="window_minutes">
-                                    <option value="15" selected>15 minutes</option>
-                                    <option value="30">30 minutes</option>
-                                    <option value="60">1 hour</option>
+                                    {% for minutes in run_defaults.window_options_minutes %}
+                                    <option value="{{ minutes }}" {% if minutes == run_defaults.window_minutes %}selected{% endif %}>
+                                        {% if minutes == 60 %}1 hour{% else %}{{ minutes }} minutes{% endif %}
+                                    </option>
+                                    {% endfor %}
                                 </select>
                             </div>
 
@@ -145,7 +190,7 @@
                                         <i class="bi bi-info-circle"></i>
                                     </span>
                                 </label>
-                                <input type="number" class="form-control" id="seed" name="seed" value="42" min="0">
+                                <input type="number" class="form-control" id="seed" name="seed" value="{{ run_defaults.seed }}" min="0">
                             </div>
 
                             <!-- Run ID (Optional) -->
@@ -185,7 +230,7 @@
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
                                                     id="warmup_minutes" name="warmup_minutes"
-                                                    value="{{ config.default_warmup_minutes }}" min="0" max="60">
+                                                    value="{{ run_defaults.warmup_minutes }}" min="0" max="60">
                                             </div>
                                             <div class="col-6">
                                                 <label for="step_length" class="form-label small">
@@ -197,7 +242,7 @@
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
                                                     id="step_length" name="step_length"
-                                                    value="{{ config.default_step_length }}" step="0.1" min="0.1" max="5">
+                                                    value="{{ run_defaults.step_length }}" step="0.1" min="0.1" max="5">
                                             </div>
                                         </div>
 
@@ -214,7 +259,7 @@
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
                                                     id="traffic_tile_zoom" name="traffic_tile_zoom"
-                                                    value="{{ config.default_traffic_tile_zoom }}" min="8" max="18">
+                                                    value="{{ run_defaults.traffic_tile_zoom }}" min="8" max="18">
                                             </div>
                                         </div>
 
@@ -229,7 +274,7 @@
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
                                                     id="ga_population" name="ga_population"
-                                                    value="{{ config.default_ga_population }}" min="10">
+                                                    value="{{ run_defaults.ga_population }}" min="10">
                                             </div>
                                             <div class="col-6">
                                                 <label for="ga_generations" class="form-label small">
@@ -241,7 +286,7 @@
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
                                                     id="ga_generations" name="ga_generations"
-                                                    value="{{ config.default_ga_generations }}" min="5">
+                                                    value="{{ run_defaults.ga_generations }}" min="5">
                                             </div>
                                         </div>
                                         <div class="row mb-3">
@@ -255,7 +300,7 @@
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
                                                     id="parallel_workers" name="parallel_workers"
-                                                    value="{{ config.default_parallel_workers }}" min="1" max="32">
+                                                    value="{{ run_defaults.parallel_workers }}" min="1" max="32">
                                             </div>
                                             <div class="col-6">
                                                 <label for="ga_elitism" class="form-label small">
@@ -266,7 +311,7 @@
                                                     </span>
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
-                                                    id="ga_elitism" name="ga_elitism" value="2" min="0">
+                                                    id="ga_elitism" name="ga_elitism" value="{{ run_defaults.ga_elitism }}" min="0">
                                             </div>
                                         </div>
                                         <div class="row mb-3">
@@ -279,7 +324,7 @@
                                                     </span>
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
-                                                    id="ga_mutation_rate" name="ga_mutation_rate" value="0.5"
+                                                    id="ga_mutation_rate" name="ga_mutation_rate" value="{{ run_defaults.ga_mutation_rate }}"
                                                     step="0.05" min="0" max="1">
                                             </div>
                                             <div class="col-6">
@@ -291,7 +336,7 @@
                                                     </span>
                                                 </label>
                                                 <input type="number" class="form-control form-control-sm"
-                                                    id="ga_crossover_rate" name="ga_crossover_rate" value="0.7"
+                                                    id="ga_crossover_rate" name="ga_crossover_rate" value="{{ run_defaults.ga_crossover_rate }}"
                                                     step="0.05" min="0" max="1">
                                             </div>
                                         </div>
@@ -309,7 +354,7 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="initial_population" name="initial_population" value="1000" min="10" step="10">
+                                                id="initial_population" name="initial_population" value="{{ run_defaults.initial_population }}" min="10" step="10">
                                             <div class="form-text x-small">Use ~1000 for districts, ~10000 for cities.</div>
                                         </div>
                                     </div>
@@ -327,7 +372,7 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm" id="num_origins"
-                                                name="num_origins" value="10" min="2">
+                                                name="num_origins" value="{{ run_defaults.num_origins }}" min="2">
                                         </div>
                                         <div class="col-6">
                                             <label for="num_destinations" class="form-label small">
@@ -338,7 +383,7 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="num_destinations" name="num_destinations" value="10" min="2">
+                                                id="num_destinations" name="num_destinations" value="{{ run_defaults.num_destinations }}" min="2">
                                         </div>
                                         <div class="col-6">
                                             <label for="max_od_pairs" class="form-label small">
@@ -349,18 +394,18 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm" id="max_od_pairs"
-                                                name="max_od_pairs" value="50" min="5">
+                                                name="max_od_pairs" value="{{ run_defaults.max_od_pairs }}" min="5">
                                         </div>
                                         <div class="col-6">
                                             <label for="bin_minutes" class="form-label small">
-                                                Bin Duration: <span id="bin-val">5</span> min
+                                                Bin Duration: <span id="bin-val">{{ run_defaults.bin_minutes }}</span> min
                                                 <span class="info-icon" data-bs-toggle="tooltip"
                                                     title="Duration of each demand time slot. Smaller = finer detail but harder to calibrate.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
                                             <input type="range" class="form-range" id="bin_minutes" name="bin_minutes"
-                                                min="1" max="15" value="5" step="1"
+                                                min="1" max="{{ run_defaults.window_minutes }}" value="{{ run_defaults.bin_minutes }}" step="1"
                                                 oninput="document.getElementById('bin-val').textContent = this.value">
                                         </div>
                                     </div>
@@ -377,7 +422,7 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_mutation_sigma" name="ga_mutation_sigma" value="20" min="1">
+                                                id="ga_mutation_sigma" name="ga_mutation_sigma" value="{{ run_defaults.ga_mutation_sigma }}" min="1">
                                         </div>
                                         <div class="col-6">
                                             <label for="ga_mutation_indpb" class="form-label small">
@@ -388,7 +433,7 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_mutation_indpb" name="ga_mutation_indpb" value="0.3" step="0.05"
+                                                id="ga_mutation_indpb" name="ga_mutation_indpb" value="{{ run_defaults.ga_mutation_indpb }}" step="0.05"
                                                 min="0" max="1">
                                         </div>
                                     </div>
@@ -404,31 +449,31 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_immigrant_rate" name="ga_immigrant_rate" value="0.03" step="0.01"
+                                                id="ga_immigrant_rate" name="ga_immigrant_rate" value="{{ run_defaults.ga_immigrant_rate }}" step="0.01"
                                                 min="0" max="0.5">
                                         </div>
                                         <div class="col-6 mb-2">
                                             <label for="ga_elite_top_pct" class="form-label small">
                                                 Elite Top %
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Top percentage of individuals for secondary sorting by magnitude (fewer trips preferred).">
+                                                    title="Defines feasible elite size n=max(1, pct*population). If feasible individuals are at least n, parent tournaments use that feasible elite slice.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_elite_top_pct" name="ga_elite_top_pct" value="0.1" step="0.05"
+                                                id="ga_elite_top_pct" name="ga_elite_top_pct" value="{{ run_defaults.ga_elite_top_pct }}" step="0.05"
                                                 min="0" max="1">
                                         </div>
                                         <div class="col-6 mb-2">
                                             <label for="ga_magnitude_penalty_weight" class="form-label small">
-                                                Magnitude Penalty
+                                                Elite Magnitude Weight
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Weight for penalizing excessive trip counts. Higher = stronger preference for fewer trips.">
+                                                    title="Used only in feasible-elite mode: elite score = weight*magnitude + E-rank term. Higher values favor lower total trips among feasible elites.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_magnitude_penalty_weight" name="ga_magnitude_penalty_weight" value="0.001" step="0.001"
+                                                id="ga_magnitude_penalty_weight" name="ga_magnitude_penalty_weight" value="{{ run_defaults.ga_magnitude_penalty_weight }}" step="0.001"
                                                 min="0" max="1">
                                         </div>
                                         <div class="col-6 mb-2">
@@ -440,7 +485,7 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_stagnation_patience" name="ga_stagnation_patience" value="20" min="1">
+                                                id="ga_stagnation_patience" name="ga_stagnation_patience" value="{{ run_defaults.ga_stagnation_patience }}" min="1">
                                         </div>
                                         <div class="col-6 mb-2">
                                             <label for="ga_stagnation_boost" class="form-label small">
@@ -451,13 +496,13 @@
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
-                                                id="ga_stagnation_boost" name="ga_stagnation_boost" value="1.5" step="0.1"
+                                                id="ga_stagnation_boost" name="ga_stagnation_boost" value="{{ run_defaults.ga_stagnation_boost }}" step="0.1"
                                                 min="1" max="5">
                                         </div>
                                         <div class="col-6 mb-2">
                                             <div class="form-check mt-3">
                                                 <input class="form-check-input" type="checkbox" id="ga_assortative_mating"
-                                                    name="ga_assortative_mating" checked>
+                                                    name="ga_assortative_mating" {% if run_defaults.ga_assortative_mating %}checked{% endif %}>
                                                 <label class="form-check-label small" for="ga_assortative_mating">
                                                     Assortative Mating
                                                     <span class="info-icon" data-bs-toggle="tooltip"
@@ -470,7 +515,7 @@
                                         <div class="col-6 mb-2">
                                             <div class="form-check mt-3">
                                                 <input class="form-check-input" type="checkbox" id="ga_deterministic_crowding"
-                                                    name="ga_deterministic_crowding" checked>
+                                                    name="ga_deterministic_crowding" {% if run_defaults.ga_deterministic_crowding %}checked{% endif %}>
                                                 <label class="form-check-label small" for="ga_deterministic_crowding">
                                                     Deterministic Crowding
                                                     <span class="info-icon" data-bs-toggle="tooltip"
@@ -486,8 +531,7 @@
                     </div>
 
                     <!-- Run Button -->
-                    <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn" {% if not has_api_key
-                        %}disabled{% endif %}>
+                    <button type="submit" class="btn btn-primary btn-lg w-100" id="run-btn">
                         <i class="bi bi-rocket-takeoff"></i> Start Calibration
                     </button>
                     </form>
@@ -627,7 +671,17 @@
                             Total Graph Edges
                             <span class="badge bg-secondary rounded-pill" id="check-total-edges">-</span>
                         </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Data Quality
+                            <span class="badge bg-info rounded-pill" id="check-quality-label">-</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Quality Score
+                            <span class="badge bg-dark rounded-pill" id="check-quality-score">-</span>
+                        </li>
                     </ul>
+
+                    <div id="check-quality-summary" class="small text-muted mb-3">-</div>
 
                     <div id="check-warning" class="alert alert-warning d-none">
                         <i class="bi bi-exclamation-triangle"></i> <strong>Warning:</strong> Low match rate. The
@@ -637,6 +691,26 @@
                     <div id="check-critical" class="alert alert-danger d-none">
                         <i class="bi bi-x-circle"></i> <strong>Critical:</strong> No edges matched. Run will likely
                         fail.
+                    </div>
+
+                    <div id="save-offline-dataset-section">
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" value="true"
+                                id="save-offline-dataset-checkbox">
+                            <label class="form-check-label" for="save-offline-dataset-checkbox">
+                                Save network and traffic data
+                            </label>
+                        </div>
+                        <div id="save-offline-dataset-name-group" class="ms-4 mt-2 mb-3 d-none">
+                            <label for="save-offline-dataset-name" class="form-label form-label-sm mb-1">
+                                Dataset name
+                            </label>
+                            <input type="text" class="form-control form-control-sm" id="save-offline-dataset-name"
+                                placeholder="e.g. krakow_v2">
+                            <div class="form-text">
+                                Use letters, numbers, underscores, or hyphens. Name must be unique.
+                            </div>
+                        </div>
                     </div>
 
                     <p class="small text-muted mb-0">Proceed with calibration?</p>
@@ -655,6 +729,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script id="known-offline-datasets-json" type="application/json">{{ offline_datasets | tojson }}</script>
     <script src="/static/js/app.js"></script>
 
     <script>

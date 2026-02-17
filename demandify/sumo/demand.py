@@ -11,6 +11,10 @@ import subprocess
 import math
 
 from demandify.sumo.network import SUMONetwork
+from demandify.sumo.departure_schedule import (
+    sequential_departure_times,
+    format_departure_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -264,29 +268,30 @@ class DemandGenerator:
         
         for od_idx, (origin, dest) in enumerate(od_pairs):
             for bin_idx, (start_time, end_time) in enumerate(departure_bins):
-                count = int(counts[od_idx, bin_idx])
+                count = int(max(0, round(counts[od_idx, bin_idx])))
                 
                 # Generate individual departure times within the bin
                 if count > 0:
-                    # Seeded random jitter
-                    bin_rng = np.random.RandomState(self.seed + trip_id)
-                    departure_times = bin_rng.uniform(start_time, end_time, size=count)
+                    departure_times = sequential_departure_times(start_time, end_time, count)
                     
                     for dep_time in departure_times:
                         trips.append({
                             'ID': f'trip_{trip_id}',
                             'origin link id': origin,
                             'destination link id': dest,
-                            'departure timestep': int(dep_time)
+                            'departure timestep': float(dep_time)
                         })
                         trip_id += 1
         
         # Create DataFrame
-        demand_df = pd.DataFrame(trips)
+        demand_df = pd.DataFrame(
+            trips,
+            columns=["ID", "origin link id", "destination link id", "departure timestep"],
+        )
         
         # Sort by departure time (CRITICAL for SUMO)
         if not demand_df.empty:
-            demand_df = demand_df.sort_values('departure timestep')
+            demand_df = demand_df.sort_values('departure timestep').reset_index(drop=True)
         
         # Save to CSV
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -317,7 +322,7 @@ class DemandGenerator:
         for _, row in demand_df.iterrows():
             trip = ET.SubElement(root, 'trip')
             trip.set('id', row['ID'])
-            trip.set('depart', str(row['departure timestep']))
+            trip.set('depart', format_departure_time(row['departure timestep']))
             trip.set('from', row['origin link id'])
             trip.set('to', row['destination link id'])
         

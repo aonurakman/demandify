@@ -80,7 +80,7 @@ class ReportGenerator:
 
         # Save
         report_file = self.output_dir / "report.html"
-        with open(report_file, "w") as f:
+        with open(report_file, "w", encoding="utf-8") as f:
             f.write(html)
 
         logger.info(f"Report generated: {report_file}")
@@ -270,11 +270,14 @@ class ReportGenerator:
         return "plots/speed_comparison.png"
 
     def _create_failures_plot(self, generation_stats: List[dict]) -> Optional[str]:
-        """Create plot showing zero-flow edges and routing failures over generations."""
+        """Create plot showing zero-flow edges and fail totals over generations."""
         generations = [s["generation"] for s in generation_stats]
 
         has_zero_flow = any(s.get("best_zero_flow") is not None for s in generation_stats)
-        has_failures = any(s.get("best_routing_failures") is not None for s in generation_stats)
+        has_failures = any(
+            (s.get("best_fail_total") is not None) or (s.get("best_routing_failures") is not None)
+            for s in generation_stats
+        )
 
         if not has_zero_flow and not has_failures:
             return None
@@ -310,8 +313,18 @@ class ReportGenerator:
 
         if has_failures:
             ax2 = ax1.twinx()
-            best_rf = [s.get("best_routing_failures", 0) or 0 for s in generation_stats]
-            mean_rf = [s.get("mean_routing_failures", 0) or 0 for s in generation_stats]
+            best_rf = [
+                s.get("best_fail_total")
+                if s.get("best_fail_total") is not None
+                else (s.get("best_routing_failures", 0) or 0)
+                for s in generation_stats
+            ]
+            mean_rf = [
+                s.get("mean_fail_total")
+                if s.get("mean_fail_total") is not None
+                else (s.get("mean_routing_failures", 0) or 0)
+                for s in generation_stats
+            ]
             ax2.plot(
                 generations,
                 best_rf,
@@ -319,7 +332,7 @@ class ReportGenerator:
                 markersize=4,
                 linewidth=2,
                 color="#ef4444",
-                label="Best: Routing Failures",
+                label="Best: Fail Total",
             )
             ax2.plot(
                 generations,
@@ -328,9 +341,9 @@ class ReportGenerator:
                 linewidth=1.5,
                 color="#ef4444",
                 alpha=0.6,
-                label="Mean: Routing Failures",
+                label="Mean: Fail Total",
             )
-            ax2.set_ylabel("Routing Failures", color="#ef4444")
+            ax2.set_ylabel("Fail Total", color="#ef4444")
             ax2.tick_params(axis="y", labelcolor="#ef4444")
 
         # Combined legend
@@ -341,7 +354,7 @@ class ReportGenerator:
         else:
             ax1.legend(loc="upper right", fontsize=8)
 
-        ax1.set_title("Zero-Flow Edges & Routing Failures Over Generations")
+        ax1.set_title("Zero-Flow Edges & Fail Total Over Generations")
         fig.tight_layout()
 
         plot_dir = self.output_dir / "plots"
@@ -558,6 +571,7 @@ class ReportGenerator:
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>demandify Calibration Report</title>
     <style>
         body {{

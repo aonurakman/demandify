@@ -1,0 +1,56 @@
+{
+  "dataset_name": "eskisehir_v1",
+  "created_at": "2026-02-17T13:58:09.791355",
+  "bbox": {
+    "west": 30.5011,
+    "south": 39.7613,
+    "east": 30.5229,
+    "north": 39.7727
+  },
+  "traffic_tile_zoom": 15,
+  "provider": {
+    "provider": "tomtom",
+    "api_version": "v4",
+    "style": "absolute",
+    "data_type": "vector_flow_tiles",
+    "tile_zoom": 15
+  },
+  "stats": {
+    "fetched_segments": 18,
+    "matched_edges": 18,
+    "total_network_edges": 1588
+  },
+  "quality": {
+    "score": 82,
+    "label": "good",
+    "recommendation": "proceed",
+    "summary": "GOOD quality (82/100): 18 matched edges from 18 traffic segments (match rate 100.0%).",
+    "warnings": [],
+    "components": {
+      "availability": 24,
+      "match_rate": 25,
+      "confidence": 15,
+      "density": 12,
+      "network_coverage": 6
+    },
+    "metrics": {
+      "fetched_segments": 18,
+      "matched_edges": 18,
+      "total_network_edges": 1588,
+      "match_rate": 1.0,
+      "observed_to_total_ratio": 0.011335012594458438,
+      "area_km2": 2.353624115395124,
+      "edges_per_km2": 7.647780239105078,
+      "median_match_confidence": 1.0,
+      "low_confidence_share": 0.0
+    }
+  },
+  "files": {
+    "traffic_data_raw_csv": "data/traffic_data_raw.csv",
+    "observed_edges_csv": "data/observed_edges.csv",
+    "osm_file": "data/map.osm",
+    "sumo_network": "sumo/network.net.xml",
+    "network_plot": "plots/network.png",
+    "pipeline_log": "logs/pipeline.log"
+  }
+}

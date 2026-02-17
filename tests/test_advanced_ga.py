@@ -18,6 +18,10 @@ def _simple_evaluate(genome):
     metrics = {
         "zero_flow_edges": int(np.sum(genome == 0)),
         "routing_failures": 0,
+        "teleports": 0,
+        "fail_total": 0,
+        "reliability_penalty": 0.0,
+        "e_loss": loss,
         "avg_trip_duration": 100.0,
         "total_vehicles": int(np.sum(genome)),
     }
@@ -130,87 +134,255 @@ class TestImmigrants:
         expected_immigrants = int(20 * 0.1)
         assert expected_immigrants == 2
 
+    def test_immigrants_still_respect_init_bounds(self):
+        """Immigrants remain bounded even when mutation upper cap is removed."""
+        ga = GeneticAlgorithm(genome_size=10, seed=42, bounds=(0, 1))
+        for _ in range(100):
+            imm = ga._create_immigrant()
+            assert all(0 <= v <= 1 for v in imm)
+
+
+class TestMutationBounds:
+    """Test lower-only mutation clipping behavior."""
+
+    def test_mutation_can_exceed_upper_init_bound(self):
+        ga = GeneticAlgorithm(genome_size=1, seed=42, bounds=(0, 1))
+        ind = creator.Individual([1])
+
+        # Deterministic +5 jump: with upper clipping this would stay at 1.
+        ga._bounded_mutation(ind, mu=5, sigma=0, indpb=1.0)
+        assert ind[0] == 6
+
+    def test_mutation_still_clips_to_non_negative(self):
+        ga = GeneticAlgorithm(genome_size=1, seed=42, bounds=(0, 10))
+        ind = creator.Individual([0])
+
+        # Deterministic -5 jump should be clipped to lower bound 0.
+        ga._bounded_mutation(ind, mu=-5, sigma=0, indpb=1.0)
+        assert ind[0] == 0
+
 
 # ---------------------------------------------------------------------------
-# Magnitude penalty
+# Parent selection
 # ---------------------------------------------------------------------------
 
 
-class TestMagnitudePenalty:
-    """Test magnitude penalty application."""
+class TestParentSelection:
+    """Test feasible-elite parent selection and fallback behavior."""
 
-    def test_magnitude_penalty_increases_fitness(self):
+    @staticmethod
+    def _make_ind(vals, loss, e_loss, fail_total, reliability_penalty=0.0):
+        ind = creator.Individual(vals)
+        ind.fitness.values = (loss,)
+        ind.metrics = {
+            "e_loss": e_loss,
+            "fail_total": fail_total,
+            "routing_failures": fail_total,
+            "teleports": 0,
+            "reliability_penalty": reliability_penalty,
+        }
+        return ind
+
+    def test_feasible_elite_selection_mode(self):
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=5,
+            elite_top_pct=0.4,  # n = 2
+            magnitude_penalty_weight=0.01,
+        )
+        pop = [
+            self._make_ind([10, 0, 0], 1.0, 1.0, 0),
+            self._make_ind([9, 0, 0], 1.1, 1.1, 0),
+            self._make_ind([8, 0, 0], 1.2, 1.2, 0),
+            self._make_ind([7, 0, 0], 1.3, 1.3, 1, reliability_penalty=0.2),
+            self._make_ind([6, 0, 0], 1.4, 1.4, 2, reliability_penalty=0.4),
+        ]
+
+        plan = ga._build_parent_selection_plan(pop)
+
+        assert plan["mode"] == "feasible_elite"
+        assert plan["elite_count"] == 2
+        assert plan["feasible_count"] == 3
+        assert len(plan["candidate_pool"]) == 2
+        assert all(ga._individual_fail_total(ind) == 0 for ind in plan["candidate_pool"])
+
+    def test_fallback_mode_activation(self):
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=5,
+            elite_top_pct=0.4,  # n = 2
+            magnitude_penalty_weight=0.01,
+        )
+        pop = [
+            self._make_ind([1, 0, 0], 1.0, 1.0, 0),
+            self._make_ind([2, 0, 0], 0.8, 0.6, 1, reliability_penalty=0.2),
+            self._make_ind([3, 0, 0], 0.9, 0.7, 1, reliability_penalty=0.2),
+            self._make_ind([4, 0, 0], 1.1, 0.9, 2, reliability_penalty=0.2),
+            self._make_ind([5, 0, 0], 1.2, 1.0, 3, reliability_penalty=0.2),
+        ]
+
+        plan = ga._build_parent_selection_plan(pop)
+
+        assert plan["mode"] == "fallback"
+        assert plan["elite_count"] == 2
+        assert plan["feasible_count"] == 1
+        assert len(plan["candidate_pool"]) == len(pop)
+
+    def test_elite_ranking_magnitude_dominant_and_e_rank_regulated(self):
+        # Magnitude-dominant case: despite worse E-rank, much smaller magnitude can win.
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
             population_size=4,
+            elite_top_pct=0.5,  # n = 2
+            magnitude_penalty_weight=0.005,
+        )
+        a = self._make_ind([100, 0, 0], 1.0, 1.0, 0)  # e-rank 0, huge magnitude
+        b = self._make_ind([1, 0, 0], 1.1, 1.1, 0)  # e-rank 1, tiny magnitude
+        c = self._make_ind([3, 0, 0], 1.2, 1.2, 0)
+        d = self._make_ind([4, 0, 0], 1.3, 1.3, 0)
+        plan = ga._build_parent_selection_plan([a, b, c, d])
+
+        score_a = plan["score_by_id"][id(a)]
+        score_b = plan["score_by_id"][id(b)]
+        assert score_b < score_a
+
+        # E-rank-regulated case: with equal magnitude, better E-rank should win.
+        ga2 = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=4,
             elite_top_pct=0.5,
-            magnitude_penalty_weight=0.01,
+            magnitude_penalty_weight=0.001,
         )
-        pop = []
-        # Use equal base losses for the top-2 so the penalty alone decides order
-        for vals, loss in [
-            ([10, 10, 10], 5.0),  # magnitude=30, in top 50%
-            ([1, 1, 1], 5.0),  # magnitude=3,  in top 50%, same raw loss
-            ([20, 20, 20], 10.0),  # magnitude=60
-            ([5, 5, 5], 15.0),  # magnitude=15
-        ]:
-            ind = creator.Individual(vals)
-            ind.fitness.values = (loss,)
-            pop.append(ind)
+        a2 = self._make_ind([10, 0, 0], 1.0, 1.0, 0)  # e-rank 0
+        b2 = self._make_ind([10, 0, 0], 1.1, 1.1, 0)  # e-rank 1
+        c2 = self._make_ind([20, 0, 0], 1.2, 1.2, 0)
+        d2 = self._make_ind([30, 0, 0], 1.3, 1.3, 0)
+        plan2 = ga2._build_parent_selection_plan([a2, b2, c2, d2])
 
-        ga._apply_magnitude_penalty(pop)
+        score_a2 = plan2["score_by_id"][id(a2)]
+        score_b2 = plan2["score_by_id"][id(b2)]
+        assert score_a2 < score_b2
 
-        # Both elite individuals started at loss=5.0.
-        # After penalty:  ind0 -> 5.0 + 30*0.01 = 5.30
-        #                 ind1 -> 5.0 +  3*0.01 = 5.03
-        # The one with fewer trips must now have strictly lower penalized fitness.
-        penalized = sorted(pop[:2], key=lambda x: x.fitness.values[0])
-        assert sum(penalized[0]) < sum(penalized[1])
-        assert penalized[0].fitness.values[0] < penalized[1].fitness.values[0]
+    def test_invalidate_individual_clears_stale_attrs(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=1)
+        ind = creator.Individual([1, 2, 3])
+        ind.fitness.values = (5.0,)
+        ind.metrics = {"routing_failures": 1}
 
-    def test_magnitude_penalty_disabled(self):
+        ga._invalidate_individual(ind)
+
+        assert not ind.fitness.valid
+        assert not hasattr(ind, "metrics")
+
+    def test_error_marked_individual_is_not_feasible(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=1)
+        ind = creator.Individual([1, 1, 1])
+        ind.fitness.values = (1.0,)
+        ind.metrics = {
+            "fail_total": 0,
+            "routing_failures": 0,
+            "teleports": 0,
+            "worker_error": True,
+            "error": "simulation failed",
+        }
+
+        assert ga._is_feasible_individual(ind) is False
+
+    def test_feasible_filter_ignores_error_and_invalid_individuals(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
-            population_size=2,
-            magnitude_penalty_weight=0.0,
+            population_size=4,
+            elite_top_pct=0.5,  # n = 2
         )
-        pop = []
-        for vals, loss in [([10, 10, 10], 5.0), ([1, 1, 1], 5.5)]:
-            ind = creator.Individual(vals)
-            ind.fitness.values = (loss,)
-            pop.append(ind)
 
-        original_fits = [ind.fitness.values[0] for ind in pop]
-        ga._apply_magnitude_penalty(pop)
-        new_fits = [ind.fitness.values[0] for ind in pop]
+        feasible = self._make_ind([1, 0, 0], 1.0, 1.0, 0)
 
-        assert original_fits == new_fits
+        worker_error = self._make_ind([2, 0, 0], 0.2, 0.2, 0)
+        worker_error.metrics["worker_error"] = True
+        worker_error.metrics["error"] = "worker crashed"
 
-    def test_restore_raw_fitness(self):
-        """Restoring raw fitness undoes the magnitude penalty."""
+        invalid = creator.Individual([3, 0, 0])
+        invalid.metrics = {"e_loss": 0.1, "fail_total": 0}
+
+        infeasible = self._make_ind([4, 0, 0], 1.2, 1.2, 2)
+
+        plan = ga._build_parent_selection_plan([feasible, worker_error, invalid, infeasible])
+
+        assert ga._is_feasible_individual(feasible) is True
+        assert ga._is_feasible_individual(worker_error) is False
+        assert ga._is_feasible_individual(invalid) is False
+        assert ga._is_feasible_individual(infeasible) is False
+        assert plan["feasible_count"] == 1
+        assert plan["mode"] == "fallback"
+
+
+class TestBestFeasibleReturn:
+    """Test feasible-first return behavior for final best individual."""
+
+    def test_prefers_best_feasible_when_available(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
+        infeasible = creator.Individual([1, 1, 1])
+        infeasible.fitness.values = (0.5,)
+        infeasible.metrics = {"e_loss": 0.1, "fail_total": 2}
+
+        feasible = creator.Individual([2, 2, 2])
+        feasible.fitness.values = (2.0,)
+        feasible.metrics = {"e_loss": 2.0, "fail_total": 0}
+
+        best_ind, best_loss, mode = ga._resolve_return_best(
+            population=[infeasible, feasible],
+            overall_best_ind=infeasible,
+            overall_best_loss=0.5,
+            overall_best_feasible_ind=feasible,
+            overall_best_feasible_e=2.0,
+        )
+
+        assert mode == "feasible"
+        assert best_ind is feasible
+        assert best_loss == 2.0
+
+    def test_falls_back_to_raw_when_no_feasible_exists(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
+        raw_best = creator.Individual([1, 1, 1])
+        raw_best.fitness.values = (0.5,)
+        raw_best.metrics = {"e_loss": 0.1, "fail_total": 3}
+
+        other = creator.Individual([3, 3, 3])
+        other.fitness.values = (1.0,)
+        other.metrics = {"e_loss": 0.4, "fail_total": 4}
+
+        best_ind, best_loss, mode = ga._resolve_return_best(
+            population=[raw_best, other],
+            overall_best_ind=raw_best,
+            overall_best_loss=0.5,
+            overall_best_feasible_ind=None,
+            overall_best_feasible_e=float("inf"),
+        )
+
+        assert mode == "raw"
+        assert best_ind is raw_best
+        assert best_loss == 0.5
+
+    def test_optimize_exposes_selected_best_metadata(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
-            population_size=2,
-            elite_top_pct=1.0,
-            magnitude_penalty_weight=0.1,
+            population_size=4,
+            num_generations=1,
+            num_workers=1,
+            elite_top_pct=0.5,
+            magnitude_penalty_weight=0.001,
         )
-        pop = []
-        for vals, loss in [([10, 10, 10], 5.0), ([1, 1, 1], 6.0)]:
-            ind = creator.Individual(vals)
-            ind.fitness.values = (loss,)
-            pop.append(ind)
 
-        ga._apply_magnitude_penalty(pop)
-        # Fitness should now include penalty
-        assert pop[0].fitness.values[0] > 5.0
+        ga.optimize(_simple_evaluate)
 
-        ga._restore_raw_fitness(pop)
-        # Fitness should be back to raw values
-        assert pop[0].fitness.values[0] == 5.0
-        assert pop[1].fitness.values[0] == 6.0
+        assert ga.last_best_selection_mode in {"feasible", "raw"}
+        assert ga.last_best_selection_value is not None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +452,8 @@ class TestGenerationStats:
             "mean_zero_flow",
             "best_routing_failures",
             "mean_routing_failures",
+            "best_fail_total",
+            "mean_fail_total",
             "genotypic_diversity",
             "phenotypic_diversity",
             "mutation_boosted",
@@ -296,6 +470,8 @@ class TestGenerationStats:
             "mean_zero_flow": 8.0,
             "best_routing_failures": 2,
             "mean_routing_failures": 4.0,
+            "best_fail_total": 3,
+            "mean_fail_total": 5.0,
             "genotypic_diversity": 50.0,
             "phenotypic_diversity": 3.5,
             "mutation_boosted": False,
