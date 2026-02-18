@@ -253,6 +253,33 @@ class CalibrationPipeline:
         except Exception:
             pass
 
+    @staticmethod
+    def _observed_edge_ids_from_df(observed_edges: Optional[pd.DataFrame]) -> Optional[set]:
+        """Extract observed edge ids from observed-edges dataframe."""
+        if observed_edges is None or observed_edges.empty:
+            return None
+        if "edge_id" not in observed_edges.columns:
+            return None
+        edge_ids = {
+            str(edge_id)
+            for edge_id in observed_edges["edge_id"].dropna().tolist()
+        }
+        return edge_ids or None
+
+    async def _write_network_plot(
+        self,
+        network_file: Path,
+        observed_edges: Optional[pd.DataFrame] = None,
+    ) -> None:
+        """Save network plot and optionally overlay observed edges."""
+        observed_ids = self._observed_edge_ids_from_df(observed_edges)
+        await asyncio.to_thread(
+            plot_network_geometry,
+            network_file,
+            self.output_dir / "plots" / "network.png",
+            observed_ids,
+        )
+
     def _bucket_timestamp(
         self, dt: datetime = None, bucket_minutes: int = 5
     ) -> Tuple[datetime, str]:
@@ -307,9 +334,7 @@ class CalibrationPipeline:
         # Count edges and plot map
         net = SUMONetwork(network_file)
         total_edges = len(net.edges)
-        await asyncio.to_thread(
-            plot_network_geometry, network_file, self.output_dir / "plots" / "network.png"
-        )
+        await self._write_network_plot(network_file)
         self._report_progress(3, "Building Network", "✓ SUMO network created")
 
         # Cleanup OSM file to save space (unless user requested offline bundle save).
@@ -330,6 +355,7 @@ class CalibrationPipeline:
         # Save observed edges
         observed_edges_file = self.output_dir / "data" / "observed_edges.csv"
         observed_edges.to_csv(observed_edges_file, index=False)
+        await self._write_network_plot(network_file, observed_edges=observed_edges)
         self._report_progress(
             4, "Matching Traffic", f"✓ Matched {len(observed_edges)} traffic segments to SUMO edges"
         )
@@ -383,13 +409,14 @@ class CalibrationPipeline:
 
         network_plot = self.output_dir / "plots" / "network.png"
         if not network_plot.exists():
-            await asyncio.to_thread(plot_network_geometry, network_file, network_plot)
+            await self._write_network_plot(network_file)
         self._report_progress(3, "Import Dataset", "✓ SUMO network imported")
 
         # Stage 4: Import observed edge mapping
         self._report_progress(4, "Import Dataset", "Loading offline matched observed edges...")
         observed_edges_file = copied["data/observed_edges.csv"]
         observed_edges = pd.read_csv(observed_edges_file)
+        await self._write_network_plot(network_file, observed_edges=observed_edges)
         self._report_progress(
             4, "Import Dataset", f"✓ Imported {len(observed_edges)} matched observed edges"
         )
