@@ -13,7 +13,7 @@ Advanced features:
 
 import logging
 from multiprocessing import Pool, cpu_count
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from deap import base, creator, tools
@@ -443,6 +443,9 @@ class GeneticAlgorithm:
         early_stopping_patience: int = 5,
         early_stopping_epsilon: float = 0.1,
         progress_callback: Callable[[int, float, float], None] = None,
+        generation_callback: Optional[
+            Callable[[int, np.ndarray, float, Dict[str, Any]], None]
+        ] = None,
     ) -> Tuple[np.ndarray, float, List[float], List[dict]]:
         """
         Run GA optimization with parallel evaluation.
@@ -453,6 +456,9 @@ class GeneticAlgorithm:
                            MUST be picklable (e.g. partial of top-level func).
             early_stopping_patience: Stop if no improvement for N generations
             early_stopping_epsilon: Minimum improvement threshold
+            generation_callback: Optional callback executed once per generation with
+                                (generation_idx, best_genome_snapshot, best_loss, best_metrics).
+                                Errors in callback are caught and logged.
 
         Returns:
             (best_genome, best_loss, loss_history, generation_stats)
@@ -769,6 +775,21 @@ class GeneticAlgorithm:
 
                 if progress_callback:
                     progress_callback(gen + 1, current_best, current_mean)
+
+                if generation_callback:
+                    try:
+                        generation_callback(
+                            gen + 1,
+                            np.array(best_ind_gen, dtype=int),
+                            current_best,
+                            dict(best_metrics) if isinstance(best_metrics, dict) else {},
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Generation callback failed at gen %s: %s",
+                            gen + 1,
+                            e,
+                        )
 
                 if current_best < best_loss - early_stopping_epsilon:
                     best_loss = current_best

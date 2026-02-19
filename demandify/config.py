@@ -38,6 +38,7 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "ga_magnitude_penalty_weight": 0.001,
     "ga_stagnation_patience": 20,
     "ga_stagnation_boost": 1.5,
+    "ga_checkpoint_interval": 10,
     "ga_assortative_mating": True,
     "ga_deterministic_crowding": True,
 }
@@ -146,6 +147,15 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
     )
     merged["ga_stagnation_boost"] = float(
         merged.get("ga_stagnation_boost", _RUN_DEFAULTS_FALLBACK["ga_stagnation_boost"])
+    )
+    merged["ga_checkpoint_interval"] = max(
+        1,
+        int(
+            merged.get(
+                "ga_checkpoint_interval",
+                _RUN_DEFAULTS_FALLBACK["ga_checkpoint_interval"],
+            )
+        ),
     )
     merged["ga_assortative_mating"] = _as_bool(
         merged.get("ga_assortative_mating"),

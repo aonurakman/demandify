@@ -38,6 +38,7 @@ def test_run_defaults_have_required_keys():
         "ga_magnitude_penalty_weight",
         "ga_stagnation_patience",
         "ga_stagnation_boost",
+        "ga_checkpoint_interval",
         "ga_assortative_mating",
         "ga_deterministic_crowding",
     }
@@ -68,6 +69,7 @@ def test_api_form_defaults_match_run_defaults():
     assert _form_default(start_sig, "parallel_workers") == defaults["parallel_workers"]
     assert _form_default(start_sig, "max_od_pairs") == defaults["max_od_pairs"]
     assert _form_default(start_sig, "bin_minutes") == defaults["bin_minutes"]
+    assert _form_default(start_sig, "ga_checkpoint_interval") == defaults["ga_checkpoint_interval"]
 
 
 def test_index_template_uses_shared_defaults():

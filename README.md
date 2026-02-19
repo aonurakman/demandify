@@ -197,6 +197,7 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | `--magnitude-penalty` | Float | 0.001 | Weight for magnitude in feasible-elite parent ranking (`weight*magnitude + E-rank term`) |
 | `--stagnation-patience` | Int | 20 | Generations without improvement before mutation boost activates |
 | `--stagnation-boost` | Float | 1.5 | Multiplier for mutation sigma and rate during stagnation |
+| `--checkpoint-interval` | Int | 10 | Save best-individual checkpoint artifacts every N generations |
 | `--assortative-mating` | Flag | off | Explicitly enable assortative mating |
 | `--no-assortative-mating` | Flag | off | Disable assortative mating (dissimilar parent pairing, on by default) |
 | `--deterministic-crowding` | Flag | off | Explicitly enable deterministic crowding |

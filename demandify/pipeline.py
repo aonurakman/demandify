@@ -74,6 +74,7 @@ class CalibrationPipeline:
         ga_magnitude_penalty_weight: float = 0.001,
         ga_stagnation_patience: int = 20,
         ga_stagnation_boost: float = 1.5,
+        ga_checkpoint_interval: int = 10,
         ga_assortative_mating: bool = True,
         ga_deterministic_crowding: bool = True,
         num_origins: int = 10,
@@ -107,6 +108,7 @@ class CalibrationPipeline:
             ga_magnitude_penalty_weight: Weight for magnitude term in feasible-elite ranking
             ga_stagnation_patience: Generations without improvement before mutation boost
             ga_stagnation_boost: Multiplier for mutation on stagnation
+            ga_checkpoint_interval: Save checkpointed best individual every N generations
             ga_assortative_mating: Prefer crossover between dissimilar parents
             ga_deterministic_crowding: Offspring replace most similar parents
             num_origins: Number of origin candidates
@@ -155,6 +157,7 @@ class CalibrationPipeline:
         self.ga_magnitude_penalty_weight = ga_magnitude_penalty_weight
         self.ga_stagnation_patience = ga_stagnation_patience
         self.ga_stagnation_boost = ga_stagnation_boost
+        self.ga_checkpoint_interval = max(1, int(ga_checkpoint_interval))
         self.ga_assortative_mating = ga_assortative_mating
         self.ga_deterministic_crowding = ga_deterministic_crowding
         self.num_origins = num_origins
@@ -1007,8 +1010,28 @@ class CalibrationPipeline:
         # Start optimization
         evaluate_func_clean = partial(evaluate_for_ga, config=sim_config)
 
+        def generation_checkpoint_callback(
+            generation: int,
+            best_genome_snapshot: np.ndarray,
+            current_best_loss: float,
+            best_metrics: Dict[str, Any],
+        ) -> None:
+            if generation % self.ga_checkpoint_interval != 0:
+                return
+            self._save_generation_checkpoint(
+                generation=generation,
+                best_genome=best_genome_snapshot,
+                best_loss=current_best_loss,
+                best_metrics=best_metrics,
+                demand_gen=demand_gen,
+                od_pairs=od_pairs,
+                departure_bins=departure_bins,
+                network_file=network_file,
+            )
+
         best_genome, best_loss, loss_history, generation_stats = ga.optimize(
             evaluate_func_clean,
+            generation_callback=generation_checkpoint_callback,
         )
         selected_mode = getattr(ga, "last_best_selection_mode", None) or "raw"
         selected_value = getattr(ga, "last_best_selection_value", best_loss)
@@ -1040,6 +1063,64 @@ class CalibrationPipeline:
         )
 
         return best_genome, best_loss, loss_history, generation_stats
+
+    def _checkpoint_export_id(self) -> str:
+        """Return stable experiment id used for URB-style export folders."""
+        return self.output_dir.name.replace("run_", "")
+
+    def _save_generation_checkpoint(
+        self,
+        generation: int,
+        best_genome: np.ndarray,
+        best_loss: float,
+        best_metrics: Dict[str, Any],
+        demand_gen: DemandGenerator,
+        od_pairs: List[Tuple[str, str]],
+        departure_bins: List[Tuple[int, int]],
+        network_file: Path,
+    ) -> None:
+        """
+        Save periodic best-individual checkpoint in URB-style structure.
+
+        This is best-effort and should never break ongoing calibration.
+        """
+        checkpoint_dir = self.output_dir / "checkpoints" / f"gen_{generation:04d}"
+        data_dir = checkpoint_dir / "data"
+        sumo_dir = checkpoint_dir / "sumo"
+        demand_csv = data_dir / "demand.csv"
+        trips_file = sumo_dir / "trips.xml"
+
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            sumo_dir.mkdir(parents=True, exist_ok=True)
+
+            demand_gen.genome_to_demand_csv(best_genome, od_pairs, departure_bins, demand_csv)
+            demand_gen.demand_csv_to_trips_xml(demand_csv, trips_file)
+
+            export_id = self._checkpoint_export_id()
+            URBDataExporter(export_id, checkpoint_dir).export(network_file, trips_file)
+
+            checkpoint_meta = {
+                "generation": int(generation),
+                "best_loss": float(best_loss),
+                "trip_count": int(np.sum(best_genome)),
+                "timestamp": datetime.now().isoformat(),
+                "best_metrics": best_metrics or {},
+            }
+            with open(checkpoint_dir / "checkpoint_meta.json", "w") as f:
+                json.dump(checkpoint_meta, f, indent=2, default=str)
+
+            logger.info(
+                "💾 Saved generation checkpoint at gen=%s (%s)",
+                generation,
+                checkpoint_dir,
+            )
+        except Exception as e:
+            logger.warning(
+                "Checkpoint export failed at gen %s: %s (continuing calibration)",
+                generation,
+                e,
+            )
 
     def _generate_final_demand(
         self,
@@ -1134,6 +1215,8 @@ class CalibrationPipeline:
             str(self.ga_stagnation_patience),
             "--stagnation-boost",
             self._format_cli_value(self.ga_stagnation_boost),
+            "--checkpoint-interval",
+            str(self.ga_checkpoint_interval),
             "--origins",
             str(self.num_origins),
             "--destinations",
@@ -1210,6 +1293,7 @@ class CalibrationPipeline:
                 "ga_magnitude_penalty_weight": self.ga_magnitude_penalty_weight,
                 "ga_stagnation_patience": self.ga_stagnation_patience,
                 "ga_stagnation_boost": self.ga_stagnation_boost,
+                "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
                 "requested_parallel_workers": self.parallel_workers,
@@ -1319,6 +1403,7 @@ class CalibrationPipeline:
                 "ga_magnitude_penalty_weight": self.ga_magnitude_penalty_weight,
                 "ga_stagnation_patience": self.ga_stagnation_patience,
                 "ga_stagnation_boost": self.ga_stagnation_boost,
+                "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
                 "num_origins": self.num_origins,
