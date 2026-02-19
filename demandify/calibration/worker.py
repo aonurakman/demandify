@@ -2,15 +2,18 @@
 Worker module for parallel simulation execution.
 Functionality is isolated here to avoid pickling complications with multiprocessing.
 """
+import errno
+import hashlib
 import logging
-import time
 import shutil
+import tempfile
+import time
+
 import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
-import hashlib
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
 from demandify.sumo.simulation import SUMOSimulation
@@ -26,6 +29,7 @@ from demandify.calibration.objective import EdgeSpeedObjective
 # We rely on the parent process setting up logging before pool creation or basicConfig.
 logger = logging.getLogger(__name__)
 WORKER_FAILURE_FAIL_TOTAL_SENTINEL = 1
+_UNUSABLE_TEMP_ROOTS: set[str] = set()
 
 
 def build_worker_error_metrics(error_message: str, worker_idx: Optional[int] = None) -> Dict[str, Any]:
@@ -64,6 +68,46 @@ class SimulationConfig:
     
     # Paths
     output_base_dir: Path = Path("temp_sims")
+
+
+def _create_worker_temp_dir(
+    preferred_root: Optional[Path],
+    worker_idx: int,
+    run_id: str,
+) -> Path:
+    """
+    Create a per-evaluation temp directory with robust fallback.
+
+    Prefer the configured output base directory (for debug visibility), but
+    gracefully fall back to system tmp when shared filesystems (e.g. NFS bind mounts)
+    transiently fail with stale file handles.
+    """
+    timestamp = int(time.time() * 1000)
+    prefix = f"w{worker_idx}_{run_id}_{timestamp}_"
+
+    preferred_root_str = str(preferred_root) if preferred_root is not None else None
+
+    if preferred_root is not None and preferred_root_str not in _UNUSABLE_TEMP_ROOTS:
+        try:
+            preferred_root.mkdir(parents=True, exist_ok=True)
+            return Path(tempfile.mkdtemp(prefix=prefix, dir=str(preferred_root)))
+        except OSError as e:
+            if e.errno in {errno.ESTALE, errno.EIO, errno.ENOTCONN, errno.ENOENT}:
+                if preferred_root_str is not None:
+                    _UNUSABLE_TEMP_ROOTS.add(preferred_root_str)
+                logger.warning(
+                    "Temp dir root '%s' unavailable (%s). Falling back to local tmp.",
+                    preferred_root,
+                    e,
+                )
+            else:
+                logger.warning(
+                    "Failed to create temp dir under '%s' (%s). Falling back to local tmp.",
+                    preferred_root,
+                    e,
+                )
+
+    return Path(tempfile.mkdtemp(prefix=prefix))
 
 
 def _stable_seed(genome: np.ndarray, base_seed: int) -> int:
@@ -169,13 +213,23 @@ def run_simulation_worker(
     import os
     if worker_idx is None:
         worker_idx = os.getpid() % 100
-    
-    # Unique temp directory for this worker/eval
-    timestamp = int(time.time() * 1000)
-    temp_dir = config.output_base_dir / f"w{worker_idx}_{timestamp}"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    temp_dir: Optional[Path] = None
+
     try:
+        preferred_root = config.output_base_dir
+        env_temp_root = os.environ.get("DEMANDIFY_EVAL_TMPDIR")
+        if env_temp_root:
+            preferred_root = Path(env_temp_root)
+
+        # Unique temp directory for this worker/eval.
+        # Use robust creation with local fallback to avoid NFS stale-handle crashes.
+        temp_dir = _create_worker_temp_dir(
+            preferred_root=preferred_root,
+            worker_idx=worker_idx,
+            run_id=config.run_id,
+        )
+
         # 1. Generate Demand
         seed = _stable_seed(genome, config.seed)
         trips_file = generate_demand_files(
@@ -243,13 +297,15 @@ def run_simulation_worker(
             pass
         else:
             # Cleanup
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
             
         return loss, metrics
         
     except Exception as e:
         logger.error(f"Worker {worker_idx} failed: {e}")
         # Clean up even on fail
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
         # Return infinite loss with explicit infeasible/error marker metrics
         return float("inf"), build_worker_error_metrics(str(e), worker_idx=worker_idx)
