@@ -29,6 +29,8 @@ jobs:
             ghcr.io/eclipse-sumo/sumo:v1_26_0 \
             bash -lc '
               set -euo pipefail
+              # SUMO v1_26_0 image may require pyarrow parquet libs on LD path.
+              export LD_LIBRARY_PATH="/usr/local/lib/python3.10/dist-packages/pyarrow:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
               sumo --version
               sumo --version | grep -q "1.26.0"
               if ! command -v python3 >/dev/null 2>&1; then
