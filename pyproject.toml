@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "demandify"
-version = "0.0.2"
-description = "Calibrate SUMO traffic simulations against real-world congestion data"
+version = "0.0.3"
+description = "Calibrate SUMO traffic simulations against real-world congestion data using genetic algorithms"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "demandify contributors"}
+    {name = "Ahmet Onur Akman", email = "ahmetonurakman@gmail.com"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
