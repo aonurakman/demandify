@@ -1,6 +1,9 @@
 ![demandify](https://github.com/aonurakman/demandify/blob/main/static/banner.png?raw=true)
 
 [![PyPI version](https://badge.fury.io/py/demandify.svg)](https://pypi.org/project/demandify/)
+[![DOI](https://zenodo.org/badge/1144266508.svg)](https://doi.org/10.5281/zenodo.18698977)
+[![Reproducibility Check](https://github.com/aonurakman/demandify/actions/workflows/reproducibility.yml/badge.svg)](https://github.com/aonurakman/demandify/actions/workflows/reproducibility.yml)
+
 
 # Welcome to demandify!
 
@@ -345,6 +348,7 @@ If you use this software for your research, please consider using the below cita
   version      = {0.0.3},
   publisher    = {PyPI},
   url          = {https://pypi.org/project/demandify/},
-  repository   = {https://github.com/aonurakman/demandify}
+  repository   = {https://github.com/aonurakman/demandify},
+  doi          = {10.5281/zenodo.18698978}
 }
 ```
