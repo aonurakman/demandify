@@ -289,9 +289,14 @@ class DemandGenerator:
             columns=["ID", "origin link id", "destination link id", "departure timestep"],
         )
         
-        # Sort by departure time (CRITICAL for SUMO)
+        # Sort deterministically for reproducibility.
+        # Multiple trips often share the same departure timestep, so we include
+        # stable tie-breakers to avoid run-to-run row reordering.
         if not demand_df.empty:
-            demand_df = demand_df.sort_values('departure timestep').reset_index(drop=True)
+            demand_df = demand_df.sort_values(
+                by=["departure timestep", "origin link id", "destination link id", "ID"],
+                kind="mergesort",
+            ).reset_index(drop=True)
         
         # Save to CSV
         output_file.parent.mkdir(parents=True, exist_ok=True)

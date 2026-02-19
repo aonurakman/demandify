@@ -500,6 +500,17 @@
                                                 min="1" max="5">
                                         </div>
                                         <div class="col-6 mb-2">
+                                            <label for="ga_checkpoint_interval" class="form-label small">
+                                                Checkpoint Every N Gen
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Save best-individual checkpoint artifacts every N generations (URB-style backup under checkpoints/).">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control form-control-sm"
+                                                id="ga_checkpoint_interval" name="ga_checkpoint_interval" value="{{ run_defaults.ga_checkpoint_interval }}" min="1">
+                                        </div>
+                                        <div class="col-6 mb-2">
                                             <div class="form-check mt-3">
                                                 <input class="form-check-input" type="checkbox" id="ga_assortative_mating"
                                                     name="ga_assortative_mating" {% if run_defaults.ga_assortative_mating %}checked{% endif %}>

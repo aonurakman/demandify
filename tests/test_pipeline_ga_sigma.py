@@ -20,7 +20,7 @@ def test_pipeline_passes_user_sigma_to_ga(monkeypatch, tmp_path):
             self.last_best_raw_loss = 1.0
             self.last_best_feasible_e_loss = None
 
-        def optimize(self, evaluate_func):
+        def optimize(self, evaluate_func, **kwargs):
             return np.array([0]), 1.0, [1.0], []
 
     monkeypatch.setattr(pipeline_module, "GeneticAlgorithm", FakeGA)

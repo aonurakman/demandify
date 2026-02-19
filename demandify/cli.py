@@ -6,7 +6,7 @@ demandify CLI entry point.
 import argparse
 import subprocess
 from pathlib import Path
-from demandify import __version__
+from demandify import __version__, VERSION_TEXT
 from demandify.config import get_run_defaults
 
 ASCII_ART = r"""
@@ -187,6 +187,7 @@ async def cmd_run(args):
                 ga_magnitude_penalty_weight=args.magnitude_penalty,
                 ga_stagnation_patience=args.stagnation_patience,
                 ga_stagnation_boost=args.stagnation_boost,
+                ga_checkpoint_interval=args.checkpoint_interval,
                 ga_assortative_mating=args.ga_assortative_mating,
                 ga_deterministic_crowding=args.ga_deterministic_crowding,
                 num_origins=args.origins,
@@ -313,7 +314,7 @@ def cli():
         description="demandify - SUMO traffic calibration tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"demandify {__version__}")
+    parser.add_argument("--version", action="version", version=VERSION_TEXT)
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -454,6 +455,12 @@ def cli():
         type=float,
         default=run_defaults["ga_stagnation_boost"],
         help=f"Mutation boost multiplier on stagnation (default: {run_defaults['ga_stagnation_boost']})",
+    )
+    run_parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=run_defaults["ga_checkpoint_interval"],
+        help=f"Save periodic best-individual checkpoints every N generations (default: {run_defaults['ga_checkpoint_interval']})",
     )
     default_assortative = run_defaults["ga_assortative_mating"]
     default_crowding = run_defaults["ga_deterministic_crowding"]

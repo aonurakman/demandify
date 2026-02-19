@@ -23,7 +23,7 @@
   "ga_magnitude_penalty_weight": 0.001,
   "ga_stagnation_patience": 20,
   "ga_stagnation_boost": 1.5,
+  "ga_checkpoint_interval": 10,
   "ga_assortative_mating": true,
   "ga_deterministic_crowding": true
 }
-

@@ -164,7 +164,15 @@ def generate_demand_files(
                     trip_id += 1
 
     # SUMO is more robust when trip departures are non-decreasing.
-    trips.sort(key=lambda trip: trip['depart_value'])
+    # Add deterministic tie-breakers for reproducible XML ordering.
+    trips.sort(
+        key=lambda trip: (
+            trip["depart_value"],
+            trip["from"],
+            trip["to"],
+            trip["ID"],
+        )
+    )
     
     # Create XML directly (faster than CSV -> XML)
     root = ET.Element('routes')

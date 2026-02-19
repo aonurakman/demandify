@@ -32,6 +32,7 @@ def _build_run_args(**overrides):
         "magnitude_penalty": 0.01,
         "stagnation_patience": 20,
         "stagnation_boost": 1.2,
+        "checkpoint_interval": 10,
         "ga_assortative_mating": True,
         "ga_deterministic_crowding": True,
         "origins": 10,

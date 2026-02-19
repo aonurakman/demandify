@@ -384,6 +384,30 @@ class TestBestFeasibleReturn:
         assert ga.last_best_selection_mode in {"feasible", "raw"}
         assert ga.last_best_selection_value is not None
 
+    def test_generation_callback_receives_snapshot_each_generation(self):
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=6,
+            num_generations=3,
+            num_workers=1,
+        )
+        callback_calls = []
+
+        def generation_callback(generation, best_genome, best_loss, best_metrics):
+            callback_calls.append((generation, best_genome, best_loss, best_metrics))
+
+        ga.optimize(_simple_evaluate, generation_callback=generation_callback)
+
+        assert len(callback_calls) == 3
+        for generation, best_genome, best_loss, best_metrics in callback_calls:
+            assert generation >= 1
+            assert isinstance(best_genome, np.ndarray)
+            assert best_genome.shape == (3,)
+            assert np.issubdtype(best_genome.dtype, np.integer)
+            assert np.isfinite(best_loss)
+            assert isinstance(best_metrics, dict)
+
 
 # ---------------------------------------------------------------------------
 # Assortative mating
