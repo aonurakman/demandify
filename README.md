@@ -1,21 +1,20 @@
-![demandify](static/banner.png)
+![demandify](https://github.com/aonurakman/demandify/blob/main/static/banner.png?raw=true)
 
 [![PyPI version](https://badge.fury.io/py/demandify.svg)](https://pypi.org/project/demandify/)
 
 # Welcome to demandify!
 
-**Turn real-world traffic data into accurate, agent-based SUMO simulations.**
+**Turn real-world traffic data into agent-based SUMO traffic scenarios.**
 
-Do you want to simulate real-world city traffic but don't have access to precious driver trip data? **demandify** solves that.
+Do you want to recreate real-world city traffic but don't have access to precious driver trip data? **demandify** solves that.
 
-It's simple: Pick a spot on the map and demandify will:
+Pick a spot on the map and demandify will:
 1.  Fetch real-time congestion data from TomTom 🗺️
 2.  Build a clean SUMO network 🛣️
 3.  Use the Genetic Algorithm to figure out the demand pattern to match that traffic 🧬
+4. Produces a ready-to-run SUMO scenario in agent-level precision that allows you to test your urban routing policies, even for your CAVs! ([wink](https://github.com/COeXISTENCE-PROJECT/URB) [wink](https://github.com/COeXISTENCE-PROJECT/RouteRL)).
 
-The result? A ready-to-run SUMO scenario in agent-level precision that allows you to test your urban routing policies, even for your CAVs! ([wink](https://github.com/COeXISTENCE-PROJECT/URB) [wink](https://github.com/COeXISTENCE-PROJECT/RouteRL)).
-
-![Workflow](static/schema.gif)
+![Workflow](https://github.com/aonurakman/demandify/blob/main/static/schema.png?raw=true)
 
 ## Features
 
@@ -30,7 +29,7 @@ The result? A ready-to-run SUMO scenario in agent-level precision that allows yo
 - 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
 - ✅ **Data quality labeling**: Feasibility check now reports a quality score/label before calibration starts
 
-![GUI Screenshot](static/gui.png)
+![GUI Screenshot](https://github.com/aonurakman/demandify/blob/main/static/gui.png?raw=true)
 
 ## Quickstart
 
@@ -105,7 +104,7 @@ demandify run "2.2961,48.8469,2.3071,48.8532" --name Paris_Test_01
 
 # Advanced usage with custom parameters
 demandify run "2.2961,48.8469,2.3071,48.8532" \
-  --name Paris_Optimization \
+  --name paris_v1 \
   --window 30 \
   --seed 123 \
   --pop 100 \
@@ -115,7 +114,7 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 
 # With advanced GA dynamics
 demandify run "2.2961,48.8469,2.3071,48.8532" \
-  --name Paris_Advanced \
+  --name paris_v2 \
   --pop 100 \
   --gen 100 \
   --immigrant-rate 0.05 \
@@ -124,11 +123,11 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
 
 # Fully non-interactive (automation/CI)
 demandify run "2.2961,48.8469,2.3071,48.8532" \
-  --name Paris_Batch \
+  --name paris_v3 \
   --non-interactive
 
 # Import existing offline dataset (no live TomTom/OSM fetch)
-demandify run --import krakow_v1 --name Krakow_Offline
+demandify run --import krakow_v1 --name krakow_remote
 ```
 
 > **Note:** By default, the CLI pauses after fetching/matching data and asks for confirmation, then asks whether to run another calibration. Pass `--non-interactive` to auto-approve and exit immediately after pipeline completion.
@@ -151,7 +150,7 @@ Bundled snapshot previews:
 
 | Den Haag (`den_haag_v1`) | Krakow (`krakow_v1`) | Eskisehir (`eskisehir_v1`) |
 |---|---|---|
-| ![Den Haag offline network](demandify/offline_datasets/den_haag_v1/plots/network.png) | ![Krakow offline network](demandify/offline_datasets/krakow_v1/plots/network.png) | ![Eskisehir offline network](demandify/offline_datasets/eskisehir_v1/plots/network.png) |
+| ![Den Haag offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/den_haag_v1/plots/network.png?raw=true) | ![Krakow offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/krakow_v1/plots/network.png?raw=true) | ![Eskisehir offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/eskisehir_v1/plots/network.png?raw=true) |
 
 #### Parameters
 
@@ -182,7 +181,7 @@ Bundled snapshot previews:
 
 \* `bbox` is required in create mode. In import mode, use `--import` and do not pass `bbox`.
 
-Import mode constraints:
+`Import` mode constraints:
 - positional `bbox` is rejected
 - `--tile-zoom` is rejected
 - all calibration controls (seed, GA params, warmup/window, etc.) remain available
@@ -329,3 +328,19 @@ MIT
 - **SUMO**: [Eclipse SUMO](https://eclipse.dev/sumo/)
 - **TomTom**: [Traffic Flow API](https://developer.tomtom.com/traffic-api)
 - **OpenStreetMap**: [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
+
+## Citation
+
+If you use this software for your research, please consider using the below citation.
+
+```bibtex
+@software{demandify_2026,
+  author       = {{Ahmet Onur Akman}},
+  title        = {{demandify}: Calibrate SUMO traffic scenarios against real-world congestion using genetic algorithms},
+  year         = {2026},
+  version      = {0.0.3},
+  publisher    = {PyPI},
+  url          = {https://pypi.org/project/demandify/},
+  repository   = {https://github.com/aonurakman/demandify}
+}
+```
