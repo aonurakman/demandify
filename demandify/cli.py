@@ -6,7 +6,7 @@ demandify CLI entry point.
 import argparse
 import subprocess
 from pathlib import Path
-from demandify import __version__
+from demandify import __version__, VERSION_TEXT
 from demandify.config import get_run_defaults
 
 ASCII_ART = r"""
@@ -314,7 +314,7 @@ def cli():
         description="demandify - SUMO traffic calibration tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"demandify {__version__}")
+    parser.add_argument("--version", action="version", version=VERSION_TEXT)
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

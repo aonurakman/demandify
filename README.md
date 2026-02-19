@@ -51,6 +51,9 @@ pip install -e .
 
 **demandify** requires SUMO (Simulation of Urban MObility) to power its simulations.
 
+> [!IMPORTANT] 
+> demandify is developed and tested with SUMO version 1.26.0. Ensure that your SUMO version is up to date.
+
 👉 **[Download SUMO from the official website](https://eclipse.dev/sumo/)**
 
 Once installed, verify it's working:
