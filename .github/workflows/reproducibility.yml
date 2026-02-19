@@ -1,0 +1,41 @@
+name: Reproducibility Check
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "demandify/**"
+  workflow_dispatch:
+
+jobs:
+  reproducibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pull SUMO 1.26.0 image
+        run: |
+          docker pull ghcr.io/eclipse-sumo/sumo:v1_26_0
+
+      - name: Run reproducibility test inside SUMO 1.26.0 container
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ghcr.io/eclipse-sumo/sumo:v1_26_0 \
+            bash -lc '
+              set -euo pipefail
+              sumo --version
+              sumo --version | grep -q "1.26.0"
+              if ! command -v python3 >/dev/null 2>&1; then
+                apt-get update
+                apt-get install -y python3 python3-pip
+              fi
+              python3 -m pip install --upgrade pip
+              python3 -m pip install -e ".[dev]"
+              python3 -m pytest -q tests/test_reproducibility_offline_random.py
+            '

@@ -12,6 +12,7 @@ Advanced features:
 """
 
 import logging
+from contextlib import nullcontext
 from multiprocessing import Pool, cpu_count
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -437,6 +438,27 @@ class GeneticAlgorithm:
         if hasattr(individual, "metrics"):
             del individual.metrics
 
+    def _cx_two_point_seeded(self, ind1, ind2):
+        """
+        Deterministic two-point crossover using the GA-local RNG.
+
+        Equivalent in spirit to DEAP's cxTwoPoint, but avoids the global
+        `random` module so runs are reproducible for a fixed seed.
+        """
+        size = min(len(ind1), len(ind2))
+        if size < 2:
+            return ind1, ind2
+
+        cx1 = int(self.rng.randint(1, size + 1))
+        cx2 = int(self.rng.randint(1, size))
+        if cx2 >= cx1:
+            cx2 += 1
+        else:
+            cx1, cx2 = cx2, cx1
+
+        ind1[cx1:cx2], ind2[cx1:cx2] = ind2[cx1:cx2], ind1[cx1:cx2]
+        return ind1, ind2
+
     def optimize(
         self,
         evaluate_func: Callable[[np.ndarray], Union[float, Tuple[float, Dict[str, Any]]]],
@@ -473,7 +495,7 @@ class GeneticAlgorithm:
         )
 
         # Genetic operators
-        self.toolbox.register("mate", tools.cxTwoPoint)
+        self.toolbox.register("mate", self._cx_two_point_seeded)
         self.toolbox.register(
             "mutate",
             self._bounded_mutation,
@@ -498,9 +520,23 @@ class GeneticAlgorithm:
         overall_best_feasible_e = float("inf")
         selection_mode_prev = None
 
-        # Context manager for Pool ensures cleanup
-        # We use map_async or imap for better control
-        with Pool(processes=self.num_workers) as pool:
+        # Use in-process evaluation for workers=1 to maximize reproducibility
+        # and avoid multiprocessing spawn/fork side effects.
+        if self.num_workers <= 1:
+            logger.info("Using single-process evaluation mode (workers=1)")
+
+            class _SerialPool:
+                @staticmethod
+                def imap(func, iterable):
+                    for item in iterable:
+                        yield func(item)
+
+            eval_context = nullcontext(_SerialPool())
+        else:
+            eval_context = Pool(processes=self.num_workers)
+
+        # Context manager ensures worker cleanup in parallel mode.
+        with eval_context as pool:
 
             # Helper for parallel evaluation
             def parallel_evaluate(individuals):
