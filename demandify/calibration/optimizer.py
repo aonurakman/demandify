@@ -611,7 +611,7 @@ class GeneticAlgorithm:
         # Track stats
         loss_history = []
         generation_stats = []
-        best_loss = float("inf")
+        best_loss_for_stagnation = float("inf")
         generations_without_improvement = 0
         # Track the actual best individual across all generations (on raw loss only)
         overall_best_ind = None
@@ -906,7 +906,7 @@ class GeneticAlgorithm:
 
                 boost_str = " [BOOSTED]" if self._mutation_boosted else ""
                 logger.info(
-                    f"✅ Gen {gen+1}/{self.num_generations}: best={current_best:.2f}, mean={current_mean:.2f}, "
+                    f"✅ Gen {gen+1}/{self.num_generations}: selected={current_best:.2f}, mean={current_mean:.2f}, "
                     f"div={genotypic_diversity:.1f}{metric_str}{boost_str}"
                 )
 
@@ -928,8 +928,10 @@ class GeneticAlgorithm:
                             e,
                         )
 
-                if current_best < best_loss - early_stopping_epsilon:
-                    best_loss = current_best
+                # Stagnation boost should reset on any strict improvement, even if the
+                # change is smaller than the early-stopping epsilon.
+                if current_best < best_loss_for_stagnation:
+                    best_loss_for_stagnation = current_best
                     generations_without_improvement = 0
                 else:
                     generations_without_improvement += 1

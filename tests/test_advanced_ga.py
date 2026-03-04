@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 from deap import creator
 
 from demandify.calibration.optimizer import GeneticAlgorithm
@@ -455,6 +456,38 @@ class TestStagnationBoost:
         assert ga._mutation_boosted is False
         assert ga._base_mutation_sigma == 10
         assert ga._base_mutation_rate == 0.5
+
+    def test_small_improvement_resets_stagnation_counter(self):
+        """A real loss decrease should reset stagnation even below early-stop epsilon."""
+        losses = iter([10.0, 9.95, 9.90])
+
+        def evaluate(_genome):
+            return next(losses)
+
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=1,
+            num_generations=2,
+            mutation_rate=1.0,
+            crossover_rate=0.0,
+            elitism=0,
+            mutation_sigma=10,
+            mutation_indpb=1.0,
+            num_workers=1,
+            immigrant_rate=0.0,
+            stagnation_patience=1,
+            stagnation_boost=2.0,
+            assortative_mating=False,
+            deterministic_crowding=False,
+        )
+
+        _, _, _, generation_stats = ga.optimize(evaluate)
+
+        assert generation_stats[0]["best_loss"] == pytest.approx(9.95)
+        assert generation_stats[1]["best_loss"] == pytest.approx(9.90)
+        assert generation_stats[0]["mutation_boosted"] is False
+        assert generation_stats[1]["mutation_boosted"] is False
 
 
 # ---------------------------------------------------------------------------
