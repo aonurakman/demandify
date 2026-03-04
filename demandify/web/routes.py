@@ -117,6 +117,7 @@ async def index(request: Request):
             "run_defaults": RUN_DEFAULTS,
             "has_api_key": config.tomtom_api_key is not None,
             "offline_datasets": offline_datasets,
+            "asset_version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
         },
     )
 

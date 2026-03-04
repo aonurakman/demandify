@@ -17,7 +17,8 @@ document.addEventListener('DOMContentLoaded', function () {
     loadKnownOfflineDatasetsFromPage();
     initMap();
     initEventListeners();
-    setDataMode(document.getElementById('data_mode')?.value || 'create');
+    const initialMode = document.querySelector('input[name="data_mode"]:checked')?.value || 'create';
+    setDataMode(initialMode);
 });
 
 function initMap() {
@@ -211,7 +212,15 @@ function applyBboxToMap(bbox, fitMap) {
 }
 
 function setDataMode(mode) {
-    dataMode = (mode || 'create').toLowerCase() === 'import' ? 'import' : 'create';
+    const createInput = document.getElementById('data-mode-create');
+    const importInput = document.getElementById('data-mode-import');
+    const importAllowed = !importInput || !importInput.disabled;
+
+    dataMode = (mode || 'create').toLowerCase() === 'import' && importAllowed ? 'import' : 'create';
+
+    if (createInput) createInput.checked = dataMode === 'create';
+    if (importInput) importInput.checked = dataMode === 'import';
+
     const importGroup = document.getElementById('import-dataset-group');
     const helpText = document.getElementById('bbox-help-text');
     const summaryEl = document.getElementById('offline-dataset-summary');
@@ -219,7 +228,10 @@ function setDataMode(mode) {
 
     const bboxInputs = document.querySelectorAll('.bbox-input');
     if (dataMode === 'import') {
-        if (importGroup) importGroup.classList.remove('d-none');
+        if (importGroup) {
+            importGroup.hidden = false;
+            importGroup.classList.remove('d-none');
+        }
         detachDrawControl();
         if (tileZoomInput) tileZoomInput.disabled = true;
         bboxInputs.forEach(el => {
@@ -234,10 +246,13 @@ function setDataMode(mode) {
             currentBbox = null;
             drawnItems.clearLayers();
             updateBboxForm();
-            if (summaryEl) summaryEl.textContent = 'Select an offline dataset to import its bbox.';
+            if (summaryEl) summaryEl.textContent = '';
         }
     } else {
-        if (importGroup) importGroup.classList.add('d-none');
+        if (importGroup) {
+            importGroup.hidden = true;
+            importGroup.classList.add('d-none');
+        }
         attachDrawControl();
         if (tileZoomInput) tileZoomInput.disabled = false;
         bboxInputs.forEach(el => {
@@ -253,7 +268,7 @@ function applySelectedOfflineDataset(datasetId) {
     const dataset = knownOfflineDatasets.find(ds => ds.id === datasetId);
     const summaryEl = document.getElementById('offline-dataset-summary');
     if (!dataset || !dataset.bbox) {
-        if (summaryEl) summaryEl.textContent = 'Selected dataset is missing bbox metadata.';
+        if (summaryEl) summaryEl.textContent = 'Dataset bbox unavailable.';
         return;
     }
     applyBboxToMap(dataset.bbox, true);
@@ -261,7 +276,9 @@ function applySelectedOfflineDataset(datasetId) {
         const quality = dataset.quality_label
             ? `${String(dataset.quality_label).toUpperCase()}${dataset.quality_score !== null && dataset.quality_score !== undefined ? ` (${dataset.quality_score}/100)` : ''}`
             : 'N/A';
-        summaryEl.textContent = `${dataset.name} [${dataset.source}] selected. Quality: ${quality}.`;
+        summaryEl.textContent = quality === 'N/A'
+            ? `${dataset.name} [${dataset.source}]`
+            : `${dataset.name} [${dataset.source}] · ${quality}`;
     }
 }
 
@@ -286,6 +303,25 @@ function updateMapFromInputs() {
     if (runBtn && runBtn.disabled && document.getElementById('api-key-input') === null) {
         runBtn.disabled = false;
     }
+}
+
+function startProgressAnimation() {
+    const video = document.getElementById('progress-animation');
+    if (!video) return;
+    video.muted = true;
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(error => {
+            console.debug('Progress animation autoplay blocked:', error);
+        });
+    }
+}
+
+function stopProgressAnimation() {
+    const video = document.getElementById('progress-animation');
+    if (!video) return;
+    video.pause();
+    video.currentTime = 0;
 }
 
 function initEventListeners() {
@@ -350,12 +386,14 @@ function initEventListeners() {
     }
 
     // Data mode and offline dataset selection
-    const dataModeSelect = document.getElementById('data_mode');
-    if (dataModeSelect) {
-        dataModeSelect.addEventListener('change', function () {
-            setDataMode(this.value);
+    const dataModeInputs = document.querySelectorAll('input[name="data_mode"]');
+    dataModeInputs.forEach(input => {
+        input.addEventListener('change', function () {
+            if (this.checked) {
+                setDataMode(this.value);
+            }
         });
-    }
+    });
 
     const offlineDatasetSelect = document.getElementById('offline_dataset');
     if (offlineDatasetSelect) {
@@ -401,6 +439,17 @@ function initEventListeners() {
                     document.getElementById('bin-val').textContent = maxVal;
                 }
             }
+        });
+    }
+
+    const advancedParams = document.getElementById('advanced-params');
+    const advancedToggle = document.getElementById('advanced-toggle');
+    if (advancedParams && advancedToggle) {
+        advancedParams.addEventListener('show.bs.collapse', function () {
+            advancedToggle.innerHTML = '<i class="bi bi-sliders"></i> Hide Advanced';
+        });
+        advancedParams.addEventListener('hide.bs.collapse', function () {
+            advancedToggle.innerHTML = '<i class="bi bi-sliders"></i> Show Advanced';
         });
     }
 
@@ -613,6 +662,7 @@ function initEventListeners() {
         document.getElementById('info-panel').style.display = 'none';
         document.getElementById('progress-panel').style.display = 'block';
         document.getElementById('run-btn').disabled = true;
+        startProgressAnimation();
 
         const formData = new FormData(runForm);
         // Handle boolean checkboxes: set to true/false explicitly
@@ -781,6 +831,7 @@ function updateProgress(progress) {
 }
 
 function resetUI() {
+    stopProgressAnimation();
     document.getElementById('info-panel').style.display = 'block';
     document.getElementById('progress-panel').style.display = 'none';
     document.getElementById('run-btn').disabled = false;
