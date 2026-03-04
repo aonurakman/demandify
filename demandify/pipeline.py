@@ -1432,7 +1432,7 @@ class CalibrationPipeline:
                         if quality_metrics["total_edges"] > 0
                         else 0
                     ),
-                    "description": "MAE (Mean Absolute Error) shows average speed error in km/h - lower is better. Match rate shows % of observed segments successfully matched to SUMO edges.",
+                    "description": "MAE (Mean Absolute Error) shows average speed error in km/h - lower is better. Match rate here means simulation coverage: the % of observed segments that received a simulated speed during the measurement window.",
                 },
             },
             "user_inputs": {

@@ -201,7 +201,7 @@ async def cmd_run(args):
             def confirm_stats(stats):
                 print("\n📊 Traffic Data Check:")
                 print(f"   - Fetched Segments: {stats['fetched_segments']}")
-                print(f"   - Matched Edges:    {stats['matched_edges']}")
+                print(f"   - Map-Matched Segments: {stats['matched_edges']}")
                 print(f"   - Total Graph Edges: {stats.get('total_network_edges', '-')}")
 
                 quality = stats.get("quality")
@@ -218,9 +218,9 @@ async def cmd_run(args):
                         print(f"   - Quality Flags:    {', '.join(warnings)}")
 
                 if stats["matched_edges"] == 0:
-                    print("\n❌ CRITICAL: No edges matched! Run will fail.")
+                    print("\n❌ CRITICAL: No traffic segments map-matched to graph edges. Run will fail.")
                 elif stats["matched_edges"] < 5:
-                    print("\n⚠️  WARNING: Very few edges matched (<5). Results may be poor.")
+                    print("\n⚠️  WARNING: Very few traffic segments map-matched to graph edges (<5). Results may be poor.")
 
                 if quality:
                     recommendation = quality.get("recommendation")

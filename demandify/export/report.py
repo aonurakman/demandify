@@ -626,8 +626,8 @@ class ReportGenerator:
         <h2>📊 Results Summary</h2>
         <div class="metrics">
             <p>Final Loss (MAE): <span class="metric">{final_loss_str} km/h</span></p>
-            <p>Observed Edges: <span class="metric">{total_edges}</span></p>
-            <p>Matched Edges: <span class="metric">{matched_edges}</span></p>
+            <p>Observed Segments: <span class="metric">{total_edges}</span></p>
+            <p>Covered in Simulation: <span class="metric">{matched_edges}</span></p>
         </div>
     </div>
     
