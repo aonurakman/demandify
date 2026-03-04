@@ -4,7 +4,7 @@ SUMO network conversion from OSM data.
 import subprocess
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 from shapely.geometry import LineString, Point
 import json
@@ -44,9 +44,22 @@ class SUMONetwork:
         self.edge_attributes = {}
         self.adjacency = {}  # Directed graph: {from_edge: {to_edges}}
         self.edge_allowed_lanes = {}  # {edge_id: {lane_index, ...}} for passenger routing
+        self.conv_boundary: Optional[Tuple[float, float, float, float]] = None
+        self.orig_boundary: Optional[Tuple[float, float, float, float]] = None
         
         if network_file.exists():
             self._parse_network()
+
+    @staticmethod
+    def _parse_boundary_attr(value: Optional[str]) -> Optional[Tuple[float, float, float, float]]:
+        """Parse SUMO location boundary attributes like 'minX,minY,maxX,maxY'."""
+        if not value:
+            return None
+        try:
+            min_x, min_y, max_x, max_y = map(float, value.split(","))
+            return (min_x, min_y, max_x, max_y)
+        except Exception:
+            return None
     
     def _parse_network(self):
         """Parse the SUMO network file to extract edge geometries."""
@@ -54,6 +67,11 @@ class SUMONetwork:
         
         tree = ET.parse(self.network_file)
         root = tree.getroot()
+
+        location = root.find(".//location")
+        if location is not None:
+            self.conv_boundary = self._parse_boundary_attr(location.get("convBoundary"))
+            self.orig_boundary = self._parse_boundary_attr(location.get("origBoundary"))
         
         # Extract edges
         for edge in root.findall('.//edge'):
@@ -228,6 +246,19 @@ class SUMONetwork:
     def get_all_edges(self) -> List[str]:
         """Get all edge IDs."""
         return self.edges.copy()
+
+    def get_network_boundary(self) -> Optional[Tuple[float, float, float, float]]:
+        """Return network-space bounds, preferring SUMO's converted bbox when available."""
+        if self.conv_boundary is not None:
+            return self.conv_boundary
+        if not self.edge_geometries:
+            return None
+
+        min_x = min(geom.bounds[0] for geom in self.edge_geometries.values())
+        min_y = min(geom.bounds[1] for geom in self.edge_geometries.values())
+        max_x = max(geom.bounds[2] for geom in self.edge_geometries.values())
+        max_y = max(geom.bounds[3] for geom in self.edge_geometries.values())
+        return (min_x, min_y, max_x, max_y)
 
     def get_edge_centroid(self, edge_id: str) -> Tuple[float, float]:
         """

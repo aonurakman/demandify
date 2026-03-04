@@ -1,7 +1,8 @@
 """
 Seeded demand generation for SUMO.
 """
-from typing import List, Tuple
+from collections import Counter
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -21,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 class DemandGenerator:
     """Generate seeded synthetic demand for SUMO."""
+
+    THROUGH_TRAFFIC_SHARE = 0.7
+    PREFERRED_BOUNDARY_ROLE_BOOST = 2.3
+    OPPOSITE_BOUNDARY_ROLE_FACTOR = 0.5
+    BOUNDARY_MARGIN_RATIO = 0.08
+    BOUNDARY_MARGIN_MIN_METERS = 25.0
+    BOUNDARY_MARGIN_MAX_METERS = 200.0
     
     def __init__(self, network: SUMONetwork, seed: int = 42):
         """
@@ -36,8 +44,6 @@ class DemandGenerator:
     
     def select_od_candidates(
         self,
-        num_origins: int = 20,
-        num_destinations: int = 20,
         max_od_pairs: int = 150,
         max_consecutive_failures: int = 10000,
         min_trip_distance: float = 0.0
@@ -46,8 +52,6 @@ class DemandGenerator:
         Backwards-compatible wrapper around `select_od_pairs`.
         
         Args:
-            num_origins: Hint for origins (actual will vary based on validated pairs)
-            num_destinations: Hint for destinations (actual will vary)
             max_od_pairs: Target number of OD pairs to create
             max_consecutive_failures: Max failures before giving up
             min_trip_distance: Minimum Euclidean distance between origin and destination O/D
@@ -56,8 +60,6 @@ class DemandGenerator:
             (origin_edges, destination_edges) - unique edges used in validated OD pairs
         """
         pairs = self.select_od_pairs(
-            num_origins=num_origins,
-            num_destinations=num_destinations,
             max_od_pairs=max_od_pairs,
             max_consecutive_failures=max_consecutive_failures,
             min_trip_distance=min_trip_distance,
@@ -68,8 +70,6 @@ class DemandGenerator:
 
     def select_od_pairs(
         self,
-        num_origins: int = 20,
-        num_destinations: int = 20,
         max_od_pairs: int = 150,
         max_consecutive_failures: int = 10000,
         min_trip_distance: float = 0.0,
@@ -83,8 +83,6 @@ class DemandGenerator:
             - Returned pairs are unique.
 
         Args:
-            num_origins: Hint for origins (not enforced; retained for API compatibility)
-            num_destinations: Hint for destinations (not enforced; retained for API compatibility)
             max_od_pairs: Target number of OD pairs to create
             max_consecutive_failures: Max failures before giving up
             min_trip_distance: Minimum Euclidean distance between origin and destination O/D
@@ -97,19 +95,29 @@ class DemandGenerator:
         if len(all_edges) < 2:
             raise ValueError(f"Insufficient edges in network: {len(all_edges)}")
         
-        # Calculate weights for biased selection (favor major roads)
-        weights = self._calculate_edge_weights(all_edges)
-        total_weight = sum(weights)
-        probs = [w / total_weight for w in weights] if total_weight > 0 else None
+        sampling_profiles = self._build_od_sampling_profiles(all_edges)
+        edge_roles = sampling_profiles["edge_roles"]
+        has_boundary_bias = sampling_profiles["has_boundary_bias"]
         
         # Build valid OD pairs one at a time
         valid_pairs: List[Tuple[str, str]] = []
         valid_pairs_set = set()
         consecutive_failures = 0
         total_attempts = 0
+        selected_origin_roles: Counter = Counter()
+        selected_destination_roles: Counter = Counter()
         
         logger.info(f"Building up to {max_od_pairs} validated OD pairs (min_dist={min_trip_distance}m)...")
-        
+        logger.info(
+            "OD selection profiles: incoming=%s, outgoing=%s, internal=%s, "
+            "through_share=%.2f, boundary_margin=%.1fm",
+            sampling_profiles["role_counts"].get("incoming", 0),
+            sampling_profiles["role_counts"].get("outgoing", 0),
+            sampling_profiles["role_counts"].get("internal", 0),
+            self.THROUGH_TRAFFIC_SHARE if has_boundary_bias else 0.0,
+            sampling_profiles["boundary_margin_m"],
+        )
+
         current_min_dist = min_trip_distance
         logger.info(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
         
@@ -133,9 +141,37 @@ class DemandGenerator:
                  current_min_dist *= 0.8
                  logger.info(f"  Relaxing min_dist from {int(old_dist)}m to {int(current_min_dist)}m after failures")
 
-            # Sample a random OD pair
-            candidates = self.rng.choice(all_edges, size=2, replace=False, p=probs)
-            origin, destination = candidates[0], candidates[1]
+            # Most attempts use a boundary-biased origin/destination profile to mimic
+            # traffic entering and leaving a partial-city calibration bbox. The rest
+            # use neutral road-importance weights so internal trips still appear.
+            use_through_profile = has_boundary_bias and self.rng.rand() < self.THROUGH_TRAFFIC_SHARE
+            if use_through_profile:
+                origin = self._sample_edge(
+                    all_edges,
+                    sampling_profiles["origin_probs"],
+                    sampling_profiles["edge_index"],
+                )
+                destination = self._sample_edge(
+                    all_edges,
+                    sampling_profiles["destination_probs"],
+                    sampling_profiles["edge_index"],
+                    exclude_edge=origin,
+                )
+            else:
+                origin = self._sample_edge(
+                    all_edges,
+                    sampling_profiles["base_probs"],
+                    sampling_profiles["edge_index"],
+                )
+                destination = self._sample_edge(
+                    all_edges,
+                    sampling_profiles["base_probs"],
+                    sampling_profiles["edge_index"],
+                    exclude_edge=origin,
+                )
+
+            if origin is None or destination is None:
+                raise ValueError("Could not sample a valid OD pair from the network")
             
             total_attempts += 1
             
@@ -161,6 +197,8 @@ class DemandGenerator:
             if self._has_route(origin, destination):
                 valid_pairs.append(pair)
                 valid_pairs_set.add(pair)
+                selected_origin_roles[edge_roles.get(origin, "internal")] += 1
+                selected_destination_roles[edge_roles.get(destination, "internal")] += 1
                 consecutive_failures = 0  # Reset on success
             else:
                 consecutive_failures += 1
@@ -179,8 +217,202 @@ class DemandGenerator:
             f"Created {len(valid_pairs)} valid OD pairs from {total_attempts} attempts: "
             f"{len(origins)} unique origins, {len(destinations)} unique destinations"
         )
+        logger.info(
+            "Selected OD role mix: origins [%s], destinations [%s]",
+            self._format_role_counts(selected_origin_roles),
+            self._format_role_counts(selected_destination_roles),
+        )
 
         return valid_pairs
+
+    def _build_od_sampling_profiles(self, edges: List[str]) -> Dict[str, object]:
+        """Build neutral and boundary-biased sampling profiles for OD generation."""
+        base_weights = self._calculate_edge_weights(edges)
+        base_probs = self._normalize_weights(base_weights)
+        edge_index = {edge_id: idx for idx, edge_id in enumerate(edges)}
+
+        boundary = self.network.get_network_boundary()
+        boundary_margin = self._boundary_margin(boundary)
+        edge_roles: Dict[str, str] = {}
+        incoming_degree_map = self._build_incoming_degree_map(edges)
+        if boundary is not None:
+            for edge_id in edges:
+                edge_roles[edge_id] = self._classify_edge_boundary_role(
+                    edge_id,
+                    boundary,
+                    boundary_margin,
+                    incoming_degree_map.get(edge_id, 0),
+                )
+        else:
+            edge_roles = {edge_id: "internal" for edge_id in edges}
+
+        role_counts = Counter(edge_roles.values())
+        has_boundary_bias = role_counts.get("incoming", 0) > 0 and role_counts.get("outgoing", 0) > 0
+        if has_boundary_bias:
+            origin_probs = self._normalize_weights(
+                self._apply_boundary_role_bias(edges, base_weights, edge_roles, preferred_role="incoming")
+            )
+            destination_probs = self._normalize_weights(
+                self._apply_boundary_role_bias(edges, base_weights, edge_roles, preferred_role="outgoing")
+            )
+        else:
+            origin_probs = list(base_probs)
+            destination_probs = list(base_probs)
+
+        effective_origin_probs = self._mix_probabilities(origin_probs, base_probs, self.THROUGH_TRAFFIC_SHARE)
+        effective_destination_probs = self._mix_probabilities(
+            destination_probs, base_probs, self.THROUGH_TRAFFIC_SHARE
+        )
+
+        return {
+            "edge_roles": edge_roles,
+            "role_counts": role_counts,
+            "boundary_margin_m": boundary_margin,
+            "has_boundary_bias": has_boundary_bias,
+            "edge_index": edge_index,
+            "base_probs": base_probs,
+            "origin_probs": origin_probs,
+            "destination_probs": destination_probs,
+            "effective_origin_probs": effective_origin_probs,
+            "effective_destination_probs": effective_destination_probs,
+        }
+
+    def _apply_boundary_role_bias(
+        self,
+        edges: List[str],
+        base_weights: List[float],
+        edge_roles: Dict[str, str],
+        preferred_role: str,
+    ) -> List[float]:
+        """Bias weights toward preferred boundary roles while keeping internal edges alive."""
+        biased_weights = []
+        for edge_id, base_weight in zip(edges, base_weights):
+            role = edge_roles.get(edge_id, "internal")
+            factor = 1.0
+            if role == preferred_role:
+                factor = self.PREFERRED_BOUNDARY_ROLE_BOOST
+            elif role in {"incoming", "outgoing"}:
+                factor = self.OPPOSITE_BOUNDARY_ROLE_FACTOR
+            biased_weights.append(base_weight * factor)
+        return biased_weights
+
+    def _classify_edge_boundary_role(
+        self,
+        edge_id: str,
+        boundary: Tuple[float, float, float, float],
+        boundary_margin: float,
+        incoming_degree: int,
+    ) -> str:
+        """Classify an edge as incoming, outgoing, or internal relative to the bbox."""
+        geom = self.network.get_edge_geometry(edge_id)
+        if geom is None or len(geom.coords) < 2:
+            return "internal"
+
+        outgoing_degree = len(self.network.adjacency.get(edge_id, set()))
+
+        start = geom.coords[0]
+        end = geom.coords[-1]
+        start_dist = self._distance_to_boundary(start[0], start[1], boundary)
+        end_dist = self._distance_to_boundary(end[0], end[1], boundary)
+
+        start_near_boundary = start_dist <= boundary_margin
+        end_near_boundary = end_dist <= boundary_margin
+        distance_delta = max(5.0, boundary_margin * 0.15)
+
+        if start_near_boundary and (incoming_degree == 0 or end_dist > start_dist + distance_delta):
+            return "incoming"
+        if end_near_boundary and (outgoing_degree == 0 or start_dist > end_dist + distance_delta):
+            return "outgoing"
+        return "internal"
+
+    @staticmethod
+    def _normalize_weights(weights: List[float]) -> List[float]:
+        """Normalize a weight list to probabilities."""
+        total_weight = float(sum(weights))
+        if total_weight <= 0.0:
+            if not weights:
+                return []
+            uniform_prob = 1.0 / float(len(weights))
+            return [uniform_prob] * len(weights)
+        return [float(weight) / total_weight for weight in weights]
+
+    @staticmethod
+    def _mix_probabilities(biased: List[float], neutral: List[float], biased_share: float) -> List[float]:
+        """Blend biased and neutral probability profiles."""
+        return [
+            (float(biased_share) * float(biased_prob)) + ((1.0 - float(biased_share)) * float(neutral_prob))
+            for biased_prob, neutral_prob in zip(biased, neutral)
+        ]
+
+    def _sample_edge(
+        self,
+        edges: List[str],
+        probabilities: List[float],
+        edge_index: Dict[str, int],
+        exclude_edge: Optional[str] = None,
+    ) -> Optional[str]:
+        """Sample one edge, optionally excluding a previously sampled edge."""
+        if not edges:
+            return None
+        if exclude_edge is None:
+            return str(self.rng.choice(edges, p=probabilities))
+
+        adjusted_probs = np.array(probabilities, dtype=float)
+        exclude_idx = edge_index.get(exclude_edge)
+        if exclude_idx is not None and 0 <= exclude_idx < len(adjusted_probs):
+            adjusted_probs[exclude_idx] = 0.0
+
+        prob_sum = float(adjusted_probs.sum())
+        if prob_sum <= 0.0:
+            remaining_edges = [edge_id for edge_id in edges if edge_id != exclude_edge]
+            if not remaining_edges:
+                return None
+            return str(self.rng.choice(remaining_edges))
+
+        adjusted_probs /= prob_sum
+        return str(self.rng.choice(edges, p=adjusted_probs))
+
+    def _build_incoming_degree_map(self, edges: List[str]) -> Dict[str, int]:
+        """Count incoming passenger-accessible predecessors for each edge."""
+        counts = {edge_id: 0 for edge_id in edges}
+        for from_edge, neighbors in self.network.adjacency.items():
+            if from_edge not in counts:
+                continue
+            for to_edge in neighbors:
+                if to_edge in counts:
+                    counts[to_edge] += 1
+        return counts
+
+    def _boundary_margin(self, boundary: Optional[Tuple[float, float, float, float]]) -> float:
+        """Compute a reasonable boundary band width in network meters."""
+        if boundary is None:
+            return self.BOUNDARY_MARGIN_MIN_METERS
+        min_x, min_y, max_x, max_y = boundary
+        width = max(0.0, max_x - min_x)
+        height = max(0.0, max_y - min_y)
+        shortest_side = min(width, height) if width > 0.0 and height > 0.0 else max(width, height)
+        if shortest_side <= 0.0:
+            return self.BOUNDARY_MARGIN_MIN_METERS
+        return min(
+            self.BOUNDARY_MARGIN_MAX_METERS,
+            max(self.BOUNDARY_MARGIN_MIN_METERS, shortest_side * self.BOUNDARY_MARGIN_RATIO),
+        )
+
+    @staticmethod
+    def _distance_to_boundary(
+        x: float,
+        y: float,
+        boundary: Tuple[float, float, float, float],
+    ) -> float:
+        """Return the shortest distance from a point to the bbox boundary."""
+        min_x, min_y, max_x, max_y = boundary
+        return min(abs(x - min_x), abs(x - max_x), abs(y - min_y), abs(y - max_y))
+
+    @staticmethod
+    def _format_role_counts(counts: Counter) -> str:
+        """Format role counts consistently for logs."""
+        ordered_roles = ("incoming", "outgoing", "internal")
+        return ", ".join(f"{role}={int(counts.get(role, 0))}" for role in ordered_roles)
     
     def _calculate_edge_weights(self, edges: List[str]) -> List[float]:
         """Calculate selection weights for edges based on road importance."""
