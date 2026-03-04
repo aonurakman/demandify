@@ -59,12 +59,9 @@ async def _run_tiny_import_calibration(dataset_id: str, output_dir: Path, run_id
         ga_mutation_indpb=0.3,
         ga_immigrant_rate=0.0,
         ga_elite_top_pct=0.1,
-        ga_magnitude_penalty_weight=0.01,
         ga_stagnation_patience=20,
         ga_stagnation_boost=1.2,
         ga_checkpoint_interval=9999,  # keep checkpointing out of this tiny test
-        num_origins=3,
-        num_destinations=3,
         max_od_pairs=10,
         bin_minutes=3,
         initial_population=50,
@@ -88,8 +85,11 @@ async def _run_tiny_import_calibration(dataset_id: str, output_dir: Path, run_id
         "loss_history": metadata["results"]["loss_history"],
         "selected_mode": metadata["results"]["optimization_result"]["selected_mode"],
         "selected_value": metadata["results"]["optimization_result"]["selected_value"],
+        "selected_raw_loss": metadata["results"]["optimization_result"]["selected_raw_loss"],
+        "selected_e_loss": metadata["results"]["optimization_result"]["selected_e_loss"],
+        "selected_fail_total": metadata["results"]["optimization_result"]["selected_fail_total"],
+        "selected_magnitude": metadata["results"]["optimization_result"]["selected_magnitude"],
         "best_raw_loss": metadata["results"]["optimization_result"]["best_raw_loss"],
-        "best_feasible_e_loss": metadata["results"]["optimization_result"]["best_feasible_e_loss"],
     }
 
 
@@ -125,5 +125,8 @@ def test_random_offline_dataset_reproducibility(tmp_path):
     assert run1["loss_history"] == run2["loss_history"]
     assert run1["selected_mode"] == run2["selected_mode"]
     assert run1["selected_value"] == run2["selected_value"]
+    assert run1["selected_raw_loss"] == run2["selected_raw_loss"]
+    assert run1["selected_e_loss"] == run2["selected_e_loss"]
+    assert run1["selected_fail_total"] == run2["selected_fail_total"]
+    assert run1["selected_magnitude"] == run2["selected_magnitude"]
     assert run1["best_raw_loss"] == run2["best_raw_loss"]
-    assert run1["best_feasible_e_loss"] == run2["best_feasible_e_loss"]

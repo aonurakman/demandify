@@ -103,7 +103,7 @@ class ReportGenerator:
             linewidth=2,
             color="#2563eb",
             markersize=5,
-            label="Best Loss",
+            label="Selected Loss",
             zorder=3,
         )
 
@@ -294,7 +294,7 @@ class ReportGenerator:
                 markersize=4,
                 linewidth=2,
                 color="#8b5cf6",
-                label="Best: Zero-Flow Edges",
+                label="Selected: Zero-Flow Edges",
             )
             ax1.plot(
                 generations,
@@ -332,7 +332,7 @@ class ReportGenerator:
                 markersize=4,
                 linewidth=2,
                 color="#ef4444",
-                label="Best: Fail Total",
+                label="Selected: Fail Total",
             )
             ax2.plot(
                 generations,
@@ -386,7 +386,7 @@ class ReportGenerator:
             markersize=4,
             linewidth=2,
             color="#059669",
-            label="Best Individual",
+            label="Selected Individual",
         )
         ax.plot(
             generations,

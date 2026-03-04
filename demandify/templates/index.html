@@ -364,28 +364,6 @@
                                         <div class="col-12 mb-2"><small class="text-muted fw-bold">Demand Model</small>
                                         </div>
                                         <div class="col-6">
-                                            <label for="num_origins" class="form-label small">
-                                                Origins
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Number of candidate startup locations to try.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm" id="num_origins"
-                                                name="num_origins" value="{{ run_defaults.num_origins }}" min="2">
-                                        </div>
-                                        <div class="col-6">
-                                            <label for="num_destinations" class="form-label small">
-                                                Destinations
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Number of candidate endpoints to try.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="num_destinations" name="num_destinations" value="{{ run_defaults.num_destinations }}" min="2">
-                                        </div>
-                                        <div class="col-6">
                                             <label for="max_od_pairs" class="form-label small">
                                                 Max Routes
                                                 <span class="info-icon" data-bs-toggle="tooltip"
@@ -456,24 +434,12 @@
                                             <label for="ga_elite_top_pct" class="form-label small">
                                                 Elite Top %
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Defines feasible elite size n=max(1, pct*population). If feasible individuals are at least n, parent tournaments use that feasible elite slice.">
+                                                    title="Defines the size of the top-by-E slice used for parent selection. Inside that slice, demandify balances E, fail_total, and total magnitude.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
                                             <input type="number" class="form-control form-control-sm"
                                                 id="ga_elite_top_pct" name="ga_elite_top_pct" value="{{ run_defaults.ga_elite_top_pct }}" step="0.05"
-                                                min="0" max="1">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_magnitude_penalty_weight" class="form-label small">
-                                                Elite Magnitude Weight
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Used only in feasible-elite mode: elite score = weight*magnitude + E-rank term. Higher values favor lower total trips among feasible elites.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_magnitude_penalty_weight" name="ga_magnitude_penalty_weight" value="{{ run_defaults.ga_magnitude_penalty_weight }}" step="0.001"
                                                 min="0" max="1">
                                         </div>
                                         <div class="col-6 mb-2">

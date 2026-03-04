@@ -63,3 +63,20 @@ def test_plot_network_geometry_overlays_observed_edges(monkeypatch):
     assert "#333333" in colors
     assert "#e53935" in colors
     assert fake_fig.saved is not None
+
+
+def test_plot_edge_speed_heatmap_saves_png(monkeypatch, tmp_path):
+    monkeypatch.setattr(visualization, "SUMONetwork", lambda _network_file: _FakeNet())
+
+    output_file = tmp_path / "network_observed_speed_heatmap.png"
+    visualization.plot_edge_speed_heatmap(
+        Path("/tmp/network.net.xml"),
+        output_file,
+        edge_speeds={"e1": 22.5, "e2": 41.0},
+        title="Observed Edge Speeds",
+        vmin=0.0,
+        vmax=50.0,
+    )
+
+    assert output_file.exists()
+    assert output_file.stat().st_size > 0

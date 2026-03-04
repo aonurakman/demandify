@@ -234,12 +234,15 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
         "total_edges": 1,
     }
     pipeline._last_optimization_result = {
-        "selected_mode": "feasible",
+        "selected_mode": "elite_slice_secondary",
         "selected_value": 5.55,
-        "selected_value_label": "feasible flow-fit error E",
+        "selected_value_label": "elite-slice secondary score",
+        "selected_raw_loss": 8.88,
+        "selected_e_loss": 5.55,
+        "selected_fail_total": 1,
+        "selected_magnitude": 321.0,
         "best_raw_loss": 9.99,
-        "best_feasible_e_loss": 5.55,
-        "loss_history_metric": "best_loss (raw objective per generation)",
+        "loss_history_metric": "selected raw objective per generation",
     }
 
     metadata = pipeline._export_results(
@@ -260,8 +263,12 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     results = metadata["results"]
     assert results["final_loss_mae_kmh"] == 12.34
     assert results["loss_history"] == [9.99, 8.88]
-    assert results["optimization_result"]["selected_mode"] == "feasible"
+    assert results["optimization_result"]["selected_mode"] == "elite_slice_secondary"
     assert results["optimization_result"]["selected_value"] == 5.55
+    assert results["optimization_result"]["selected_raw_loss"] == 8.88
+    assert results["optimization_result"]["selected_e_loss"] == 5.55
+    assert results["optimization_result"]["selected_fail_total"] == 1
+    assert results["optimization_result"]["selected_magnitude"] == 321.0
     assert results["optimization_result"]["best_raw_loss"] == 9.99
 
     user_inputs = metadata["user_inputs"]
@@ -273,6 +280,8 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
 
     assert metadata["simulation_config"]["traffic_tile_zoom"] == 12
     assert metadata["calibration_config"]["requested_parallel_workers"] is None
+    assert metadata["output_files"]["observed_speed_heatmap_png"] == "plots/network_observed_speed_heatmap.png"
+    assert metadata["output_files"]["simulated_speed_heatmap_png"] == "plots/network_simulated_speed_heatmap.png"
 
     rerun_cmd = metadata["reproducibility"]["rerun_cli_command"]
     assert rerun_cmd.startswith("demandify run ")
@@ -282,4 +291,6 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert "--tile-zoom 12" in rerun_cmd
     assert "--initial-population 1000" in rerun_cmd
     assert "--name semantics" in rerun_cmd
+    assert "--origins" not in rerun_cmd
+    assert "--destinations" not in rerun_cmd
     assert "--workers" not in rerun_cmd

@@ -184,14 +184,11 @@ async def cmd_run(args):
                 ga_mutation_indpb=args.indpb,
                 ga_immigrant_rate=args.immigrant_rate,
                 ga_elite_top_pct=args.elite_top_pct,
-                ga_magnitude_penalty_weight=args.magnitude_penalty,
                 ga_stagnation_patience=args.stagnation_patience,
                 ga_stagnation_boost=args.stagnation_boost,
                 ga_checkpoint_interval=args.checkpoint_interval,
                 ga_assortative_mating=args.ga_assortative_mating,
                 ga_deterministic_crowding=args.ga_deterministic_crowding,
-                num_origins=args.origins,
-                num_destinations=args.destinations,
                 max_od_pairs=args.max_ods,
                 bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
@@ -436,13 +433,7 @@ def cli():
         "--elite-top-pct",
         type=float,
         default=run_defaults["ga_elite_top_pct"],
-        help=f"Fraction defining feasible elite parent pool size (default: {run_defaults['ga_elite_top_pct']})",
-    )
-    run_parser.add_argument(
-        "--magnitude-penalty",
-        type=float,
-        default=run_defaults["ga_magnitude_penalty_weight"],
-        help=f"Weight for magnitude term in feasible-elite parent ranking (default: {run_defaults['ga_magnitude_penalty_weight']})",
+        help=f"Fraction defining the top-E elite slice size (default: {run_defaults['ga_elite_top_pct']})",
     )
     run_parser.add_argument(
         "--stagnation-patience",
@@ -493,18 +484,6 @@ def cli():
         dest="ga_deterministic_crowding",
         action="store_false",
         help=f"Disable deterministic crowding (default: {'enabled' if default_crowding else 'disabled'})",
-    )
-    run_parser.add_argument(
-        "--origins",
-        type=int,
-        default=run_defaults["num_origins"],
-        help=f"Number of origin candidates (default: {run_defaults['num_origins']})",
-    )
-    run_parser.add_argument(
-        "--destinations",
-        type=int,
-        default=run_defaults["num_destinations"],
-        help=f"Number of destination candidates (default: {run_defaults['num_destinations']})",
     )
     run_parser.add_argument(
         "--max-ods",

@@ -34,7 +34,7 @@ from demandify.cache.manager import CacheManager
 from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key, matching_key
 from demandify.export.exporter import ScenarioExporter
 from demandify.export.report import ReportGenerator
-from demandify.utils.visualization import plot_network_geometry
+from demandify.utils.visualization import plot_edge_speed_heatmap, plot_network_geometry
 from demandify.export.custom_formats import URBDataExporter
 from demandify.utils.data_quality import assess_data_quality
 from demandify.offline_data import (
@@ -71,14 +71,12 @@ class CalibrationPipeline:
         ga_mutation_indpb: float = 0.3,
         ga_immigrant_rate: float = 0.03,
         ga_elite_top_pct: float = 0.1,
-        ga_magnitude_penalty_weight: float = 0.001,
+        ga_magnitude_penalty_weight: Optional[float] = None,
         ga_stagnation_patience: int = 20,
         ga_stagnation_boost: float = 1.5,
         ga_checkpoint_interval: int = 10,
         ga_assortative_mating: bool = True,
         ga_deterministic_crowding: bool = True,
-        num_origins: int = 10,
-        num_destinations: int = 10,
         max_od_pairs: int = 1000,
         bin_minutes: float = 1.0,
         initial_population: int = 1000,
@@ -104,15 +102,13 @@ class CalibrationPipeline:
             ga_population: GA population size
             ga_generations: GA generations
             ga_immigrant_rate: Fraction of random immigrants per generation
-            ga_elite_top_pct: Fraction defining feasible elite parent pool size
-            ga_magnitude_penalty_weight: Weight for magnitude term in feasible-elite ranking
+            ga_elite_top_pct: Fraction defining the top-E elite slice size
+            ga_magnitude_penalty_weight: Deprecated compatibility parameter (unused)
             ga_stagnation_patience: Generations without improvement before mutation boost
             ga_stagnation_boost: Multiplier for mutation on stagnation
             ga_checkpoint_interval: Save checkpointed best individual every N generations
             ga_assortative_mating: Prefer crossover between dissimilar parents
             ga_deterministic_crowding: Offspring replace most similar parents
-            num_origins: Number of origin candidates
-            num_destinations: Number of destination candidates
             max_od_pairs: Maximum number of OD pairs to generate
             bin_minutes: Duration of each demand time bin in minutes
             initial_population: Target initial number of vehicles (controls GA init bounds)
@@ -154,14 +150,11 @@ class CalibrationPipeline:
         self.ga_mutation_indpb = ga_mutation_indpb
         self.ga_immigrant_rate = ga_immigrant_rate
         self.ga_elite_top_pct = ga_elite_top_pct
-        self.ga_magnitude_penalty_weight = ga_magnitude_penalty_weight
         self.ga_stagnation_patience = ga_stagnation_patience
         self.ga_stagnation_boost = ga_stagnation_boost
         self.ga_checkpoint_interval = max(1, int(ga_checkpoint_interval))
         self.ga_assortative_mating = ga_assortative_mating
         self.ga_deterministic_crowding = ga_deterministic_crowding
-        self.num_origins = num_origins
-        self.num_destinations = num_destinations
         self.max_od_pairs = max_od_pairs
         self.bin_minutes = bin_minutes
         self.initial_population = initial_population
@@ -268,6 +261,28 @@ class CalibrationPipeline:
             for edge_id in observed_edges["edge_id"].dropna().tolist()
         }
         return edge_ids or None
+
+    @staticmethod
+    def _observed_edge_speeds_from_df(observed_edges: Optional[pd.DataFrame]) -> Dict[str, float]:
+        """Aggregate observed current speeds by matched edge id."""
+        if observed_edges is None or observed_edges.empty:
+            return {}
+        required_columns = {"edge_id", "current_speed"}
+        if not required_columns.issubset(observed_edges.columns):
+            return {}
+
+        speed_df = observed_edges.loc[:, ["edge_id", "current_speed"]].copy()
+        speed_df["current_speed"] = pd.to_numeric(speed_df["current_speed"], errors="coerce")
+        speed_df = speed_df.dropna(subset=["edge_id", "current_speed"])
+        if speed_df.empty:
+            return {}
+
+        aggregated = (
+            speed_df.groupby("edge_id", sort=True)["current_speed"]
+            .mean()
+            .to_dict()
+        )
+        return {str(edge_id): float(speed) for edge_id, speed in aggregated.items()}
 
     async def _write_network_plot(
         self,
@@ -899,8 +914,6 @@ class CalibrationPipeline:
 
         # Select OD pairs (validates each pair individually; lane-permission aware)
         od_pairs = demand_gen.select_od_pairs(
-            num_origins=self.num_origins,
-            num_destinations=self.num_destinations,
             max_od_pairs=self.max_od_pairs,
             min_trip_distance=self.min_trip_distance,
         )
@@ -1000,7 +1013,6 @@ class CalibrationPipeline:
             init_prob=init_prob,
             immigrant_rate=self.ga_immigrant_rate,
             elite_top_pct=self.ga_elite_top_pct,
-            magnitude_penalty_weight=self.ga_magnitude_penalty_weight,
             stagnation_patience=self.ga_stagnation_patience,
             stagnation_boost=self.ga_stagnation_boost,
             assortative_mating=self.ga_assortative_mating,
@@ -1016,7 +1028,7 @@ class CalibrationPipeline:
             current_best_loss: float,
             best_metrics: Dict[str, Any],
         ) -> None:
-            if generation % self.ga_checkpoint_interval != 0:
+            if generation != 1 and generation % self.ga_checkpoint_interval != 0:
                 return
             self._save_generation_checkpoint(
                 generation=generation,
@@ -1033,10 +1045,13 @@ class CalibrationPipeline:
             evaluate_func_clean,
             generation_callback=generation_checkpoint_callback,
         )
-        selected_mode = getattr(ga, "last_best_selection_mode", None) or "raw"
+        selected_mode = getattr(ga, "last_best_selection_mode", None) or "elite_slice_secondary"
         selected_value = getattr(ga, "last_best_selection_value", best_loss)
+        selected_raw_loss = getattr(ga, "last_best_selected_raw_loss", best_loss)
+        selected_e_loss = getattr(ga, "last_best_selected_e_loss", best_loss)
+        selected_fail_total = getattr(ga, "last_best_selected_fail_total", None)
+        selected_magnitude = getattr(ga, "last_best_selected_magnitude", None)
         best_raw_loss = getattr(ga, "last_best_raw_loss", best_loss)
-        best_feasible_e_loss = getattr(ga, "last_best_feasible_e_loss", None)
 
         def _normalize_float(value: Any) -> Optional[float]:
             try:
@@ -1048,14 +1063,15 @@ class CalibrationPipeline:
         self._last_optimization_result = {
             "selected_mode": selected_mode,
             "selected_value": _normalize_float(selected_value),
-            "selected_value_label": (
-                "feasible flow-fit error E"
-                if selected_mode == "feasible"
-                else "raw objective loss"
+            "selected_value_label": "elite-slice secondary score",
+            "selected_raw_loss": _normalize_float(selected_raw_loss),
+            "selected_e_loss": _normalize_float(selected_e_loss),
+            "selected_fail_total": (
+                int(selected_fail_total) if selected_fail_total is not None else None
             ),
+            "selected_magnitude": _normalize_float(selected_magnitude),
             "best_raw_loss": _normalize_float(best_raw_loss),
-            "best_feasible_e_loss": _normalize_float(best_feasible_e_loss),
-            "loss_history_metric": "best_loss (raw objective per generation)",
+            "loss_history_metric": "selected raw objective per generation",
         }
 
         logger.info(
@@ -1172,6 +1188,52 @@ class CalibrationPipeline:
             return f"{value:.12g}"
         return str(value)
 
+    def _write_speed_heatmaps(
+        self,
+        network_file: Path,
+        observed_edges: pd.DataFrame,
+        simulated_speeds: Dict[str, float],
+    ) -> None:
+        """Write observed and simulated edge-speed heatmaps with a shared scale."""
+        observed_edge_speeds = self._observed_edge_speeds_from_df(observed_edges)
+        simulated_edge_speeds = {}
+        for edge_id, speed in (simulated_speeds or {}).items():
+            try:
+                speed_value = float(speed)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(speed_value):
+                simulated_edge_speeds[str(edge_id)] = speed_value
+
+        speed_values = [
+            *observed_edge_speeds.values(),
+            *simulated_edge_speeds.values(),
+        ]
+        if speed_values:
+            shared_vmin = 0.0
+            shared_vmax = max(float(max(speed_values)), 1.0)
+        else:
+            shared_vmin = 0.0
+            shared_vmax = 1.0
+
+        plots_dir = self.output_dir / "plots"
+        plot_edge_speed_heatmap(
+            network_file=network_file,
+            output_file=plots_dir / "network_observed_speed_heatmap.png",
+            edge_speeds=observed_edge_speeds,
+            title="Observed Edge Speeds",
+            vmin=shared_vmin,
+            vmax=shared_vmax,
+        )
+        plot_edge_speed_heatmap(
+            network_file=network_file,
+            output_file=plots_dir / "network_simulated_speed_heatmap.png",
+            edge_speeds=simulated_edge_speeds,
+            title="Simulated Edge Speeds",
+            vmin=shared_vmin,
+            vmax=shared_vmax,
+        )
+
     def _build_rerun_cli_command(self) -> str:
         """Build a reproducible CLI command for this exact run configuration."""
         cmd_parts = ["demandify", "run"]
@@ -1209,18 +1271,12 @@ class CalibrationPipeline:
             self._format_cli_value(self.ga_immigrant_rate),
             "--elite-top-pct",
             self._format_cli_value(self.ga_elite_top_pct),
-            "--magnitude-penalty",
-            self._format_cli_value(self.ga_magnitude_penalty_weight),
             "--stagnation-patience",
             str(self.ga_stagnation_patience),
             "--stagnation-boost",
             self._format_cli_value(self.ga_stagnation_boost),
             "--checkpoint-interval",
             str(self.ga_checkpoint_interval),
-            "--origins",
-            str(self.num_origins),
-            "--destinations",
-            str(self.num_destinations),
             "--max-ods",
             str(self.max_od_pairs),
             "--bin-size",
@@ -1290,7 +1346,6 @@ class CalibrationPipeline:
                 "ga_mutation_indpb": self.ga_mutation_indpb,
                 "ga_immigrant_rate": self.ga_immigrant_rate,
                 "ga_elite_top_pct": self.ga_elite_top_pct,
-                "ga_magnitude_penalty_weight": self.ga_magnitude_penalty_weight,
                 "ga_stagnation_patience": self.ga_stagnation_patience,
                 "ga_stagnation_boost": self.ga_stagnation_boost,
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
@@ -1300,8 +1355,6 @@ class CalibrationPipeline:
                 "num_workers": self.parallel_workers or self.config.default_parallel_workers,
             },
             "demand_config": {
-                "num_origins": self.num_origins,
-                "num_destinations": self.num_destinations,
                 "max_od_pairs": self.max_od_pairs,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
@@ -1315,9 +1368,11 @@ class CalibrationPipeline:
                 "loss_history": (
                     [round(x, 2) for x in loss_history] if loss_history[0] != float("inf") else []
                 ),
-                "loss_history_label": "best raw objective value per generation",
+                "loss_history_label": "selected raw objective value per generation",
                 "optimization_result": {
-                    "selected_mode": self._last_optimization_result.get("selected_mode", "raw"),
+                    "selected_mode": self._last_optimization_result.get(
+                        "selected_mode", "elite_slice_secondary"
+                    ),
                     "selected_value": (
                         round(self._last_optimization_result["selected_value"], 2)
                         if self._last_optimization_result.get("selected_value") is not None
@@ -1325,21 +1380,34 @@ class CalibrationPipeline:
                     ),
                     "selected_value_label": self._last_optimization_result.get(
                         "selected_value_label",
-                        "raw objective loss",
+                        "elite-slice secondary score",
+                    ),
+                    "selected_raw_loss": (
+                        round(self._last_optimization_result["selected_raw_loss"], 2)
+                        if self._last_optimization_result.get("selected_raw_loss") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "selected_e_loss": (
+                        round(self._last_optimization_result["selected_e_loss"], 2)
+                        if self._last_optimization_result.get("selected_e_loss") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "selected_fail_total": self._last_optimization_result.get(
+                        "selected_fail_total"
+                    ),
+                    "selected_magnitude": (
+                        round(self._last_optimization_result["selected_magnitude"], 2)
+                        if self._last_optimization_result.get("selected_magnitude") is not None
+                        else None
                     ),
                     "best_raw_loss": (
                         round(self._last_optimization_result["best_raw_loss"], 2)
                         if self._last_optimization_result.get("best_raw_loss") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
                     ),
-                    "best_feasible_e_loss": (
-                        round(self._last_optimization_result["best_feasible_e_loss"], 2)
-                        if self._last_optimization_result.get("best_feasible_e_loss") is not None
-                        else None
-                    ),
                     "loss_history_metric": self._last_optimization_result.get(
                         "loss_history_metric",
-                        "best_loss (raw objective per generation)",
+                        "selected raw objective per generation",
                     ),
                 },
                 "quality_metrics": {
@@ -1400,14 +1468,11 @@ class CalibrationPipeline:
                 "ga_mutation_indpb": self.ga_mutation_indpb,
                 "ga_immigrant_rate": self.ga_immigrant_rate,
                 "ga_elite_top_pct": self.ga_elite_top_pct,
-                "ga_magnitude_penalty_weight": self.ga_magnitude_penalty_weight,
                 "ga_stagnation_patience": self.ga_stagnation_patience,
                 "ga_stagnation_boost": self.ga_stagnation_boost,
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
-                "num_origins": self.num_origins,
-                "num_destinations": self.num_destinations,
                 "max_od_pairs": self.max_od_pairs,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
@@ -1455,6 +1520,8 @@ class CalibrationPipeline:
                 "scenario_config": "sumo/scenario.sumocfg",
                 "observed_edges_csv": "data/observed_edges.csv",
                 "traffic_data_raw_csv": "data/traffic_data_raw.csv",
+                "observed_speed_heatmap_png": "plots/network_observed_speed_heatmap.png",
+                "simulated_speed_heatmap_png": "plots/network_simulated_speed_heatmap.png",
                 "report_html": "report.html",
                 "metadata_json": "run_meta.json",
                 "plots_dir": "plots",
@@ -1479,6 +1546,11 @@ class CalibrationPipeline:
             custom_exporter.export(network_file, trips_file)  # Pass trips.xml
         except Exception as e:
             logger.warning(f"URB export failed: {e}")
+
+        try:
+            self._write_speed_heatmaps(network_file, observed_edges, simulated_speeds)
+        except Exception as e:
+            logger.warning(f"Failed to create speed heatmaps: {e}")
 
         # Generate report
         report_gen = ReportGenerator(self.output_dir)

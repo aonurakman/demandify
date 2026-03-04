@@ -25,7 +25,7 @@ Pick a spot on the map and demandify will:
 - 📦 **Offline calibration import**: Run from bundled/offline traffic+network snapshots
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
-- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (feasible-elite parent selection, immigrants, assortative mating, adaptive mutation boost)
+- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (elite-slice parent selection, immigrants, assortative mating, adaptive mutation boost)
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
@@ -124,7 +124,6 @@ demandify run "2.2961,48.8469,2.3071,48.8532" \
   --pop 100 \
   --gen 100 \
   --immigrant-rate 0.05 \
-  --magnitude-penalty 0.002 \
   --stagnation-patience 15
 
 # Fully non-interactive (automation/CI)
@@ -179,8 +178,6 @@ Bundled snapshot previews:
 | `--elitism` | Int | 2 | Top individuals to keep |
 | `--sigma` | Int | 20 | Mutation magnitude (step size) |
 | `--indpb` | Float | 0.3 | Mutation probability (per gene) |
-| `--origins` | Int | 10 | Number of origin candidates |
-| `--destinations` | Int | 10 | Number of destination candidates |
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
 | `--bin-size` | Float | 5 | Time bin size in minutes |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
@@ -199,8 +196,7 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--immigrant-rate` | Float | 0.03 | Fraction of random individuals injected per generation (0–1) |
-| `--elite-top-pct` | Float | 0.1 | Defines feasible elite size per generation: `n=max(1, elite_top_pct * population)` |
-| `--magnitude-penalty` | Float | 0.001 | Weight for magnitude in feasible-elite parent ranking (`weight*magnitude + E-rank term`) |
+| `--elite-top-pct` | Float | 0.1 | Defines the size of the top-by-`E` elite slice per generation: `n=max(1, elite_top_pct * population)` |
 | `--stagnation-patience` | Int | 20 | Generations without improvement before mutation boost activates |
 | `--stagnation-boost` | Float | 1.5 | Multiplier for mutation sigma and rate during stagnation |
 | `--checkpoint-interval` | Int | 10 | Save best-individual checkpoint artifacts every N generations |
@@ -209,7 +205,7 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | `--deterministic-crowding` | Flag | off | Explicitly enable deterministic crowding |
 | `--no-deterministic-crowding` | Flag | off | Disable deterministic crowding (diversity-preserving replacement, on by default) |
 
-All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable features via the corresponding `--no-*` flags, explicitly force-enable them with `--assortative-mating` / `--deterministic-crowding`, or set `--magnitude-penalty 0` to remove magnitude pressure inside feasible-elite ranking.
+All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable features via the corresponding `--no-*` flags or explicitly force-enable them with `--assortative-mating` / `--deterministic-crowding`.
 
 ## How It Works
 
@@ -227,13 +223,13 @@ demandify follows a multi-stage pipeline:
 
 The genetic algorithm includes several mechanisms to avoid common pitfalls like local optima stagnation and trip count explosion:
 
-- **Feasible-elite parent selection (with fallback)**: Individuals are first ordered by flow-fit error `E`, then filtered by feasibility (`fail_total = routing_failures + teleports`). If enough feasible candidates exist (`>= n` from `elite_top_pct`), parent tournaments are run only on that feasible elite slice using `magnitude_penalty_weight * magnitude + E-rank term`. If not, selection temporarily falls back to full-population tournaments on `E + reliability_penalty`. This fallback auto-stops once enough feasible individuals are present.
+- **Elite-slice parent selection**: Individuals are first ordered by flow-fit error `E`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the parent pool. Inside that slice, demandify builds a secondary score from equally weighted normalized ranks of `E`, `fail_total`, and genome magnitude, so main fit, reliability, and total demand all matter on comparable scales.
 - **Random immigrants**: A small fraction of completely random individuals is injected each generation to maintain genetic diversity and escape local optima.
 - **Assortative mating**: Parents are paired by dissimilarity (by genome magnitude) for crossover, promoting exploration of the search space.
 - **Deterministic crowding**: Offspring compete with similar parents for population slots, preserving niche diversity.
 - **Adaptive mutation boost**: If the best fitness stagnates for K generations, mutation sigma and rate are temporarily increased by a configurable multiplier. They reset automatically when improvement resumes.
 
-The final return policy is **feasible-first**: if any feasible individual appears during the run, demandify returns the best feasible one by `E`; otherwise it returns the best raw objective and logs a warning.
+The final return policy uses that same **elite-slice secondary score** across generations, so the returned individual comes from the strongest top-by-`E` slice while still balancing failures and total demand.
 
 The calibration report includes plots for **genotypic diversity** (mean pairwise L2 distance) and **phenotypic diversity** (σ of fitness values) across generations, along with markers indicating when mutation boost was active.
 

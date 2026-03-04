@@ -40,7 +40,6 @@ class TestGAAdvancedParams:
         ga = GeneticAlgorithm(genome_size=10, seed=42)
         assert ga.immigrant_rate == 0.03
         assert ga.elite_top_pct == 0.1
-        assert ga.magnitude_penalty_weight == 0.001
         assert ga.stagnation_patience == 20
         assert ga.stagnation_boost == 1.5
         assert ga.assortative_mating is True
@@ -52,7 +51,6 @@ class TestGAAdvancedParams:
             seed=42,
             immigrant_rate=0.05,
             elite_top_pct=0.2,
-            magnitude_penalty_weight=0.01,
             stagnation_patience=10,
             stagnation_boost=2.0,
             assortative_mating=False,
@@ -60,7 +58,6 @@ class TestGAAdvancedParams:
         )
         assert ga.immigrant_rate == 0.05
         assert ga.elite_top_pct == 0.2
-        assert ga.magnitude_penalty_weight == 0.01
         assert ga.stagnation_patience == 10
         assert ga.stagnation_boost == 2.0
         assert ga.assortative_mating is False
@@ -168,7 +165,7 @@ class TestMutationBounds:
 
 
 class TestParentSelection:
-    """Test feasible-elite parent selection and fallback behavior."""
+    """Test elite-slice parent selection and secondary ranking behavior."""
 
     @staticmethod
     def _make_ind(vals, loss, e_loss, fail_total, reliability_penalty=0.0):
@@ -183,89 +180,85 @@ class TestParentSelection:
         }
         return ind
 
-    def test_feasible_elite_selection_mode(self):
+    def test_candidate_pool_is_top_e_slice_even_with_failures(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
             population_size=5,
             elite_top_pct=0.4,  # n = 2
-            magnitude_penalty_weight=0.01,
         )
         pop = [
-            self._make_ind([10, 0, 0], 1.0, 1.0, 0),
+            self._make_ind([10, 0, 0], 1.0, 1.0, 2),
             self._make_ind([9, 0, 0], 1.1, 1.1, 0),
             self._make_ind([8, 0, 0], 1.2, 1.2, 0),
-            self._make_ind([7, 0, 0], 1.3, 1.3, 1, reliability_penalty=0.2),
-            self._make_ind([6, 0, 0], 1.4, 1.4, 2, reliability_penalty=0.4),
+            self._make_ind([7, 0, 0], 1.3, 1.3, 1),
+            self._make_ind([6, 0, 0], 1.4, 1.4, 0),
         ]
 
         plan = ga._build_parent_selection_plan(pop)
 
-        assert plan["mode"] == "feasible_elite"
+        assert plan["mode"] == "elite_slice_secondary"
         assert plan["elite_count"] == 2
         assert plan["feasible_count"] == 3
         assert len(plan["candidate_pool"]) == 2
-        assert all(ga._individual_fail_total(ind) == 0 for ind in plan["candidate_pool"])
+        assert plan["candidate_pool"] == pop[:2]
 
-    def test_fallback_mode_activation(self):
+    def test_secondary_score_penalizes_failures_inside_elite_slice(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
             population_size=5,
-            elite_top_pct=0.4,  # n = 2
-            magnitude_penalty_weight=0.01,
+            elite_top_pct=0.8,  # n = 4
         )
-        pop = [
-            self._make_ind([1, 0, 0], 1.0, 1.0, 0),
-            self._make_ind([2, 0, 0], 0.8, 0.6, 1, reliability_penalty=0.2),
-            self._make_ind([3, 0, 0], 0.9, 0.7, 1, reliability_penalty=0.2),
-            self._make_ind([4, 0, 0], 1.1, 0.9, 2, reliability_penalty=0.2),
-            self._make_ind([5, 0, 0], 1.2, 1.0, 3, reliability_penalty=0.2),
-        ]
+        a = self._make_ind([10, 0, 0], 1.0, 1.0, 3)
+        b = self._make_ind([10, 0, 0], 1.1, 1.1, 0)
+        c = self._make_ind([12, 0, 0], 1.2, 1.2, 0)
+        d = self._make_ind([13, 0, 0], 1.3, 1.3, 1)
+        outsider = self._make_ind([14, 0, 0], 1.4, 1.4, 0)
 
-        plan = ga._build_parent_selection_plan(pop)
+        plan = ga._build_parent_selection_plan([a, b, c, d, outsider])
+        best = ga._select_best_candidate(plan["candidate_pool"], plan["score_by_id"])
 
-        assert plan["mode"] == "fallback"
-        assert plan["elite_count"] == 2
-        assert plan["feasible_count"] == 1
-        assert len(plan["candidate_pool"]) == len(pop)
+        assert plan["candidate_pool"] == [a, b, c, d]
+        assert best is b
+        assert plan["score_by_id"][id(b)] < plan["score_by_id"][id(a)]
 
-    def test_elite_ranking_magnitude_dominant_and_e_rank_regulated(self):
-        # Magnitude-dominant case: despite worse E-rank, much smaller magnitude can win.
+    def test_secondary_score_penalizes_magnitude_inside_elite_slice(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
-            population_size=4,
-            elite_top_pct=0.5,  # n = 2
-            magnitude_penalty_weight=0.005,
+            population_size=5,
+            elite_top_pct=0.8,  # n = 4
         )
-        a = self._make_ind([100, 0, 0], 1.0, 1.0, 0)  # e-rank 0, huge magnitude
-        b = self._make_ind([1, 0, 0], 1.1, 1.1, 0)  # e-rank 1, tiny magnitude
-        c = self._make_ind([3, 0, 0], 1.2, 1.2, 0)
-        d = self._make_ind([4, 0, 0], 1.3, 1.3, 0)
-        plan = ga._build_parent_selection_plan([a, b, c, d])
+        a = self._make_ind([100, 0, 0], 1.0, 1.0, 0)
+        b = self._make_ind([10, 0, 0], 1.1, 1.1, 0)
+        c = self._make_ind([20, 0, 0], 1.2, 1.2, 1)
+        d = self._make_ind([30, 0, 0], 1.3, 1.3, 2)
+        outsider = self._make_ind([40, 0, 0], 1.4, 1.4, 0)
 
-        score_a = plan["score_by_id"][id(a)]
-        score_b = plan["score_by_id"][id(b)]
-        assert score_b < score_a
+        plan = ga._build_parent_selection_plan([a, b, c, d, outsider])
+        best = ga._select_best_candidate(plan["candidate_pool"], plan["score_by_id"])
 
-        # E-rank-regulated case: with equal magnitude, better E-rank should win.
-        ga2 = GeneticAlgorithm(
+        assert best is b
+        assert plan["score_by_id"][id(b)] < plan["score_by_id"][id(a)]
+
+    def test_survival_elites_follow_secondary_order(self):
+        ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
-            population_size=4,
-            elite_top_pct=0.5,
-            magnitude_penalty_weight=0.001,
+            population_size=5,
+            elite_top_pct=0.8,  # n = 4
+            elitism=2,
         )
-        a2 = self._make_ind([10, 0, 0], 1.0, 1.0, 0)  # e-rank 0
-        b2 = self._make_ind([10, 0, 0], 1.1, 1.1, 0)  # e-rank 1
-        c2 = self._make_ind([20, 0, 0], 1.2, 1.2, 0)
-        d2 = self._make_ind([30, 0, 0], 1.3, 1.3, 0)
-        plan2 = ga2._build_parent_selection_plan([a2, b2, c2, d2])
+        a = self._make_ind([10, 0, 0], 1.0, 1.0, 3)
+        b = self._make_ind([10, 0, 0], 1.1, 1.1, 0)
+        c = self._make_ind([12, 0, 0], 1.2, 1.2, 0)
+        d = self._make_ind([13, 0, 0], 1.3, 1.3, 1)
+        outsider = self._make_ind([14, 0, 0], 1.4, 1.4, 0)
 
-        score_a2 = plan2["score_by_id"][id(a2)]
-        score_b2 = plan2["score_by_id"][id(b2)]
-        assert score_a2 < score_b2
+        elites = ga._select_survival_elites([a, b, c, d, outsider], 2)
+
+        assert elites == [b, a]
 
     def test_invalidate_individual_clears_stale_attrs(self):
         ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=1)
@@ -292,7 +285,7 @@ class TestParentSelection:
 
         assert ga._is_feasible_individual(ind) is False
 
-    def test_feasible_filter_ignores_error_and_invalid_individuals(self):
+    def test_feasible_count_ignores_error_and_invalid_individuals(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
@@ -318,35 +311,42 @@ class TestParentSelection:
         assert ga._is_feasible_individual(invalid) is False
         assert ga._is_feasible_individual(infeasible) is False
         assert plan["feasible_count"] == 1
-        assert plan["mode"] == "fallback"
+        assert plan["mode"] == "elite_slice_secondary"
 
 
-class TestBestFeasibleReturn:
-    """Test feasible-first return behavior for final best individual."""
+class TestSelectedBestReturn:
+    """Test elite-slice-based final best selection behavior."""
 
-    def test_prefers_best_feasible_when_available(self):
+    def test_prefers_best_selected_candidate_when_available(self):
         ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
-        infeasible = creator.Individual([1, 1, 1])
-        infeasible.fitness.values = (0.5,)
-        infeasible.metrics = {"e_loss": 0.1, "fail_total": 2}
+        raw_best = creator.Individual([1, 1, 1])
+        raw_best.fitness.values = (0.5,)
+        raw_best.metrics = {"e_loss": 0.1, "fail_total": 2}
 
-        feasible = creator.Individual([2, 2, 2])
-        feasible.fitness.values = (2.0,)
-        feasible.metrics = {"e_loss": 2.0, "fail_total": 0}
+        selected = creator.Individual([2, 2, 2])
+        selected.fitness.values = (2.0,)
+        selected.metrics = {"e_loss": 2.0, "fail_total": 0}
 
-        best_ind, best_loss, mode = ga._resolve_return_best(
-            population=[infeasible, feasible],
-            overall_best_ind=infeasible,
+        best_ind, selected_state = ga._resolve_return_best(
+            population=[raw_best, selected],
+            overall_best_ind=raw_best,
             overall_best_loss=0.5,
-            overall_best_feasible_ind=feasible,
-            overall_best_feasible_e=2.0,
+            overall_selected_ind=selected,
+            overall_selected_state={
+                "mode": "elite_slice_secondary",
+                "secondary_score": 0.2,
+                "raw_loss": 2.0,
+                "e_loss": 2.0,
+                "fail_total": 0,
+                "magnitude": 6.0,
+            },
         )
 
-        assert mode == "feasible"
-        assert best_ind is feasible
-        assert best_loss == 2.0
+        assert selected_state["mode"] == "elite_slice_secondary"
+        assert best_ind is selected
+        assert selected_state["raw_loss"] == 2.0
 
-    def test_falls_back_to_raw_when_no_feasible_exists(self):
+    def test_falls_back_to_raw_when_no_selected_snapshot_exists(self):
         ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
         raw_best = creator.Individual([1, 1, 1])
         raw_best.fitness.values = (0.5,)
@@ -356,17 +356,17 @@ class TestBestFeasibleReturn:
         other.fitness.values = (1.0,)
         other.metrics = {"e_loss": 0.4, "fail_total": 4}
 
-        best_ind, best_loss, mode = ga._resolve_return_best(
+        best_ind, selected_state = ga._resolve_return_best(
             population=[raw_best, other],
             overall_best_ind=raw_best,
             overall_best_loss=0.5,
-            overall_best_feasible_ind=None,
-            overall_best_feasible_e=float("inf"),
+            overall_selected_ind=None,
+            overall_selected_state=None,
         )
 
-        assert mode == "raw"
+        assert selected_state["mode"] == "raw_fallback"
         assert best_ind is raw_best
-        assert best_loss == 0.5
+        assert selected_state["raw_loss"] == 0.5
 
     def test_optimize_exposes_selected_best_metadata(self):
         ga = GeneticAlgorithm(
@@ -376,13 +376,16 @@ class TestBestFeasibleReturn:
             num_generations=1,
             num_workers=1,
             elite_top_pct=0.5,
-            magnitude_penalty_weight=0.001,
         )
 
         ga.optimize(_simple_evaluate)
 
-        assert ga.last_best_selection_mode in {"feasible", "raw"}
+        assert ga.last_best_selection_mode == "elite_slice_secondary"
         assert ga.last_best_selection_value is not None
+        assert ga.last_best_selected_raw_loss is not None
+        assert ga.last_best_selected_e_loss is not None
+        assert ga.last_best_selected_fail_total is not None
+        assert ga.last_best_selected_magnitude is not None
 
     def test_generation_callback_receives_snapshot_each_generation(self):
         ga = GeneticAlgorithm(
