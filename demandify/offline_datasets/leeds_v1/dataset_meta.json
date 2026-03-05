@@ -1,6 +1,6 @@
 {
   "dataset_name": "leeds_v1",
-  "created_at": "2026-02-17T14:00:49.571545",
+  "created_at": "2026-03-05T10:03:10.766082",
   "bbox": {
     "west": -1.5717,
     "south": 53.7964,
@@ -16,33 +16,33 @@
     "tile_zoom": 15
   },
   "stats": {
-    "fetched_segments": 35,
-    "matched_edges": 32,
+    "fetched_segments": 201,
+    "matched_edges": 196,
     "total_network_edges": 1709
   },
   "quality": {
-    "score": 85,
+    "score": 98,
     "label": "excellent",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (85/100): 32 matched edges from 35 traffic segments (match rate 91.4%).",
+    "summary": "EXCELLENT quality (98/100): 196 traffic segments map-matched to graph edges from 201 fetched segments (map-match rate 97.5%).",
     "warnings": [],
     "components": {
-      "availability": 30,
-      "match_rate": 22,
-      "confidence": 15,
-      "density": 12,
-      "network_coverage": 6
+      "availability": 35,
+      "match_rate": 25,
+      "confidence": 13,
+      "density": 15,
+      "network_coverage": 10
     },
     "metrics": {
-      "fetched_segments": 35,
-      "matched_edges": 32,
+      "fetched_segments": 201,
+      "matched_edges": 196,
       "total_network_edges": 1709,
-      "match_rate": 0.9142857142857143,
-      "observed_to_total_ratio": 0.018724400234055003,
+      "match_rate": 0.9751243781094527,
+      "observed_to_total_ratio": 0.1146869514335869,
       "area_km2": 3.8987390314474477,
-      "edges_per_km2": 8.207781988454782,
+      "edges_per_km2": 50.27266467928553,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.0
+      "low_confidence_share": 0.07653061224489796
     }
   },
   "files": {

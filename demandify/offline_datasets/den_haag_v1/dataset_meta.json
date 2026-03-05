@@ -1,6 +1,6 @@
 {
   "dataset_name": "den_haag_v1",
-  "created_at": "2026-02-17T13:57:18.784017",
+  "created_at": "2026-03-05T09:58:58.583904",
   "bbox": {
     "west": 4.2817,
     "south": 52.0696,
@@ -16,33 +16,33 @@
     "tile_zoom": 15
   },
   "stats": {
-    "fetched_segments": 49,
-    "matched_edges": 47,
+    "fetched_segments": 316,
+    "matched_edges": 306,
     "total_network_edges": 1922
   },
   "quality": {
     "score": 95,
     "label": "excellent",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (95/100): 47 matched edges from 49 traffic segments (match rate 95.9%).",
+    "summary": "EXCELLENT quality (95/100): 306 traffic segments map-matched to graph edges from 316 fetched segments (map-match rate 96.8%).",
     "warnings": [],
     "components": {
       "availability": 35,
       "match_rate": 25,
-      "confidence": 15,
-      "density": 12,
-      "network_coverage": 8
+      "confidence": 10,
+      "density": 15,
+      "network_coverage": 10
     },
     "metrics": {
-      "fetched_segments": 49,
-      "matched_edges": 47,
+      "fetched_segments": 316,
+      "matched_edges": 306,
       "total_network_edges": 1922,
-      "match_rate": 0.9591836734693877,
-      "observed_to_total_ratio": 0.02445369406867846,
+      "match_rate": 0.9683544303797469,
+      "observed_to_total_ratio": 0.15920915712799166,
       "area_km2": 6.510171091001862,
-      "edges_per_km2": 7.219472321543409,
+      "edges_per_km2": 47.00337298706985,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.0
+      "low_confidence_share": 0.12418300653594772
     }
   },
   "files": {
