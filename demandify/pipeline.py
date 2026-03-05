@@ -75,7 +75,6 @@ class CalibrationPipeline:
         ga_mutation_indpb: float = 0.3,
         ga_immigrant_rate: float = 0.03,
         ga_elite_top_pct: float = 0.1,
-        ga_magnitude_penalty_weight: Optional[float] = None,
         ga_stagnation_patience: int = 20,
         ga_stagnation_boost: float = 1.5,
         ga_checkpoint_interval: int = 10,
@@ -107,7 +106,6 @@ class CalibrationPipeline:
             ga_generations: GA generations
             ga_immigrant_rate: Fraction of random immigrants per generation
             ga_elite_top_pct: Fraction defining the top-E elite slice size
-            ga_magnitude_penalty_weight: Deprecated compatibility parameter (unused)
             ga_stagnation_patience: Generations without improvement before mutation boost
             ga_stagnation_boost: Multiplier for mutation on stagnation
             ga_checkpoint_interval: Save checkpointed best individual every N generations

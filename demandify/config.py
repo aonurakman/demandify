@@ -152,10 +152,6 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
         merged.get("ga_deterministic_crowding"),
         _RUN_DEFAULTS_FALLBACK["ga_deterministic_crowding"],
     )
-    merged.pop("num_origins", None)
-    merged.pop("num_destinations", None)
-    merged.pop("ga_magnitude_penalty_weight", None)
-
     return merged
 
 
@@ -276,13 +272,3 @@ def _load_persistent_config(config: DemandifyConfig):
     
     except Exception as e:
         print(f"Warning: Could not load persistent config: {e}")
-
-
-def get_api_key(service: str) -> Optional[str]:
-    """Get an API key for a service."""
-    config = get_config()
-    
-    if service == "tomtom":
-        return config.tomtom_api_key
-    
-    return None

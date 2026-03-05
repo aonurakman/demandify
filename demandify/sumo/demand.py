@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
 import logging
-import subprocess
 import math
 
 from demandify.sumo.network import SUMONetwork
@@ -46,32 +45,6 @@ class DemandGenerator:
         self.seed = seed
         self.rng = np.random.RandomState(seed)
     
-    def select_od_candidates(
-        self,
-        max_od_pairs: int = 150,
-        max_consecutive_failures: int = 10000,
-        min_trip_distance: float = 0.0
-    ) -> Tuple[List[str], List[str]]:
-        """
-        Backwards-compatible wrapper around `select_od_pairs`.
-        
-        Args:
-            max_od_pairs: Target number of OD pairs to create
-            max_consecutive_failures: Max failures before giving up
-            min_trip_distance: Minimum Euclidean distance between origin and destination O/D
-        
-        Returns:
-            (origin_edges, destination_edges) - unique edges used in validated OD pairs
-        """
-        pairs = self.select_od_pairs(
-            max_od_pairs=max_od_pairs,
-            max_consecutive_failures=max_consecutive_failures,
-            min_trip_distance=min_trip_distance,
-        )
-        origins = sorted({o for o, _ in pairs})
-        destinations = sorted({d for _, d in pairs})
-        return origins, destinations
-
     def select_od_pairs(
         self,
         max_od_pairs: int = 150,
@@ -670,75 +643,3 @@ class DemandGenerator:
         tree.write(output_trips_file, encoding='utf-8', xml_declaration=True)
         
         logger.debug(f"Created trips.xml: {output_trips_file}")
-    
-    def route_trips(
-        self,
-        network_file: Path,
-        trips_file: Path,
-        output_routes_file: Path
-    ):
-        """
-        Route trips using duarouter.
-        
-        Args:
-            network_file: SUMO network .net.xml
-            trips_file: trips.xml file
-            output_routes_file: Output routes.rou.xml file
-        """
-        logger.debug("🚗 Routing trips with duarouter")
-        
-        # Count trips in input file
-        try:
-            tree = ET.parse(trips_file)
-            root = tree.getroot()
-            num_trips = len(root.findall('trip'))
-            logger.debug(f"  Input: {num_trips} trips to route")
-        except Exception as e:
-            logger.error(f"  Could not parse trips file: {e}")
-            num_trips = "unknown"
-        
-        cmd = [
-            "duarouter",
-            "--net-file", str(network_file),
-            "--trip-files", str(trips_file),
-            "--output-file", str(output_routes_file),
-            "--ignore-errors",  # Continue on errors
-            "--repair",  # Try to repair routes
-            "--no-warnings",
-            "--seed", str(self.seed)
-        ]
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            
-            # Count successfully routed vehicles
-            try:
-                tree = ET.parse(output_routes_file)
-                root = tree.getroot()
-                num_routes = len(root.findall('vehicle'))
-                num_routes += len(root.findall('trip'))  # Some might still be trips
-                
-                logger.debug(f"  ✅ Output: {num_routes} routes generated")
-                
-                if num_routes == 0:
-                    logger.error(f"  ❌ CRITICAL: duarouter produced 0 routes from {num_trips} trips!")
-                    logger.error(f"  duarouter stderr: {result.stderr}")
-                elif isinstance(num_trips, int) and num_routes < num_trips * 0.5:
-                    logger.warning(f"  ⚠️  Low routing success: {num_routes}/{num_trips} ({100*num_routes/num_trips:.1f}%)")
-                    if result.stderr:
-                        logger.warning(f"  duarouter stderr: {result.stderr[:500]}")
-                else:
-                    if isinstance(num_trips, int):
-                        logger.debug(f"  Routing success: {100*num_routes/num_trips:.1f}%")
-                    
-            except Exception as e:
-                logger.error(f"  Could not parse routes file: {e}")
-                
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ duarouter failed: {e.stderr}")
-            raise RuntimeError(f"Failed to route trips: {e.stderr}")

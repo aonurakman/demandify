@@ -1,5 +1,4 @@
 import logging
-import sys
 from pathlib import Path
 from typing import Optional
 import tqdm
@@ -74,10 +73,3 @@ def setup_logging(
     logger.propagate = False
     
     return logger
-
-def get_logger(name: str) -> logging.Logger:
-    """Get a child logger of 'demandify'."""
-    # Ensure name starts with demandify prefix if it's a sub-module
-    if not name.startswith("demandify"):
-        name = f"demandify.{name}"
-    return logging.getLogger(name)

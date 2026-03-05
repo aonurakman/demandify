@@ -32,16 +32,6 @@ def _lonlat_to_tile(lon: float, lat: float, zoom: int) -> Tuple[int, int]:
     return xtile, ytile
 
 
-def _tile_bounds(x: int, y: int, zoom: int) -> Tuple[float, float, float, float]:
-    """Return west, south, east, north bounds of a tile."""
-    n = 2.0 ** zoom
-    west = x / n * 360.0 - 180.0
-    east = (x + 1) / n * 360.0 - 180.0
-    north = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
-    south = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / n))))
-    return west, south, east, north
-
-
 def _tile_to_lonlat(
     x: float,
     y: float,
