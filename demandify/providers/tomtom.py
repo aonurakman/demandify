@@ -3,7 +3,7 @@ TomTom Traffic Flow provider.
 Prefers Vector Flow Tiles; falls back to Flow Segment sampling.
 """
 from typing import Any, Dict, Tuple, Optional, List, Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import os
 import httpx
@@ -321,7 +321,7 @@ class TomTomProvider(TrafficProvider):
                     "geometry": coords,
                     "current_speed": float(current_speed),
                     "freeflow_speed": float(freeflow),
-                    "timestamp": datetime.now(UTC),
+                    "timestamp": datetime.now(timezone.utc),
                     "quality": float(confidence) if confidence is not None else 0.9
                 })
                 diagnostics["segments_decoded"] += 1
@@ -373,7 +373,7 @@ class TomTomProvider(TrafficProvider):
                         "geometry": geometry,
                         "current_speed": float(current_speed),
                         "freeflow_speed": float(freeflow_speed),
-                        "timestamp": datetime.now(UTC),
+                        "timestamp": datetime.now(timezone.utc),
                         "quality": float(segment.get("confidence", 0.9)),
                         "road_class": segment.get("frc", "unknown")
                     }
