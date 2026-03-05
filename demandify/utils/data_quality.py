@@ -189,8 +189,9 @@ def assess_data_quality(
 
     summary = (
         f"{label.upper()} quality ({score}/100): "
-        f"{matched_edges} matched edges from {fetched_segments} traffic segments "
-        f"(match rate {match_rate * 100:.1f}%)."
+        f"{matched_edges} traffic segments map-matched to graph edges "
+        f"from {fetched_segments} fetched segments "
+        f"(map-match rate {match_rate * 100:.1f}%)."
     )
 
     return {

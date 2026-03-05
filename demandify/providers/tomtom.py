@@ -3,7 +3,7 @@ TomTom Traffic Flow provider.
 Prefers Vector Flow Tiles; falls back to Flow Segment sampling.
 """
 from typing import Any, Dict, Tuple, Optional, List, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import os
 import httpx
@@ -30,16 +30,6 @@ def _lonlat_to_tile(lon: float, lat: float, zoom: int) -> Tuple[int, int]:
     xtile = int((lon + 180.0) / 360.0 * n)
     ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
     return xtile, ytile
-
-
-def _tile_bounds(x: int, y: int, zoom: int) -> Tuple[float, float, float, float]:
-    """Return west, south, east, north bounds of a tile."""
-    n = 2.0 ** zoom
-    west = x / n * 360.0 - 180.0
-    east = (x + 1) / n * 360.0 - 180.0
-    north = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
-    south = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / n))))
-    return west, south, east, north
 
 
 def _tile_to_lonlat(
@@ -101,9 +91,10 @@ class TomTomProvider(TrafficProvider):
     FLOW_SEGMENT_BASE = "https://api.tomtom.com/traffic/services/4/flowSegmentData"
     TILE_BASE = "https://api.tomtom.com/traffic/map/4/tile/flow"
     DEFAULT_STYLE = "absolute"
-    # Temporary safeguard: keep tile logic in code, but default to flow-segment sampling.
-    # Set DEMANDIFY_ENABLE_TOMTOM_TILES=1 to re-enable tile mode.
-    DEFAULT_ENABLE_TILES = False
+    # Vector tiles are the default live source. Set DEMANDIFY_ENABLE_TOMTOM_TILES=0
+    # to force Flow Segment sampling only.
+    DEFAULT_ENABLE_TILES = True
+    TILE_FREEFLOW_SPEED = 0.0
     CURRENT_SPEED_KEYS = (
         "traffic_level",
         "trafficLevel",
@@ -117,16 +108,6 @@ class TomTomProvider(TrafficProvider):
         "sp",
         "s",
         "c",
-    )
-    FREEFLOW_SPEED_KEYS = (
-        "freeFlowSpeed",
-        "freeflowSpeed",
-        "freeflow_speed",
-        "ffs",
-        "ffSpeed",
-        "ff",
-        "f",
-        "free",
     )
     CONFIDENCE_KEYS = ("confidence", "cn", "conf")
     
@@ -154,8 +135,8 @@ class TomTomProvider(TrafficProvider):
             logger.warning("mapbox-vector-tile not available; falling back to Flow Segment sampling.")
         elif not tiles_enabled:
             logger.info(
-                "TomTom vector tile mode temporarily disabled; using Flow Segment sampling. "
-                "Set DEMANDIFY_ENABLE_TOMTOM_TILES=1 to re-enable tiles."
+                "TomTom vector tile mode disabled via DEMANDIFY_ENABLE_TOMTOM_TILES; "
+                "using Flow Segment sampling."
             )
     
     def _bbox_to_tiles(self, bbox: Tuple[float, float, float, float]) -> List[Tuple[int, int]]:
@@ -319,12 +300,8 @@ class TomTomProvider(TrafficProvider):
                     diagnostics["feature_drop_reasons"]["missing_speed_property"] += 1
                     continue
                 
-                freeflow = _get_prop_float(
-                    props,
-                    self.FREEFLOW_SPEED_KEYS,
-                )
-                if freeflow is None:
-                    freeflow = current_speed
+                # TomTom vector tiles do not provide reliable free-flow speeds.
+                freeflow = self.TILE_FREEFLOW_SPEED
                 
                 confidence = _get_prop_float(props, self.CONFIDENCE_KEYS)
                 if confidence is None:
@@ -344,7 +321,7 @@ class TomTomProvider(TrafficProvider):
                     "geometry": coords,
                     "current_speed": float(current_speed),
                     "freeflow_speed": float(freeflow),
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(timezone.utc),
                     "quality": float(confidence) if confidence is not None else 0.9
                 })
                 diagnostics["segments_decoded"] += 1
@@ -396,7 +373,7 @@ class TomTomProvider(TrafficProvider):
                         "geometry": geometry,
                         "current_speed": float(current_speed),
                         "freeflow_speed": float(freeflow_speed),
-                        "timestamp": datetime.utcnow(),
+                        "timestamp": datetime.now(timezone.utc),
                         "quality": float(segment.get("confidence", 0.9)),
                         "road_class": segment.get("frc", "unknown")
                     }
@@ -454,6 +431,12 @@ class TomTomProvider(TrafficProvider):
         
         if segments:
             df = pd.DataFrame(segments)
+            logger.warning(
+                "TomTom vector tiles do not include free-flow speeds; assigning freeflow_speed=%.1f "
+                "to all %s fetched tile segments.",
+                self.TILE_FREEFLOW_SPEED,
+                len(df),
+            )
             logger.info(f"Fetched {len(df)} segments from {len(tiles)} tiles (zoom={self.tile_zoom})")
             return df
 

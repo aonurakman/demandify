@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "demandify: Calibrate SUMO traffic scenarios against real-world congestion using genetic algorithms"
+authors:
+  - given-names: Ahmet Onur
+    family-names: Akman
+    orcid: "https://orcid.org/0009-0006-4461-5025"
+version: 0.0.4
+doi: "10.5281/zenodo.18698978"
+url: "https://pypi.org/project/demandify/"
+repository-code: "https://github.com/aonurakman/demandify"
+license: "MIT"

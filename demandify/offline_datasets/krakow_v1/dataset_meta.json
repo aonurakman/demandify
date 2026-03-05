@@ -1,6 +1,6 @@
 {
   "dataset_name": "krakow_v1",
-  "created_at": "2026-02-17T13:58:34.712037",
+  "created_at": "2026-03-05T10:02:10.461558",
   "bbox": {
     "west": 20.0174,
     "south": 50.0702,
@@ -16,33 +16,33 @@
     "tile_zoom": 15
   },
   "stats": {
-    "fetched_segments": 44,
-    "matched_edges": 41,
+    "fetched_segments": 180,
+    "matched_edges": 166,
     "total_network_edges": 1521
   },
   "quality": {
     "score": 92,
     "label": "excellent",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (92/100): 41 matched edges from 44 traffic segments (match rate 93.2%).",
+    "summary": "EXCELLENT quality (92/100): 166 traffic segments map-matched to graph edges from 180 fetched segments (map-match rate 92.2%).",
     "warnings": [],
     "components": {
       "availability": 35,
       "match_rate": 22,
-      "confidence": 15,
-      "density": 12,
-      "network_coverage": 8
+      "confidence": 10,
+      "density": 15,
+      "network_coverage": 10
     },
     "metrics": {
-      "fetched_segments": 44,
-      "matched_edges": 41,
+      "fetched_segments": 180,
+      "matched_edges": 166,
       "total_network_edges": 1521,
-      "match_rate": 0.9318181818181818,
-      "observed_to_total_ratio": 0.02695595003287311,
+      "match_rate": 0.9222222222222223,
+      "observed_to_total_ratio": 0.1091387245233399,
       "area_km2": 5.362068398183593,
-      "edges_per_km2": 7.6463030598208706,
+      "edges_per_km2": 30.958202632445477,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.0
+      "low_confidence_share": 0.12650602409638553
     }
   },
   "files": {

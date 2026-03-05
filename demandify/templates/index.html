@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
 </head>
 
 <body>
@@ -51,356 +51,215 @@
                     </div>
                     <div class="card-body">
                         <form id="run-form">
-                            <!-- Data Source Mode -->
-                            <div class="mb-3">
-                                <label for="data_mode" class="form-label">
-                                    <i class="bi bi-database"></i> Data Source Mode
-                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                        title="Create: fetch fresh traffic/OSM data. Import: use a bundled/offline dataset snapshot.">
-                                        <i class="bi bi-info-circle"></i>
-                                    </span>
-                                </label>
-                                <select class="form-select" id="data_mode" name="data_mode">
-                                    <option value="create" selected>Create</option>
-                                    <option value="import" {% if offline_datasets|length == 0 %}disabled{% endif %}>Import</option>
-                                </select>
-                                <div class="form-text">
-                                    {% if offline_datasets|length == 0 %}
-                                    No offline datasets discovered. Use "Create" mode.
-                                    {% else %}
-                                    Choose Import to calibrate from a pre-packaged/offline snapshot.
-                                    {% endif %}
-                                </div>
-                                <div class="mt-1 text-end">
-                                    <a href="/dataset-builder" class="small text-muted text-decoration-none">
-                                        <i class="bi bi-box-arrow-up-right"></i> offline dataset builder
-                                    </a>
-                                </div>
-                            </div>
-
-                            <div id="import-dataset-group" class="mb-3 d-none">
-                                <label for="offline_dataset" class="form-label">
-                                    <i class="bi bi-collection"></i> Offline Dataset
-                                </label>
-                                <select class="form-select" id="offline_dataset" name="offline_dataset">
-                                    <option value="">Select dataset</option>
-                                    {% for ds in offline_datasets %}
-                                    <option value="{{ ds.id }}">
-                                        {{ ds.name }} [{{ ds.source }}{% if ds.quality_label %}, {{ ds.quality_label }}{% if ds.quality_score is not none %} {{ ds.quality_score }}/100{% endif %}{% endif %}]
-                                    </option>
-                                    {% endfor %}
-                                </select>
-                                <div id="offline-dataset-summary" class="form-text"></div>
-                            </div>
-
-                            <!-- Bounding Box Manual Input -->
-                            <div class="mb-3" id="bbox-group">
-                                <label class="form-label">
-                                    <i class="bi bi-bounding-box-circles"></i> Region Bounds
-                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                        title="Draw rectangle on map or enter coordinates manually.">
-                                        <i class="bi bi-info-circle"></i>
-                                    </span>
-                                </label>
-                                <div class="row g-2">
-                                    <div class="col-6">
-                                        <div class="input-group input-group-sm">
-                                            <span class="input-group-text">W</span>
-                                            <input type="number" class="form-control bbox-input" id="bbox_west"
-                                                name="bbox_west" step="0.0001" placeholder="West">
-                                        </div>
+                            <div class="config-layout">
+                                <div class="config-section">
+                                    <div class="config-section-header">
+                                        <h6 class="config-section-title">Source & Area</h6>
                                     </div>
-                                    <div class="col-6">
-                                        <div class="input-group input-group-sm">
-                                            <span class="input-group-text">N</span>
-                                            <input type="number" class="form-control bbox-input" id="bbox_north"
-                                                name="bbox_north" step="0.0001" placeholder="North">
-                                        </div>
-                                    </div>
-                                    <div class="col-6">
-                                        <div class="input-group input-group-sm">
-                                            <span class="input-group-text">S</span>
-                                            <input type="number" class="form-control bbox-input" id="bbox_south"
-                                                name="bbox_south" step="0.0001" placeholder="South">
-                                        </div>
-                                    </div>
-                                    <div class="col-6">
-                                        <div class="input-group input-group-sm">
-                                            <span class="input-group-text">E</span>
-                                            <input type="number" class="form-control bbox-input" id="bbox_east"
-                                                name="bbox_east" step="0.0001" placeholder="East">
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- API Key Section -->
-                            {% if not has_api_key %}
-                            <div class="alert alert-warning" role="alert">
-                                <strong><i class="bi bi-exclamation-triangle"></i> TomTom API Key Required</strong>
-                                <p class="mb-2 small">Get your free API key at <a href="https://developer.tomtom.com/"
-                                        target="_blank" class="alert-link">developer.tomtom.com</a></p>
-                                <p class="mb-2 small text-muted">Make sure your key has <strong>Traffic Flow
-                                        API</strong> enabled</p>
-                                <p class="mb-2 small text-muted"><strong>Note:</strong> API key is required only for <code>Create</code> mode, not <code>Import</code> mode.</p>
-                                <div class="input-group">
-                                    <input type="password" class="form-control" id="api-key-input"
-                                        placeholder="Paste your API key here">
-                                    <button class="btn btn-primary" type="button" id="save-api-key-btn">
-                                        <i class="bi bi-shield-check"></i> Save Key
-                                    </button>
-                                </div>
-                            </div>
-                            {% else %}
-                            <div class="alert alert-success" role="alert">
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-check-circle"></i> TomTom API key configured</span>
-                                    <button class="btn btn-sm btn-outline-secondary" type="button"
-                                        id="change-api-key-btn">
-                                        <i class="bi bi-pencil"></i> Change Key
-                                    </button>
-                                </div>
-                            </div>
-                            {% endif %}
-
-                            <!-- Time Window -->
-                            <div class="mb-3">
-                                <label for="window_minutes" class="form-label">
-                                    <i class="bi bi-clock"></i> Time Window
-                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                        title="Duration of simulation. TomTom provides real-time data (NOW). 15 min recommended for faster calibration.">
-                                        <i class="bi bi-info-circle"></i>
-                                    </span>
-                                </label>
-                                <select class="form-select" id="window_minutes" name="window_minutes">
-                                    {% for minutes in run_defaults.window_options_minutes %}
-                                    <option value="{{ minutes }}" {% if minutes == run_defaults.window_minutes %}selected{% endif %}>
-                                        {% if minutes == 60 %}1 hour{% else %}{{ minutes }} minutes{% endif %}
-                                    </option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-
-                            <!-- Seed -->
-                            <div class="mb-3">
-                                <label for="seed" class="form-label">
-                                    <i class="bi bi-dice-5"></i> Random Seed
-                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                        title="For reproducibility. Same seed = same output.">
-                                        <i class="bi bi-info-circle"></i>
-                                    </span>
-                                </label>
-                                <input type="number" class="form-control" id="seed" name="seed" value="{{ run_defaults.seed }}" min="0">
-                            </div>
-
-                            <!-- Run ID (Optional) -->
-                            <div class="mb-3">
-                                <label for="run_id" class="form-label">
-                                    <i class="bi bi-tag"></i> Run ID (Optional)
-                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                        title="Custom identifier for this run. Leave blank to auto-generate.">
-                                        <i class="bi bi-info-circle"></i>
-                                    </span>
-                                </label>
-                                <input type="text" class="form-control" id="run_id" name="run_id"
-                                    placeholder="e.g. paris_optimization_v1" pattern="[A-Za-z0-9_-]+">
-                                <div id="run-id-warning" class="form-text text-warning d-none">
-                                    <i class="bi bi-exclamation-triangle"></i> Run ID exists. Files will be overwritten.
-                                </div>
-                            </div>
-
-                            <!-- Advanced Parameters -->
-                            <div class="mb-3">
-                                <a class="btn btn-link p-0 text-decoration-none" data-bs-toggle="collapse"
-                                    href="#advanced-params" role="button">
-                                    <i class="bi bi-chevron-down"></i> Advanced Parameters
-                                </a>
-                                <div class="collapse" id="advanced-params">
-                                    <div class="card card-body mt-2 bg-light">
-                                        <!-- Simulation Settings -->
-                                        <div class="row mb-3">
-                                            <div class="col-12 mb-2"><small class="text-muted fw-bold">Simulation</small></div>
-                                            <div class="col-6">
-                                                <label for="warmup_minutes" class="form-label small">
-                                                    Warmup (min)
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Warmup duration before measurements start. Helps populate the network before scoring.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="warmup_minutes" name="warmup_minutes"
-                                                    value="{{ run_defaults.warmup_minutes }}" min="0" max="60">
-                                            </div>
-                                            <div class="col-6">
-                                                <label for="step_length" class="form-label small">
-                                                    Step Length (s)
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="SUMO simulation step length. Smaller = more accurate but slower.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="step_length" name="step_length"
-                                                    value="{{ run_defaults.step_length }}" step="0.1" min="0.1" max="5">
-                                            </div>
-                                        </div>
-
-                                        <!-- Traffic Ingestion -->
-                                        <div class="row mb-3 border-top pt-2">
-                                            <div class="col-12 mb-2"><small class="text-muted fw-bold">TomTom Traffic</small></div>
-                                            <div class="col-6">
-                                                <label for="traffic_tile_zoom" class="form-label small">
-                                                    Tile Zoom
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Vector tile zoom for TomTom Flow. Higher = more detail (may require more requests for large bboxes).">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="traffic_tile_zoom" name="traffic_tile_zoom"
-                                                    value="{{ run_defaults.traffic_tile_zoom }}" min="8" max="18">
-                                            </div>
-                                        </div>
-
-                                        <div class="row mb-3">
-                                            <div class="col-6">
-                                                <label for="ga_population" class="form-label small">
-                                                    Population
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Number of candidate solutions per generation. Higher = better search but slower.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_population" name="ga_population"
-                                                    value="{{ run_defaults.ga_population }}" min="10">
-                                            </div>
-                                            <div class="col-6">
-                                                <label for="ga_generations" class="form-label small">
-                                                    Generations
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Number of evolution iterations. Higher = better convergence but slower.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_generations" name="ga_generations"
-                                                    value="{{ run_defaults.ga_generations }}" min="5">
-                                            </div>
-                                        </div>
-                                        <div class="row mb-3">
-                                            <div class="col-6">
-                                                <label for="parallel_workers" class="form-label small">
-                                                    Workers (CPU)
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Number of parallel SUMO simulations. Set to your CPU core count.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="parallel_workers" name="parallel_workers"
-                                                    value="{{ run_defaults.parallel_workers }}" min="1" max="32">
-                                            </div>
-                                            <div class="col-6">
-                                                <label for="ga_elitism" class="form-label small">
-                                                    Elitism
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Number of best individuals to keep unchanged for next generation.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_elitism" name="ga_elitism" value="{{ run_defaults.ga_elitism }}" min="0">
-                                            </div>
-                                        </div>
-                                        <div class="row mb-3">
-                                            <div class="col-6">
-                                                <label for="ga_mutation_rate" class="form-label small">
-                                                    Mutation Rate
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Probability (0.0-1.0) that an offspring will undergo mutation.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_mutation_rate" name="ga_mutation_rate" value="{{ run_defaults.ga_mutation_rate }}"
-                                                    step="0.05" min="0" max="1">
-                                            </div>
-                                            <div class="col-6">
-                                                <label for="ga_crossover_rate" class="form-label small">
-                                                    Crossover Rate
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Probability (0.0-1.0) that two individuals will swap genes.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
-                                                <input type="number" class="form-control form-control-sm"
-                                                    id="ga_crossover_rate" name="ga_crossover_rate" value="{{ run_defaults.ga_crossover_rate }}"
-                                                    step="0.05" min="0" max="1">
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <!-- Traffic Scale -->
-                                    <div class="row mb-0 border-top pt-2">
-                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Traffic Scale</small></div>
+                                    <div class="row g-3">
                                         <div class="col-12">
-                                            <label for="initial_population" class="form-label small">
+                                            <div class="data-mode-row">
+                                                <label class="form-label mb-0">
+                                                    Data Source
+                                                    <span class="info-icon" data-bs-toggle="tooltip"
+                                                        title="Create fetches fresh traffic and network data. Import uses an offline dataset snapshot.">
+                                                        <i class="bi bi-info-circle"></i>
+                                                    </span>
+                                                </label>
+                                                <div class="data-mode-pill" role="radiogroup" aria-label="Data source">
+                                                    <input class="data-mode-input" type="radio" name="data_mode" id="data-mode-create"
+                                                        value="create" checked>
+                                                    <label class="data-mode-option" for="data-mode-create">
+                                                        Create
+                                                    </label>
+                                                    <input class="data-mode-input" type="radio" name="data_mode" id="data-mode-import"
+                                                        value="import" {% if offline_datasets|length == 0 %}disabled{% endif %}>
+                                                    <label class="data-mode-option {% if offline_datasets|length == 0 %}disabled{% endif %}" for="data-mode-import">
+                                                        Import
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            {% if offline_datasets|length == 0 %}
+                                            <div class="form-text">No offline datasets found.</div>
+                                            {% endif %}
+                                            <div class="mt-1 text-end">
+                                                <a href="/dataset-builder" class="small text-muted text-decoration-none">
+                                                    <i class="bi bi-box-arrow-up-right"></i> offline dataset builder
+                                                </a>
+                                            </div>
+                                        </div>
+
+                                        <div id="import-dataset-group" class="col-12 d-none" hidden>
+                                            <label for="offline_dataset" class="form-label">
+                                                <i class="bi bi-collection"></i> Offline Dataset
+                                            </label>
+                                            <select class="form-select" id="offline_dataset" name="offline_dataset">
+                                                <option value="">Select dataset</option>
+                                                {% for ds in offline_datasets %}
+                                                <option value="{{ ds.id }}">
+                                                    {{ ds.name }} [{{ ds.source }}{% if ds.quality_label %}, {{ ds.quality_label }}{% if ds.quality_score is not none %} {{ ds.quality_score }}/100{% endif %}{% endif %}]
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                            <div id="offline-dataset-summary" class="form-text"></div>
+                                        </div>
+
+                                        <div class="col-12">
+                                            {% if not has_api_key %}
+                                            <div class="alert alert-warning mb-0" role="alert">
+                                                <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                                                    <strong>
+                                                        <i class="bi bi-exclamation-triangle"></i> TomTom API Key Required
+                                                        <span class="info-icon" data-bs-toggle="tooltip"
+                                                            title="Needed only in Create mode. Your key must have Traffic Flow API enabled.">
+                                                            <i class="bi bi-info-circle"></i>
+                                                        </span>
+                                                    </strong>
+                                                    <a href="https://developer.tomtom.com/" target="_blank" class="small alert-link">Get a key</a>
+                                                </div>
+                                                <div class="input-group mt-2">
+                                                    <input type="password" class="form-control" id="api-key-input"
+                                                        placeholder="Paste your API key here">
+                                                    <button class="btn btn-primary" type="button" id="save-api-key-btn">
+                                                        <i class="bi bi-shield-check"></i> Save Key
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {% else %}
+                                            <div class="alert alert-success mb-0" role="alert">
+                                                <div class="d-flex justify-content-between align-items-center">
+                                                    <span><i class="bi bi-check-circle"></i> TomTom API key configured</span>
+                                                    <button class="btn btn-sm btn-outline-secondary" type="button"
+                                                        id="change-api-key-btn">
+                                                        <i class="bi bi-pencil"></i> Change Key
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+
+                                        <div class="col-12" id="bbox-group">
+                                            <label class="form-label">
+                                                <i class="bi bi-bounding-box-circles"></i> Region Bounds
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Draw rectangle on map or enter coordinates manually.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <div class="row g-2">
+                                                <div class="col-6">
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text">W</span>
+                                                        <input type="number" class="form-control bbox-input" id="bbox_west"
+                                                            name="bbox_west" step="0.0001" placeholder="West">
+                                                    </div>
+                                                </div>
+                                                <div class="col-6">
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text">N</span>
+                                                        <input type="number" class="form-control bbox-input" id="bbox_north"
+                                                            name="bbox_north" step="0.0001" placeholder="North">
+                                                    </div>
+                                                </div>
+                                                <div class="col-6">
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text">S</span>
+                                                        <input type="number" class="form-control bbox-input" id="bbox_south"
+                                                            name="bbox_south" step="0.0001" placeholder="South">
+                                                    </div>
+                                                </div>
+                                                <div class="col-6">
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text">E</span>
+                                                        <input type="number" class="form-control bbox-input" id="bbox_east"
+                                                            name="bbox_east" step="0.0001" placeholder="East">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="config-section">
+                                    <div class="config-section-header">
+                                        <h6 class="config-section-title">Run</h6>
+                                    </div>
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <label for="window_minutes" class="form-label">
+                                                <i class="bi bi-clock"></i> Time Window
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Duration of simulation. TomTom provides real-time data (NOW). 15 min recommended for faster calibration.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <select class="form-select" id="window_minutes" name="window_minutes">
+                                                {% for minutes in run_defaults.window_options_minutes %}
+                                                <option value="{{ minutes }}" {% if minutes == run_defaults.window_minutes %}selected{% endif %}>
+                                                    {% if minutes == 60 %}1 hour{% else %}{{ minutes }} minutes{% endif %}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="seed" class="form-label">
+                                                <i class="bi bi-dice-5"></i> Random Seed
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="For reproducibility. Same seed = same output.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control" id="seed" name="seed" value="{{ run_defaults.seed }}" min="0">
+                                        </div>
+                                        <div class="col-12">
+                                            <label for="run_id" class="form-label">
+                                                <i class="bi bi-tag"></i> Run ID (Optional)
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Custom identifier for this run. Leave blank to auto-generate.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="text" class="form-control" id="run_id" name="run_id"
+                                                placeholder="e.g. paris_optimization_v1" pattern="[A-Za-z0-9_-]+">
+                                            <div id="run-id-warning" class="form-text text-warning d-none">
+                                                <i class="bi bi-exclamation-triangle"></i> Run ID exists. Files will be overwritten.
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="config-section">
+                                    <div class="config-section-header">
+                                        <h6 class="config-section-title">Demand</h6>
+                                    </div>
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <label for="initial_population" class="form-label">
                                                 Initial Vehicles
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Target number of vehicles to start the simulation with. The GA will adjust this up or down.">
+                                                    title="Target number of vehicles to start the simulation with. The GA will adjust this up or down. Rough rule of thumb: around 1000 for districts and around 10000 for city-scale areas.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="initial_population" name="initial_population" value="{{ run_defaults.initial_population }}" min="10" step="10">
-                                            <div class="form-text x-small">Use ~1000 for districts, ~10000 for cities.</div>
+                                            <input type="number" class="form-control" id="initial_population"
+                                                name="initial_population" value="{{ run_defaults.initial_population }}" min="10" step="10">
                                         </div>
-                                    </div>
-
-                                    <!-- Demand Model Parameters -->
-                                    <div class="row mb-0 border-top pt-2">
-                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Demand Model</small>
-                                        </div>
-                                        <div class="col-6">
-                                            <label for="num_origins" class="form-label small">
-                                                Origins
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Number of candidate startup locations to try.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm" id="num_origins"
-                                                name="num_origins" value="{{ run_defaults.num_origins }}" min="2">
-                                        </div>
-                                        <div class="col-6">
-                                            <label for="num_destinations" class="form-label small">
-                                                Destinations
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Number of candidate endpoints to try.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="num_destinations" name="num_destinations" value="{{ run_defaults.num_destinations }}" min="2">
-                                        </div>
-                                        <div class="col-6">
-                                            <label for="max_od_pairs" class="form-label small">
+                                        <div class="col-md-6">
+                                            <label for="max_od_pairs" class="form-label">
                                                 Max Routes
                                                 <span class="info-icon" data-bs-toggle="tooltip"
                                                     title="Maximum unique routes to calibrate. Limits complexity.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
-                                            <input type="number" class="form-control form-control-sm" id="max_od_pairs"
+                                            <input type="number" class="form-control" id="max_od_pairs"
                                                 name="max_od_pairs" value="{{ run_defaults.max_od_pairs }}" min="5">
                                         </div>
-                                        <div class="col-6">
-                                            <label for="bin_minutes" class="form-label small">
+                                        <div class="col-12">
+                                            <label for="bin_minutes" class="form-label">
                                                 Bin Duration: <span id="bin-val">{{ run_defaults.bin_minutes }}</span> min
                                                 <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Duration of each demand time slot. Smaller = finer detail but harder to calibrate.">
+                                                    title="Duration of each demand time slot. Smaller means finer detail but harder calibration. Larger is coarser but usually easier to stabilize.">
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
@@ -409,131 +268,248 @@
                                                 oninput="document.getElementById('bin-val').textContent = this.value">
                                         </div>
                                     </div>
+                                </div>
 
-                                    <div class="row mb-0 border-top pt-2">
-                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Advanced Mutation
-                                                Tuning</small></div>
-                                        <div class="col-6">
-                                            <label for="ga_mutation_sigma" class="form-label small">
-                                                Sigma
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Mutation magnitude (step size). Higher = larger changes to values.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_mutation_sigma" name="ga_mutation_sigma" value="{{ run_defaults.ga_mutation_sigma }}" min="1">
-                                        </div>
-                                        <div class="col-6">
-                                            <label for="ga_mutation_indpb" class="form-label small">
-                                                Gene Prob.
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Probability (0.0-1.0) of mutating a specific gene within an individual.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_mutation_indpb" name="ga_mutation_indpb" value="{{ run_defaults.ga_mutation_indpb }}" step="0.05"
-                                                min="0" max="1">
-                                        </div>
+                                <div class="config-section mb-0">
+                                    <div class="config-section-header align-items-center">
+                                        <h6 class="config-section-title mb-0">Advanced</h6>
+                                        <a class="btn btn-link p-0 text-decoration-none config-collapse-toggle" id="advanced-toggle" data-bs-toggle="collapse"
+                                            href="#advanced-params" role="button">
+                                            <i class="bi bi-sliders"></i> Show Advanced
+                                        </a>
                                     </div>
-                                    <div class="row mb-0 border-top pt-2">
-                                        <div class="col-12 mb-2"><small class="text-muted fw-bold">Advanced GA
-                                                Dynamics</small></div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_immigrant_rate" class="form-label small">
-                                                Immigrants %
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Fraction of random individuals injected per generation to maintain diversity (0-1).">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_immigrant_rate" name="ga_immigrant_rate" value="{{ run_defaults.ga_immigrant_rate }}" step="0.01"
-                                                min="0" max="0.5">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_elite_top_pct" class="form-label small">
-                                                Elite Top %
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Defines feasible elite size n=max(1, pct*population). If feasible individuals are at least n, parent tournaments use that feasible elite slice.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_elite_top_pct" name="ga_elite_top_pct" value="{{ run_defaults.ga_elite_top_pct }}" step="0.05"
-                                                min="0" max="1">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_magnitude_penalty_weight" class="form-label small">
-                                                Elite Magnitude Weight
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Used only in feasible-elite mode: elite score = weight*magnitude + E-rank term. Higher values favor lower total trips among feasible elites.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_magnitude_penalty_weight" name="ga_magnitude_penalty_weight" value="{{ run_defaults.ga_magnitude_penalty_weight }}" step="0.001"
-                                                min="0" max="1">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_stagnation_patience" class="form-label small">
-                                                Stagnation K
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Generations without improvement before mutation is boosted.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_stagnation_patience" name="ga_stagnation_patience" value="{{ run_defaults.ga_stagnation_patience }}" min="1">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_stagnation_boost" class="form-label small">
-                                                Stagnation Boost
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Multiplier for mutation sigma and rate when stagnation is detected.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_stagnation_boost" name="ga_stagnation_boost" value="{{ run_defaults.ga_stagnation_boost }}" step="0.1"
-                                                min="1" max="5">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label for="ga_checkpoint_interval" class="form-label small">
-                                                Checkpoint Every N Gen
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Save best-individual checkpoint artifacts every N generations (URB-style backup under checkpoints/).">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="number" class="form-control form-control-sm"
-                                                id="ga_checkpoint_interval" name="ga_checkpoint_interval" value="{{ run_defaults.ga_checkpoint_interval }}" min="1">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <div class="form-check mt-3">
-                                                <input class="form-check-input" type="checkbox" id="ga_assortative_mating"
-                                                    name="ga_assortative_mating" {% if run_defaults.ga_assortative_mating %}checked{% endif %}>
-                                                <label class="form-check-label small" for="ga_assortative_mating">
-                                                    Assortative Mating
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Prefer crossover between dissimilar parents to promote diversity.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
+                                    <div class="collapse" id="advanced-params">
+                                        <div class="advanced-stack mt-3">
+                                            <div class="advanced-panel">
+                                                <div class="advanced-panel-title">Traffic & Simulation</div>
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <label for="warmup_minutes" class="form-label small">
+                                                            Warmup (min)
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Warmup duration before measurements start. Helps populate the network before scoring.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="warmup_minutes" name="warmup_minutes"
+                                                            value="{{ run_defaults.warmup_minutes }}" min="0" max="60">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="step_length" class="form-label small">
+                                                            Step Length (s)
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="SUMO simulation step length. Smaller = more accurate but slower.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="step_length" name="step_length"
+                                                            value="{{ run_defaults.step_length }}" step="0.1" min="0.1" max="5">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="traffic_tile_zoom" class="form-label small">
+                                                            Tile Zoom
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Vector tile zoom for TomTom Flow. Higher = more detail (may require more requests for large bboxes).">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="traffic_tile_zoom" name="traffic_tile_zoom"
+                                                            value="{{ run_defaults.traffic_tile_zoom }}" min="8" max="18">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="parallel_workers" class="form-label small">
+                                                            Workers (CPU)
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Number of parallel SUMO simulations. Set to your CPU core count.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="parallel_workers" name="parallel_workers"
+                                                            value="{{ run_defaults.parallel_workers }}" min="1" max="32">
+                                                    </div>
+                                                </div>
                                             </div>
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <div class="form-check mt-3">
-                                                <input class="form-check-input" type="checkbox" id="ga_deterministic_crowding"
-                                                    name="ga_deterministic_crowding" {% if run_defaults.ga_deterministic_crowding %}checked{% endif %}>
-                                                <label class="form-check-label small" for="ga_deterministic_crowding">
-                                                    Deterministic Crowding
-                                                    <span class="info-icon" data-bs-toggle="tooltip"
-                                                        title="Offspring replace the most similar parent, maintaining population diversity.">
-                                                        <i class="bi bi-info-circle"></i>
-                                                    </span>
-                                                </label>
+
+                                            <div class="advanced-panel">
+                                                <div class="advanced-panel-title">GA Search</div>
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <label for="ga_population" class="form-label small">
+                                                            Population
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Number of candidate solutions per generation. Higher = better search but slower.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_population" name="ga_population"
+                                                            value="{{ run_defaults.ga_population }}" min="10">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_generations" class="form-label small">
+                                                            Generations
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Number of evolution iterations. Higher = better convergence but slower.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_generations" name="ga_generations"
+                                                            value="{{ run_defaults.ga_generations }}" min="5">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_elitism" class="form-label small">
+                                                            Elitism
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Number of best individuals to keep unchanged for next generation.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_elitism" name="ga_elitism" value="{{ run_defaults.ga_elitism }}" min="0">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_elite_top_pct" class="form-label small">
+                                                            Elite Top %
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Defines the size of the top-by-E slice used for parent selection. Inside that slice, demandify balances E, fail_total, and total magnitude.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_elite_top_pct" name="ga_elite_top_pct" value="{{ run_defaults.ga_elite_top_pct }}" step="0.05"
+                                                            min="0" max="1">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_mutation_rate" class="form-label small">
+                                                            Mutation Rate
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Probability (0.0-1.0) that an offspring will undergo mutation.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_mutation_rate" name="ga_mutation_rate" value="{{ run_defaults.ga_mutation_rate }}"
+                                                            step="0.05" min="0" max="1">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_crossover_rate" class="form-label small">
+                                                            Crossover Rate
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Probability (0.0-1.0) that two individuals will swap genes.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_crossover_rate" name="ga_crossover_rate" value="{{ run_defaults.ga_crossover_rate }}"
+                                                            step="0.05" min="0" max="1">
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="advanced-panel">
+                                                <div class="advanced-panel-title">Mutation, Diversity & Checkpoints</div>
+                                                <div class="row g-3">
+                                                    <div class="col-md-6">
+                                                        <label for="ga_mutation_sigma" class="form-label small">
+                                                            Sigma
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Mutation magnitude (step size). Higher = larger changes to values.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_mutation_sigma" name="ga_mutation_sigma" value="{{ run_defaults.ga_mutation_sigma }}" min="1">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_mutation_indpb" class="form-label small">
+                                                            Gene Prob.
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Probability (0.0-1.0) of mutating a specific gene within an individual.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_mutation_indpb" name="ga_mutation_indpb" value="{{ run_defaults.ga_mutation_indpb }}" step="0.05"
+                                                            min="0" max="1">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_immigrant_rate" class="form-label small">
+                                                            Immigrants %
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Fraction of random individuals injected per generation to maintain diversity (0-1).">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_immigrant_rate" name="ga_immigrant_rate" value="{{ run_defaults.ga_immigrant_rate }}" step="0.01"
+                                                            min="0" max="0.5">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_checkpoint_interval" class="form-label small">
+                                                            Checkpoint Every N Gen
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Save best-individual checkpoint artifacts every N generations (URB-style backup under checkpoints/).">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_checkpoint_interval" name="ga_checkpoint_interval" value="{{ run_defaults.ga_checkpoint_interval }}" min="1">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_stagnation_patience" class="form-label small">
+                                                            Stagnation K
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Generations without improvement before mutation is boosted.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_stagnation_patience" name="ga_stagnation_patience" value="{{ run_defaults.ga_stagnation_patience }}" min="1">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="ga_stagnation_boost" class="form-label small">
+                                                            Stagnation Boost
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Multiplier for mutation sigma and rate when stagnation is detected.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control form-control-sm"
+                                                            id="ga_stagnation_boost" name="ga_stagnation_boost" value="{{ run_defaults.ga_stagnation_boost }}" step="0.1"
+                                                            min="1" max="5">
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="ga_assortative_mating"
+                                                                name="ga_assortative_mating" {% if run_defaults.ga_assortative_mating %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="ga_assortative_mating">
+                                                                Assortative Mating
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Prefer crossover between dissimilar parents to promote diversity.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="ga_deterministic_crowding"
+                                                                name="ga_deterministic_crowding" {% if run_defaults.ga_deterministic_crowding %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="ga_deterministic_crowding">
+                                                                Deterministic Crowding
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Offspring replace the most similar parent, maintaining population diversity.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -586,6 +562,12 @@
                             </button>
                         </div>
                         <div class="card-body">
+                            <div class="progress-media mb-3">
+                                <video id="progress-animation" class="progress-media-video" autoplay muted loop playsinline preload="auto">
+                                    <source src="/static/animated.mp4" type="video/mp4">
+                                </video>
+                            </div>
+
                             <!-- Progress Stepper -->
                             <div class="progress-stepper">
                                 <div class="step" data-step="0">
@@ -675,7 +657,7 @@
                             <span class="badge bg-primary rounded-pill" id="check-fetched-count">0</span>
                         </li>
                         <li class="list-group-item d-flex justify-content-between align-items-center">
-                            Matched Graph Edges
+                            Map-Matched Segments
                             <span class="badge bg-success rounded-pill" id="check-matched-count">0</span>
                         </li>
                         <li class="list-group-item d-flex justify-content-between align-items-center">
@@ -695,18 +677,18 @@
                     <div id="check-quality-summary" class="small text-muted mb-3">-</div>
 
                     <div id="check-warning" class="alert alert-warning d-none">
-                        <i class="bi bi-exclamation-triangle"></i> <strong>Warning:</strong> Low match rate. The
-                        calibration quality may be poor.
+                        <i class="bi bi-exclamation-triangle"></i> <strong>Warning:</strong> Low map-match rate. The
+                        calibration may have limited observed coverage.
                     </div>
 
                     <div id="check-critical" class="alert alert-danger d-none">
-                        <i class="bi bi-x-circle"></i> <strong>Critical:</strong> No edges matched. Run will likely
-                        fail.
+                        <i class="bi bi-x-circle"></i> <strong>Critical:</strong> No traffic segments map-matched to
+                        graph edges. Run will likely fail.
                     </div>
 
                     <div id="save-offline-dataset-section">
-                        <div class="form-check mt-3">
-                            <input class="form-check-input" type="checkbox" value="true"
+                        <div class="form-check checkbox-xl-wrap mt-3">
+                            <input class="form-check-input checkbox-xl" type="checkbox" value="true"
                                 id="save-offline-dataset-checkbox">
                             <label class="form-check-label" for="save-offline-dataset-checkbox">
                                 Save network and traffic data
@@ -741,7 +723,7 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
     <script id="known-offline-datasets-json" type="application/json">{{ offline_datasets | tojson }}</script>
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v={{ asset_version }}"></script>
 
     <script>
         // Initialize tooltips

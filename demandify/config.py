@@ -27,15 +27,12 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "ga_mutation_rate": 0.5,
     "ga_crossover_rate": 0.7,
     "initial_population": 1000,
-    "num_origins": 10,
-    "num_destinations": 10,
     "max_od_pairs": 50,
     "bin_minutes": 5,
     "ga_mutation_sigma": 20,
     "ga_mutation_indpb": 0.3,
     "ga_immigrant_rate": 0.03,
     "ga_elite_top_pct": 0.1,
-    "ga_magnitude_penalty_weight": 0.001,
     "ga_stagnation_patience": 20,
     "ga_stagnation_boost": 1.5,
     "ga_checkpoint_interval": 10,
@@ -118,10 +115,6 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
     merged["initial_population"] = int(
         merged.get("initial_population", _RUN_DEFAULTS_FALLBACK["initial_population"])
     )
-    merged["num_origins"] = int(merged.get("num_origins", _RUN_DEFAULTS_FALLBACK["num_origins"]))
-    merged["num_destinations"] = int(
-        merged.get("num_destinations", _RUN_DEFAULTS_FALLBACK["num_destinations"])
-    )
     merged["max_od_pairs"] = int(merged.get("max_od_pairs", _RUN_DEFAULTS_FALLBACK["max_od_pairs"]))
     merged["bin_minutes"] = int(merged.get("bin_minutes", _RUN_DEFAULTS_FALLBACK["bin_minutes"]))
     merged["ga_mutation_sigma"] = int(
@@ -135,12 +128,6 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
     )
     merged["ga_elite_top_pct"] = float(
         merged.get("ga_elite_top_pct", _RUN_DEFAULTS_FALLBACK["ga_elite_top_pct"])
-    )
-    merged["ga_magnitude_penalty_weight"] = float(
-        merged.get(
-            "ga_magnitude_penalty_weight",
-            _RUN_DEFAULTS_FALLBACK["ga_magnitude_penalty_weight"],
-        )
     )
     merged["ga_stagnation_patience"] = int(
         merged.get("ga_stagnation_patience", _RUN_DEFAULTS_FALLBACK["ga_stagnation_patience"])
@@ -165,7 +152,6 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
         merged.get("ga_deterministic_crowding"),
         _RUN_DEFAULTS_FALLBACK["ga_deterministic_crowding"],
     )
-
     return merged
 
 
@@ -286,13 +272,3 @@ def _load_persistent_config(config: DemandifyConfig):
     
     except Exception as e:
         print(f"Warning: Could not load persistent config: {e}")
-
-
-def get_api_key(service: str) -> Optional[str]:
-    """Get an API key for a service."""
-    config = get_config()
-    
-    if service == "tomtom":
-        return config.tomtom_api_key
-    
-    return None

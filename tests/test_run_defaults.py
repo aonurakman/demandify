@@ -27,15 +27,12 @@ def test_run_defaults_have_required_keys():
         "ga_mutation_rate",
         "ga_crossover_rate",
         "initial_population",
-        "num_origins",
-        "num_destinations",
         "max_od_pairs",
         "bin_minutes",
         "ga_mutation_sigma",
         "ga_mutation_indpb",
         "ga_immigrant_rate",
         "ga_elite_top_pct",
-        "ga_magnitude_penalty_weight",
         "ga_stagnation_patience",
         "ga_stagnation_boost",
         "ga_checkpoint_interval",
@@ -84,3 +81,5 @@ def test_index_template_uses_shared_defaults():
     assert f'name="ga_population"' in html
     assert f'value="{defaults["ga_population"]}"' in html
     assert f'name="max_od_pairs" value="{defaults["max_od_pairs"]}"' in html
+    assert 'name="num_origins"' not in html
+    assert 'name="num_destinations"' not in html

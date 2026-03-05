@@ -1,7 +1,6 @@
 """
 CLI entrypoint for demandify.
 """
-import sys
 from demandify.cli import cli
 
 
