@@ -44,6 +44,15 @@ class DemandGenerator:
         self.network = network
         self.seed = seed
         self.rng = np.random.RandomState(seed)
+        adjacency_source = {}
+        if self.network is not None:
+            adjacency_source = getattr(self.network, "adjacency", {}) or {}
+        # Freeze adjacency traversal order for cross-process reproducibility.
+        self._deterministic_adjacency = {
+            edge_id: tuple(sorted(neighbors))
+            for edge_id, neighbors in adjacency_source.items()
+        }
+        self._route_cache: Dict[Tuple[str, str], bool] = {}
     
     def select_od_pairs(
         self,
@@ -517,29 +526,35 @@ class DemandGenerator:
         """
         if from_edge == to_edge:
             return True
-        
-        # BFS for reachability
+
+        cache_key = (from_edge, to_edge)
+        cached = self._route_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # BFS for reachability (complete traversal; visited guarantees termination)
         visited = {from_edge}
         queue = [from_edge]
         idx = 0
-        max_depth = 1000  # Prevent infinite loops on large networks
-        
-        while idx < len(queue) and idx < max_depth:
+
+        while idx < len(queue):
             current = queue[idx]
             idx += 1
-            
-            # Get neighbors (outgoing edges)
-            neighbors = self.network.adjacency.get(current, set())
-            
+
+            # Deterministic outgoing-neighbor order avoids PYTHONHASHSEED drift.
+            neighbors = self._deterministic_adjacency.get(current, ())
+
             for neighbor in neighbors:
                 if neighbor == to_edge:
-                    return True  # Found a path!
-                
+                    self._route_cache[cache_key] = True
+                    return True
+
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append(neighbor)
-        
-        return False  # No path found
+
+        self._route_cache[cache_key] = False
+        return False
     
     def genome_to_demand_csv(
         self,
