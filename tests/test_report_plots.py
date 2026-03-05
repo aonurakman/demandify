@@ -282,6 +282,7 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert metadata["calibration_config"]["requested_parallel_workers"] is None
     assert metadata["output_files"]["observed_speed_heatmap_png"] == "plots/network_observed_speed_heatmap.png"
     assert metadata["output_files"]["simulated_speed_heatmap_png"] == "plots/network_simulated_speed_heatmap.png"
+    assert metadata["output_files"]["selected_od_pairs_png"] == "plots/network_selected_od_pairs.png"
 
     rerun_cmd = metadata["reproducibility"]["rerun_cli_command"]
     assert rerun_cmd.startswith("demandify run ")

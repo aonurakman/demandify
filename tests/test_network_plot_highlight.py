@@ -15,6 +15,9 @@ class _FakeNet:
             "e2": LineString([(1.0, 0.0), (2.0, 1.0)]),
         }
 
+    def get_network_boundary(self):
+        return (0.0, 0.0, 2.0, 1.0)
+
 
 class _FakeAxes:
     def __init__(self):
@@ -76,6 +79,21 @@ def test_plot_edge_speed_heatmap_saves_png(monkeypatch, tmp_path):
         title="Observed Edge Speeds",
         vmin=0.0,
         vmax=50.0,
+    )
+
+    assert output_file.exists()
+    assert output_file.stat().st_size > 0
+
+
+def test_plot_od_pair_labels_saves_png(monkeypatch, tmp_path):
+    monkeypatch.setattr(visualization, "SUMONetwork", lambda _network_file: _FakeNet())
+
+    output_file = tmp_path / "network_selected_od_pairs.png"
+    visualization.plot_od_pair_labels(
+        Path("/tmp/network.net.xml"),
+        output_file,
+        od_pairs=[("e1", "e2"), ("e2", "e1")],
+        title="Selected ODs (2)",
     )
 
     assert output_file.exists()

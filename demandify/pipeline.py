@@ -34,7 +34,11 @@ from demandify.cache.manager import CacheManager
 from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key, matching_key
 from demandify.export.exporter import ScenarioExporter
 from demandify.export.report import ReportGenerator
-from demandify.utils.visualization import plot_edge_speed_heatmap, plot_network_geometry
+from demandify.utils.visualization import (
+    plot_edge_speed_heatmap,
+    plot_network_geometry,
+    plot_od_pair_labels,
+)
 from demandify.export.custom_formats import URBDataExporter
 from demandify.utils.data_quality import assess_data_quality
 from demandify.offline_data import (
@@ -491,6 +495,10 @@ class CalibrationPipeline:
         # Stage 5: Initialize demand model
         self._report_progress(5, "Init Demand", "Initializing demand generation...")
         demand_gen, od_pairs, departure_bins = self._initialize_demand(network_file)
+        try:
+            self._write_od_selection_plot(network_file, od_pairs)
+        except Exception as e:
+            logger.warning(f"Failed to create OD selection visualization: {e}")
         self._report_progress(5, "Init Demand", f"✓ Created {len(od_pairs)} OD pairs")
 
         # Stage 6: Calibrate demand
@@ -1234,6 +1242,20 @@ class CalibrationPipeline:
             vmax=shared_vmax,
         )
 
+    def _write_od_selection_plot(
+        self,
+        network_file: Path,
+        od_pairs: List[Tuple[str, str]],
+    ) -> None:
+        """Write OD selection map with per-pair colors and lowercase edge-role labels."""
+        plots_dir = self.output_dir / "plots"
+        plot_od_pair_labels(
+            network_file=network_file,
+            output_file=plots_dir / "network_selected_od_pairs.png",
+            od_pairs=od_pairs,
+            title=f"Selected ODs ({len(od_pairs)})",
+        )
+
     def _build_rerun_cli_command(self) -> str:
         """Build a reproducible CLI command for this exact run configuration."""
         cmd_parts = ["demandify", "run"]
@@ -1522,6 +1544,7 @@ class CalibrationPipeline:
                 "traffic_data_raw_csv": "data/traffic_data_raw.csv",
                 "observed_speed_heatmap_png": "plots/network_observed_speed_heatmap.png",
                 "simulated_speed_heatmap_png": "plots/network_simulated_speed_heatmap.png",
+                "selected_od_pairs_png": "plots/network_selected_od_pairs.png",
                 "report_html": "report.html",
                 "metadata_json": "run_meta.json",
                 "plots_dir": "plots",
