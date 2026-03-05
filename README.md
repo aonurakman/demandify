@@ -334,14 +334,15 @@ MIT
 
 ## Citation
 
-If you use this software for your research, please consider using the below citation.
+If you use this software for your research, please consider using the citation below.
+The canonical metadata for GitHub's "Cite this repository" is in `CITATION.cff`.
 
 ```bibtex
 @software{demandify_2026,
   author       = {{Ahmet Onur Akman}},
-  title        = {{demandify}: Calibrate SUMO traffic scenarios against real-world congestion using genetic algorithms},
+  title        = {{demandify: Calibrate SUMO traffic scenarios against real-world congestion using genetic algorithms}},
   year         = {2026},
-  version      = {0.0.3},
+  version      = {0.0.4},
   publisher    = {PyPI},
   url          = {https://pypi.org/project/demandify/},
   repository   = {https://github.com/aonurakman/demandify},
