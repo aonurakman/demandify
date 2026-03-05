@@ -26,6 +26,10 @@ class DemandGenerator:
     THROUGH_TRAFFIC_SHARE = 0.7
     PREFERRED_BOUNDARY_ROLE_BOOST = 2.3
     OPPOSITE_BOUNDARY_ROLE_FACTOR = 0.5
+    BOUNDARY_SCARCITY_EXPONENT = 0.5
+    BOUNDARY_ADAPTIVE_GAIN_MIN = 0.6
+    BOUNDARY_ADAPTIVE_GAIN_MAX = 12.0
+    BOUNDARY_ADAPTIVE_EPS = 1e-9
     BOUNDARY_MARGIN_RATIO = 0.08
     BOUNDARY_MARGIN_MIN_METERS = 25.0
     BOUNDARY_MARGIN_MAX_METERS = 200.0
@@ -247,15 +251,47 @@ class DemandGenerator:
             edge_roles = {edge_id: "internal" for edge_id in edges}
 
         role_counts = Counter(edge_roles.values())
+        role_masses = self._compute_role_masses(edges, base_weights, edge_roles)
         has_boundary_bias = role_counts.get("incoming", 0) > 0 and role_counts.get("outgoing", 0) > 0
         if has_boundary_bias:
+            origin_bias_meta = self._compute_boundary_bias_meta(role_masses, preferred_role="incoming")
+            destination_bias_meta = self._compute_boundary_bias_meta(role_masses, preferred_role="outgoing")
             origin_probs = self._normalize_weights(
-                self._apply_boundary_role_bias(edges, base_weights, edge_roles, preferred_role="incoming")
+                self._apply_boundary_role_bias(
+                    edges,
+                    base_weights,
+                    edge_roles,
+                    preferred_role="incoming",
+                    bias_meta=origin_bias_meta,
+                )
             )
             destination_probs = self._normalize_weights(
-                self._apply_boundary_role_bias(edges, base_weights, edge_roles, preferred_role="outgoing")
+                self._apply_boundary_role_bias(
+                    edges,
+                    base_weights,
+                    edge_roles,
+                    preferred_role="outgoing",
+                    bias_meta=destination_bias_meta,
+                )
+            )
+            total_mass = max(float(role_masses.get("total", 0.0)), self.BOUNDARY_ADAPTIVE_EPS)
+            logger.debug(
+                "Adaptive OD boundary bias: role_mass_share [incoming=%.4f, outgoing=%.4f, internal=%.4f], "
+                "origin [gain=%.3f, preferred_factor=%.3f, opposite_factor=%.3f], "
+                "destination [gain=%.3f, preferred_factor=%.3f, opposite_factor=%.3f]",
+                float(role_masses.get("incoming", 0.0)) / total_mass,
+                float(role_masses.get("outgoing", 0.0)) / total_mass,
+                float(role_masses.get("internal", 0.0)) / total_mass,
+                float(origin_bias_meta["gain"]),
+                float(origin_bias_meta["preferred_factor"]),
+                float(origin_bias_meta["opposite_factor"]),
+                float(destination_bias_meta["gain"]),
+                float(destination_bias_meta["preferred_factor"]),
+                float(destination_bias_meta["opposite_factor"]),
             )
         else:
+            origin_bias_meta = None
+            destination_bias_meta = None
             origin_probs = list(base_probs)
             destination_probs = list(base_probs)
 
@@ -267,8 +303,11 @@ class DemandGenerator:
         return {
             "edge_roles": edge_roles,
             "role_counts": role_counts,
+            "role_masses": role_masses,
             "boundary_margin_m": boundary_margin,
             "has_boundary_bias": has_boundary_bias,
+            "origin_bias_meta": origin_bias_meta,
+            "destination_bias_meta": destination_bias_meta,
             "edge_index": edge_index,
             "base_probs": base_probs,
             "origin_probs": origin_probs,
@@ -283,18 +322,80 @@ class DemandGenerator:
         base_weights: List[float],
         edge_roles: Dict[str, str],
         preferred_role: str,
+        bias_meta: Optional[Dict[str, float]] = None,
     ) -> List[float]:
         """Bias weights toward preferred boundary roles while keeping internal edges alive."""
+        if bias_meta is None:
+            role_masses = self._compute_role_masses(edges, base_weights, edge_roles)
+            bias_meta = self._compute_boundary_bias_meta(role_masses, preferred_role)
+
+        preferred_factor = float(bias_meta["preferred_factor"])
+        opposite_factor = float(bias_meta["opposite_factor"])
+
         biased_weights = []
         for edge_id, base_weight in zip(edges, base_weights):
             role = edge_roles.get(edge_id, "internal")
             factor = 1.0
             if role == preferred_role:
-                factor = self.PREFERRED_BOUNDARY_ROLE_BOOST
+                factor = preferred_factor
             elif role in {"incoming", "outgoing"}:
-                factor = self.OPPOSITE_BOUNDARY_ROLE_FACTOR
+                factor = opposite_factor
             biased_weights.append(base_weight * factor)
         return biased_weights
+
+    @staticmethod
+    def _compute_role_masses(
+        edges: List[str],
+        base_weights: List[float],
+        edge_roles: Dict[str, str],
+    ) -> Dict[str, float]:
+        """Compute total weighted mass for each role and overall."""
+        role_masses: Dict[str, float] = {"incoming": 0.0, "outgoing": 0.0, "internal": 0.0}
+        for edge_id, base_weight in zip(edges, base_weights):
+            role = edge_roles.get(edge_id, "internal")
+            role_masses[role] = role_masses.get(role, 0.0) + float(base_weight)
+        role_masses["total"] = float(sum(base_weights))
+        return role_masses
+
+    @classmethod
+    def _compute_adaptive_boundary_gain(cls, preferred_mass: float, total_mass: float) -> float:
+        """Compute clipped adaptive gain based on preferred-role scarcity."""
+        eps = float(cls.BOUNDARY_ADAPTIVE_EPS)
+        preferred_mass = float(preferred_mass)
+        total_mass = float(total_mass)
+        if preferred_mass <= eps or total_mass <= eps:
+            return 1.0
+
+        non_preferred_mass = max(0.0, total_mass - preferred_mass)
+        scarcity = (non_preferred_mass + eps) / (preferred_mass + eps)
+        gain = scarcity ** float(cls.BOUNDARY_SCARCITY_EXPONENT)
+        return float(min(cls.BOUNDARY_ADAPTIVE_GAIN_MAX, max(cls.BOUNDARY_ADAPTIVE_GAIN_MIN, gain)))
+
+    @classmethod
+    def _compute_boundary_bias_meta(
+        cls,
+        role_masses: Dict[str, float],
+        preferred_role: str,
+    ) -> Dict[str, float]:
+        """Compute adaptive gain and multiplicative factors for a preferred role."""
+        total_mass = float(role_masses.get("total", 0.0))
+        preferred_mass = float(role_masses.get(preferred_role, 0.0))
+        eps = float(cls.BOUNDARY_ADAPTIVE_EPS)
+
+        if preferred_mass <= eps or total_mass <= eps:
+            gain = 1.0
+            scarcity = 1.0
+        else:
+            gain = cls._compute_adaptive_boundary_gain(preferred_mass, total_mass)
+            non_preferred_mass = max(0.0, total_mass - preferred_mass)
+            scarcity = (non_preferred_mass + eps) / (preferred_mass + eps)
+
+        return {
+            "gain": float(gain),
+            "scarcity": float(scarcity),
+            "preferred_factor": float(cls.PREFERRED_BOUNDARY_ROLE_BOOST * gain),
+            "opposite_factor": float(cls.OPPOSITE_BOUNDARY_ROLE_FACTOR / gain),
+        }
 
     def _classify_edge_boundary_role(
         self,

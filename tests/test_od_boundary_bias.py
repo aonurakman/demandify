@@ -2,6 +2,8 @@
 
 from collections import Counter
 
+import pytest
+
 from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.network import SUMONetwork
 
@@ -129,3 +131,78 @@ def test_od_sampling_profiles_bias_boundary_edges_without_eliminating_internal_t
     assert origin_role_counts["incoming"] > origin_role_counts["internal"]
     assert destination_role_counts["outgoing"] > destination_role_counts["internal"]
     assert origin_role_counts["internal"] > 0 or destination_role_counts["internal"] > 0
+
+
+def test_adaptive_boundary_gain_handles_sparse_balanced_and_extreme_cases():
+    balanced_gain = DemandGenerator._compute_adaptive_boundary_gain(preferred_mass=500.0, total_mass=1000.0)
+    sparse_gain = DemandGenerator._compute_adaptive_boundary_gain(preferred_mass=20.0, total_mass=1000.0)
+    extreme_gain = DemandGenerator._compute_adaptive_boundary_gain(preferred_mass=1e-6, total_mass=1000.0)
+
+    assert balanced_gain == pytest.approx(1.0, abs=1e-9)
+    assert sparse_gain > 1.0
+    assert sparse_gain < DemandGenerator.BOUNDARY_ADAPTIVE_GAIN_MAX
+    assert extreme_gain == pytest.approx(DemandGenerator.BOUNDARY_ADAPTIVE_GAIN_MAX, abs=1e-9)
+
+    # Robust fallback for near-zero preferred/total mass.
+    assert DemandGenerator._compute_adaptive_boundary_gain(preferred_mass=0.0, total_mass=1000.0) == 1.0
+    assert DemandGenerator._compute_adaptive_boundary_gain(preferred_mass=10.0, total_mass=0.0) == 1.0
+
+
+def test_adaptive_boundary_bias_lifts_sparse_boundary_roles_without_collapsing_internal(tmp_path):
+    network = SUMONetwork(_write_boundary_biased_network(tmp_path))
+    demand_gen = DemandGenerator(network, seed=2026)
+
+    # Synthetic skewed role distribution: few boundary edges and many internal edges.
+    edges = ["in_sparse", "out_sparse"] + [f"int_{idx}" for idx in range(12)]
+    edge_roles = {"in_sparse": "incoming", "out_sparse": "outgoing"}
+    edge_roles.update({edge_id: "internal" for edge_id in edges[2:]})
+    base_weights = [15.0, 15.0] + [120.0] * 12
+
+    adaptive_origin = demand_gen._normalize_weights(
+        demand_gen._apply_boundary_role_bias(
+            edges,
+            base_weights,
+            edge_roles,
+            preferred_role="incoming",
+        )
+    )
+    adaptive_destination = demand_gen._normalize_weights(
+        demand_gen._apply_boundary_role_bias(
+            edges,
+            base_weights,
+            edge_roles,
+            preferred_role="outgoing",
+        )
+    )
+
+    def _static_probs(preferred_role: str):
+        static_weights = []
+        for edge_id, base_weight in zip(edges, base_weights):
+            role = edge_roles[edge_id]
+            factor = 1.0
+            if role == preferred_role:
+                factor = demand_gen.PREFERRED_BOUNDARY_ROLE_BOOST
+            elif role in {"incoming", "outgoing"}:
+                factor = demand_gen.OPPOSITE_BOUNDARY_ROLE_FACTOR
+            static_weights.append(base_weight * factor)
+        return demand_gen._normalize_weights(static_weights)
+
+    static_origin = _static_probs(preferred_role="incoming")
+    static_destination = _static_probs(preferred_role="outgoing")
+
+    def _role_share(probabilities, role_name: str) -> float:
+        return sum(
+            probability
+            for edge_id, probability in zip(edges, probabilities)
+            if edge_roles[edge_id] == role_name
+        )
+
+    adaptive_origin_incoming = _role_share(adaptive_origin, "incoming")
+    adaptive_destination_outgoing = _role_share(adaptive_destination, "outgoing")
+    static_origin_incoming = _role_share(static_origin, "incoming")
+    static_destination_outgoing = _role_share(static_destination, "outgoing")
+
+    assert adaptive_origin_incoming > static_origin_incoming + 0.05
+    assert adaptive_destination_outgoing > static_destination_outgoing + 0.05
+    assert _role_share(adaptive_origin, "internal") > 0.50
+    assert _role_share(adaptive_destination, "internal") > 0.50
