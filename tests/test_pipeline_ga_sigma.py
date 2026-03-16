@@ -15,11 +15,14 @@ def test_pipeline_passes_user_sigma_to_ga(monkeypatch, tmp_path):
     class FakeGA:
         def __init__(self, **kwargs):
             captured.update(kwargs)
-            self.last_best_selection_mode = "elite_slice_secondary"
-            self.last_best_selection_value = 0.25
-            self.last_best_raw_loss = 1.0
-            self.last_best_selected_raw_loss = 1.0
-            self.last_best_selected_e_loss = 1.0
+            self.last_best_selection_mode = "mae_elite_lexicographic"
+            self.last_best_mae = 1.0
+            self.last_best_mae_candidate_mae = 1.0
+            self.last_best_mae_candidate_failure_rate = 0.5
+            self.last_best_mae_candidate_fail_total = 2
+            self.last_best_mae_candidate_magnitude = 5.0
+            self.last_best_selected_mae = 1.0
+            self.last_best_selected_failure_rate = 0.25
             self.last_best_selected_fail_total = 0
             self.last_best_selected_magnitude = 0.0
 
@@ -70,11 +73,14 @@ def test_pipeline_always_checkpoints_first_generation(monkeypatch, tmp_path):
 
     class FakeGA:
         def __init__(self, **kwargs):
-            self.last_best_selection_mode = "elite_slice_secondary"
-            self.last_best_selection_value = 0.25
-            self.last_best_raw_loss = 1.0
-            self.last_best_selected_raw_loss = 1.0
-            self.last_best_selected_e_loss = 1.0
+            self.last_best_selection_mode = "mae_elite_lexicographic"
+            self.last_best_mae = 1.0
+            self.last_best_mae_candidate_mae = 1.0
+            self.last_best_mae_candidate_failure_rate = 0.5
+            self.last_best_mae_candidate_fail_total = 2
+            self.last_best_mae_candidate_magnitude = 5.0
+            self.last_best_selected_mae = 1.0
+            self.last_best_selected_failure_rate = 0.25
             self.last_best_selected_fail_total = 0
             self.last_best_selected_magnitude = 1.0
 
@@ -129,3 +135,45 @@ def test_pipeline_always_checkpoints_first_generation(monkeypatch, tmp_path):
     )
 
     assert saved_generations == [1, 10]
+
+
+def test_initialize_demand_passes_worker_count_to_od_selection(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeDemandGenerator:
+        def __init__(self, network, seed):
+            captured["seed"] = seed
+
+        def select_od_pairs(self, **kwargs):
+            captured.update(kwargs)
+            return [("o1", "d1")]
+
+    monkeypatch.setattr(pipeline_module, "DemandGenerator", FakeDemandGenerator)
+    monkeypatch.setattr(
+        pipeline_module,
+        "SUMONetwork",
+        lambda _path: object(),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "get_config",
+        lambda: SimpleNamespace(cache_dir=tmp_path / "cache", default_parallel_workers=3),
+    )
+
+    pipeline = pipeline_module.CalibrationPipeline(
+        bbox=(20.0, 50.0, 20.1, 50.1),
+        window_minutes=15,
+        seed=42,
+        output_dir=tmp_path / "run_od_workers",
+        run_id="od_workers",
+    )
+
+    network_file = tmp_path / "network.net.xml"
+    network_file.write_text("<net></net>", encoding="utf-8")
+
+    _demand_gen, od_pairs, departure_bins = pipeline._initialize_demand(network_file)
+
+    assert od_pairs == [("o1", "d1")]
+    assert departure_bins
+    assert captured["min_connection_paths"] == 1
+    assert captured["num_workers"] == 3

@@ -3,7 +3,7 @@ Genetic algorithm for demand calibration.
 Fully seeded for reproducibility with parallel evaluation.
 
 Advanced features:
-- Elite-slice parent selection (E -> balanced secondary ranking)
+- MAE-elite lexicographic selection (MAE -> failure rate -> magnitude)
 - Random immigrants: inject random individuals each generation to maintain diversity
 - Assortative mating: prefer crossover between dissimilar parents
 - Deterministic crowding: offspring replace most similar parents
@@ -13,6 +13,7 @@ Advanced features:
 
 import logging
 from contextlib import nullcontext
+from fractions import Fraction
 from multiprocessing import Pool, cpu_count
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -64,7 +65,7 @@ class GeneticAlgorithm:
             mutation_indpb: Mutation probability (per gene)
             num_workers: Number of parallel workers (None = cpu_count)
             immigrant_rate: Fraction of population replaced by random immigrants (0-1)
-            elite_top_pct: Fraction used to define the top-E elite slice size (0-1)
+            elite_top_pct: Fraction used to define the top-MAE elite slice size (0-1)
             magnitude_penalty_weight: Deprecated compatibility parameter (unused)
             stagnation_patience: Generations without improvement before mutation boost
             stagnation_boost: Multiplier for mutation sigma/rate on stagnation
@@ -98,11 +99,19 @@ class GeneticAlgorithm:
         self._mutation_boosted = False
         self.last_best_selection_mode = None
         self.last_best_selection_value = None
+        self.last_best_mae = None
+        self.last_best_mae_candidate_mae = None
+        self.last_best_mae_candidate_failure_rate = None
+        self.last_best_mae_candidate_fail_total = None
+        self.last_best_mae_candidate_magnitude = None
+        self.last_best_selected_mae = None
+        self.last_best_selected_failure_rate = None
+        self.last_best_selected_fail_total = None
+        self.last_best_selected_magnitude = None
+        # Deprecated compatibility attributes. These now alias MAE-based values.
         self.last_best_raw_loss = None
         self.last_best_selected_raw_loss = None
         self.last_best_selected_e_loss = None
-        self.last_best_selected_fail_total = None
-        self.last_best_selected_magnitude = None
 
         # Seeded RNG
         self.rng = np.random.RandomState(seed)
@@ -233,11 +242,19 @@ class GeneticAlgorithm:
             return float("inf")
         return self._safe_float(e_loss, default=float("inf"))
 
-    def _individual_raw_loss(self, individual) -> float:
-        """Get raw objective loss from fitness with invalid/error protection."""
+    def _individual_mae(self, individual) -> float:
+        """Get MAE from metrics or fitness with invalid/error protection."""
         if not individual.fitness.valid or self._has_worker_error(individual):
             return float("inf")
+        metrics = getattr(individual, "metrics", {}) or {}
+        mae = metrics.get("mae")
+        if mae is not None:
+            return self._safe_float(mae, default=float("inf"))
         return self._safe_float(individual.fitness.values[0], default=float("inf"))
+
+    def _individual_raw_loss(self, individual) -> float:
+        """Backward-compatible alias for the MAE fitness value."""
+        return self._individual_mae(individual)
 
     def _individual_fail_total(self, individual) -> int:
         """Get fail_total (routing failures + teleports) with backward-compatible fallback."""
@@ -256,133 +273,107 @@ class GeneticAlgorithm:
             return 1
         return fallback_total
 
-    def _is_feasible_individual(self, individual) -> bool:
-        """
-        Strict feasibility predicate used by parent selection and best tracking.
-
-        Feasible requires:
-            - valid finite fitness
-            - no explicit worker error marker
-            - fail_total == 0 (with backward-compatible fallback)
-        """
-        if not individual.fitness.valid:
-            return False
-        raw_fitness = self._safe_float(individual.fitness.values[0], default=float("inf"))
-        if not np.isfinite(raw_fitness):
-            return False
-        if self._has_worker_error(individual):
-            return False
-        return self._individual_fail_total(individual) == 0
-
     @staticmethod
     def _individual_magnitude(individual) -> float:
         """Get genome magnitude for magnitude pressure."""
         return float(sum(individual))
 
+    def _individual_total_vehicles(self, individual) -> int:
+        """Get total vehicles with fallback to genome magnitude."""
+        metrics = getattr(individual, "metrics", {}) or {}
+        total_vehicles = metrics.get("total_vehicles")
+        if total_vehicles is not None:
+            parsed = self._safe_int(total_vehicles, default=0)
+            if parsed >= 0:
+                return parsed
+        return max(0, self._safe_int(self._individual_magnitude(individual), default=0))
+
+    def _individual_failure_rate_key(self, individual) -> Tuple[int, Fraction]:
+        """Return exact sortable failure-rate key using integer arithmetic semantics."""
+        if not individual.fitness.valid or self._has_worker_error(individual):
+            return (1, Fraction(0, 1))
+
+        fail_total = max(0, self._individual_fail_total(individual))
+        total_vehicles = self._individual_total_vehicles(individual)
+        if total_vehicles <= 0:
+            if fail_total <= 0:
+                return (0, Fraction(0, 1))
+            return (1, Fraction(0, 1))
+        return (0, Fraction(fail_total, total_vehicles))
+
+    def _individual_failure_rate(self, individual) -> float:
+        """Get numeric failure rate for reporting."""
+        rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
+        if rate_is_inf:
+            return float("inf")
+        return float(rate_fraction)
+
     def _primary_sort_key(self, individual):
-        """Primary ordering used to define the elite slice."""
+        """Primary ordering used to define the MAE elite slice."""
+        rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
         return (
-            self._individual_e_loss(individual),
-            self._individual_raw_loss(individual),
-            self._individual_fail_total(individual),
+            self._individual_mae(individual),
+            rate_is_inf,
+            rate_fraction,
             self._individual_magnitude(individual),
         )
 
-    def _criterion_rank_map(self, candidates, value_fn) -> Dict[int, float]:
-        """Normalize one criterion's ranks over the elite slice to [0, 1]."""
-        if not candidates:
-            return {}
-
-        ordered = sorted(
-            candidates,
-            key=lambda ind: (
-                value_fn(ind),
-                self._individual_e_loss(ind),
-                self._individual_fail_total(ind),
-                self._individual_magnitude(ind),
-                self._individual_raw_loss(ind),
-            ),
-        )
-        denominator = max(1, len(ordered) - 1)
-        return {id(ind): idx / denominator for idx, ind in enumerate(ordered)}
-
-    def _selection_sort_key(self, individual, score_by_id: Dict[int, float]):
-        """Deterministic ordering inside the elite slice."""
+    def _elite_selection_sort_key(self, individual):
+        """Deterministic lexicographic ordering inside the MAE elite."""
+        rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
         return (
-            score_by_id.get(id(individual), float("inf")),
-            self._individual_e_loss(individual),
-            self._individual_fail_total(individual),
+            rate_is_inf,
+            rate_fraction,
             self._individual_magnitude(individual),
-            self._individual_raw_loss(individual),
+            self._individual_mae(individual),
         )
 
-    def _select_best_candidate(self, candidates, score_by_id):
-        """Pick the best elite-slice candidate under the secondary score."""
+    def _select_best_candidate(self, candidates, key_by_id):
+        """Pick the best MAE-elite candidate under the lexicographic key."""
         if not candidates:
             return None
-        return min(candidates, key=lambda ind: self._selection_sort_key(ind, score_by_id))
+        return min(candidates, key=lambda ind: key_by_id.get(id(ind), self._elite_selection_sort_key(ind)))
 
     def _build_parent_selection_plan(self, population) -> Dict[str, Any]:
         """
         Build a per-generation parent-selection plan.
 
         Priority:
-            1) Sort full population by flow-fit error E
+            1) Sort full population by MAE
             2) Keep the top elite slice defined by elite_top_pct
-            3) Rank that slice by equally weighted normalized ranks of:
-               - E
-               - fail_total
-               - genome magnitude
+            3) Within that elite, prefer:
+               - lower failure_rate
+               - lower magnitude
+               - lower exact MAE
         """
         pop_size = len(population)
         if pop_size == 0:
             return {
                 "mode": "empty",
                 "candidate_pool": [],
-                "score_by_id": {},
-                "component_scores_by_id": {},
+                "selection_key_by_id": {},
                 "population_size": 0,
                 "elite_count": 0,
-                "feasible_count": 0,
             }
 
         elite_count = max(1, int(self.elite_top_pct * pop_size))
-        e_sorted = sorted(population, key=self._primary_sort_key)
-        elite_slice = e_sorted[:elite_count]
-        feasible_count = sum(1 for ind in population if self._is_feasible_individual(ind))
-
-        e_rank_by_id = self._criterion_rank_map(elite_slice, self._individual_e_loss)
-        fail_rank_by_id = self._criterion_rank_map(elite_slice, self._individual_fail_total)
-        magnitude_rank_by_id = self._criterion_rank_map(elite_slice, self._individual_magnitude)
-
-        score_by_id: Dict[int, float] = {}
-        component_scores_by_id: Dict[int, Dict[str, float]] = {}
-        for ind in elite_slice:
-            secondary_score = (
-                e_rank_by_id[id(ind)]
-                + fail_rank_by_id[id(ind)]
-                + magnitude_rank_by_id[id(ind)]
-            ) / 3.0
-            score_by_id[id(ind)] = secondary_score
-            component_scores_by_id[id(ind)] = {
-                "e_rank_score": e_rank_by_id[id(ind)],
-                "fail_rank_score": fail_rank_by_id[id(ind)],
-                "magnitude_rank_score": magnitude_rank_by_id[id(ind)],
-                "secondary_score": secondary_score,
-            }
-
-        return {
-            "mode": "elite_slice_secondary",
-            "candidate_pool": elite_slice,
-            "score_by_id": score_by_id,
-            "component_scores_by_id": component_scores_by_id,
-            "population_size": pop_size,
-            "elite_count": elite_count,
-            "feasible_count": feasible_count,
+        mae_sorted = sorted(population, key=self._primary_sort_key)
+        elite_slice = mae_sorted[:elite_count]
+        selection_key_by_id = {
+            id(ind): self._elite_selection_sort_key(ind)
+            for ind in elite_slice
         }
 
-    def _tournament_select_by_score(self, candidates, score_by_id, k, tournsize: int = 3):
-        """Tournament selection minimizing explicit score (without mutating fitness)."""
+        return {
+            "mode": "mae_elite_lexicographic",
+            "candidate_pool": elite_slice,
+            "selection_key_by_id": selection_key_by_id,
+            "population_size": pop_size,
+            "elite_count": elite_count,
+        }
+
+    def _tournament_select_by_key(self, candidates, key_by_id, k, tournsize: int = 3):
+        """Tournament selection minimizing explicit lexicographic key."""
         if not candidates:
             return []
 
@@ -390,30 +381,35 @@ class GeneticAlgorithm:
         selected = []
         for _ in range(k):
             aspirants = [candidates[int(self.rng.randint(0, len(candidates)))] for _ in range(tournsize)]
-            winner = min(aspirants, key=lambda ind: score_by_id.get(id(ind), float("inf")))
+            winner = min(
+                aspirants,
+                key=lambda ind: key_by_id.get(id(ind), self._elite_selection_sort_key(ind)),
+            )
             selected.append(winner)
         return selected
 
     def _select_parents(self, population, tournsize: int = 3):
-        """Select parents using elite-slice secondary ranking for this generation."""
+        """Select parents from the MAE elite using lexicographic preferences."""
         plan = self._build_parent_selection_plan(population)
-        parents = self._tournament_select_by_score(
+        parents = self._tournament_select_by_key(
             plan["candidate_pool"],
-            plan["score_by_id"],
+            plan["selection_key_by_id"],
             len(population),
             tournsize=tournsize,
         )
         return parents, plan
 
     def _select_survival_elites(self, population, k: int):
-        """Keep elites using the same elite-slice ranking as parent selection."""
+        """Keep elites using the same MAE-elite lexicographic ordering as parent selection."""
         if k <= 0 or not population:
             return []
 
         plan = self._build_parent_selection_plan(population)
         ranked_slice = sorted(
             plan["candidate_pool"],
-            key=lambda ind: self._selection_sort_key(ind, plan["score_by_id"]),
+            key=lambda ind: plan["selection_key_by_id"].get(
+                id(ind), self._elite_selection_sort_key(ind)
+            ),
         )
         if len(ranked_slice) >= k:
             return ranked_slice[:k]
@@ -424,6 +420,12 @@ class GeneticAlgorithm:
         ]
         return ranked_slice + remainder[: max(0, k - len(ranked_slice))]
 
+    @staticmethod
+    def _exclude_by_identity(population, excluded):
+        """Return population members excluding only exact object identities."""
+        excluded_ids = {id(ind) for ind in excluded}
+        return [ind for ind in population if id(ind) not in excluded_ids]
+
     def _clone_individual_snapshot(self, individual):
         """Clone an individual with stable fitness/metrics snapshot."""
         cloned = self.toolbox.clone(individual)
@@ -433,101 +435,106 @@ class GeneticAlgorithm:
             cloned.metrics = dict(individual.metrics)
         return cloned
 
+    def _individual_summary(self, individual, mode: Optional[str] = None) -> Dict[str, float]:
+        """Build a compact metrics summary for a tracked individual."""
+        summary = {
+            "mae": float(self._individual_mae(individual)),
+            "failure_rate": float(self._individual_failure_rate(individual)),
+            "fail_total": int(self._individual_fail_total(individual)),
+            "magnitude": float(self._individual_magnitude(individual)),
+        }
+        if mode is not None:
+            summary["mode"] = mode
+        return summary
+
     def _update_best_trackers(
         self,
         population,
         overall_best_ind,
         overall_best_loss: float,
-        overall_selected_ind,
-        overall_selected_state: Optional[Dict[str, float]],
     ):
-        """Update best raw and best selected trackers from a population snapshot."""
+        """Update best-MAE tracker from a population snapshot."""
         for ind in population:
             if not ind.fitness.valid:
                 continue
 
-            raw_loss = self._individual_raw_loss(ind)
-            if raw_loss < overall_best_loss:
-                overall_best_loss = raw_loss
+            mae = self._individual_mae(ind)
+            if mae < overall_best_loss:
+                overall_best_loss = mae
                 overall_best_ind = self._clone_individual_snapshot(ind)
+
+        return overall_best_ind, overall_best_loss
+
+    def _select_generation_representative(self, population):
+        """Select the per-generation representative using the MAE-elite rule."""
+        if not population:
+            return None, None
 
         selection_plan = self._build_parent_selection_plan(population)
         selected_ind = self._select_best_candidate(
             selection_plan["candidate_pool"],
-            selection_plan["score_by_id"],
+            selection_plan["selection_key_by_id"],
         )
-        if selected_ind is not None:
-            selected_state = {
-                "mode": selection_plan["mode"],
-                "secondary_score": float(selection_plan["score_by_id"][id(selected_ind)]),
-                "raw_loss": float(self._individual_raw_loss(selected_ind)),
-                "e_loss": float(self._individual_e_loss(selected_ind)),
-                "fail_total": int(self._individual_fail_total(selected_ind)),
-                "magnitude": float(self._individual_magnitude(selected_ind)),
-            }
-            selected_key = (
-                selected_state["secondary_score"],
-                selected_state["e_loss"],
-                selected_state["fail_total"],
-                selected_state["magnitude"],
-                selected_state["raw_loss"],
-            )
-            current_key = None
-            if overall_selected_state is not None:
-                current_key = (
-                    overall_selected_state["secondary_score"],
-                    overall_selected_state["e_loss"],
-                    overall_selected_state["fail_total"],
-                    overall_selected_state["magnitude"],
-                    overall_selected_state["raw_loss"],
-                )
-            if current_key is None or selected_key < current_key:
-                overall_selected_state = selected_state
-                overall_selected_ind = self._clone_individual_snapshot(selected_ind)
+        if selected_ind is None:
+            return None, None
 
-        return (
-            overall_best_ind,
-            overall_best_loss,
-            overall_selected_ind,
-            overall_selected_state,
+        return self._clone_individual_snapshot(selected_ind), self._individual_summary(
+            selected_ind,
+            mode=selection_plan["mode"],
         )
+
+    def _select_best_generation_representative(self, representatives):
+        """Apply a global MAE-elite pass over generation representatives."""
+        if not representatives:
+            return None, None
+
+        elite_count = max(1, int(self.elite_top_pct * len(representatives)))
+        mae_sorted = sorted(
+            representatives,
+            key=lambda item: (
+                item[1]["mae"],
+                self._individual_failure_rate_key(item[0]),
+                item[1]["magnitude"],
+            ),
+        )
+        mae_elite = mae_sorted[:elite_count]
+        best_ind, best_state = min(
+            mae_elite,
+            key=lambda item: (
+                self._individual_failure_rate_key(item[0]),
+                item[1]["magnitude"],
+                item[1]["mae"],
+            ),
+        )
+        return best_ind, dict(best_state)
 
     def _resolve_return_best(
         self,
         population,
         overall_best_ind,
         overall_best_loss: float,
-        overall_selected_ind,
-        overall_selected_state: Optional[Dict[str, float]],
+        generation_representatives,
     ):
         """
-        Resolve final best individual with elite-slice secondary policy.
+        Resolve final best individual with MAE-elite lexicographic policy.
 
         Returns:
             (best_individual, selected_state)
         """
-        if overall_selected_ind is not None and overall_selected_state is not None:
-            return overall_selected_ind, overall_selected_state
+        selected_ind, selected_state = self._select_best_generation_representative(
+            generation_representatives
+        )
+        if selected_ind is not None and selected_state is not None:
+            return selected_ind, selected_state
 
         if overall_best_ind is not None:
-            return overall_best_ind, {
-                "mode": "raw_fallback",
-                "secondary_score": float("inf"),
-                "raw_loss": float(overall_best_loss),
-                "e_loss": float(self._individual_e_loss(overall_best_ind)),
-                "fail_total": int(self._individual_fail_total(overall_best_ind)),
-                "magnitude": float(self._individual_magnitude(overall_best_ind)),
-            }
+            return overall_best_ind, self._individual_summary(
+                overall_best_ind,
+                mode="mae_fallback",
+            )
 
         best_ind = tools.selBest(population, 1)[0]
-        return best_ind, {
-            "mode": "raw_fallback",
-            "secondary_score": float("inf"),
-            "raw_loss": float(best_ind.fitness.values[0]),
-            "e_loss": float(self._individual_e_loss(best_ind)),
-            "fail_total": int(self._individual_fail_total(best_ind)),
-            "magnitude": float(self._individual_magnitude(best_ind)),
-        }
+        return best_ind, self._individual_summary(best_ind, mode="mae_fallback")
 
     @staticmethod
     def _invalidate_individual(individual):
@@ -579,7 +586,7 @@ class GeneticAlgorithm:
             early_stopping_epsilon: Minimum improvement threshold
             generation_callback: Optional callback executed once per generation with
                                 (generation_idx, selected_genome_snapshot,
-                                 selected_raw_loss, selected_metrics).
+                                 selected_mae, selected_metrics).
                                 Errors in callback are caught and logged.
 
         Returns:
@@ -590,7 +597,7 @@ class GeneticAlgorithm:
         )
         logger.info(
             f"Advanced GA: immigrants={self.immigrant_rate:.0%}, elite_top={self.elite_top_pct:.0%}, "
-            "elite_secondary=(E rank + fail rank + magnitude rank)/3, "
+            "elite_secondary=(failure_rate -> magnitude -> MAE within MAE elite), "
             f"stagnation_K={self.stagnation_patience}, "
             f"assortative={self.assortative_mating}, crowding={self.deterministic_crowding}"
         )
@@ -613,12 +620,12 @@ class GeneticAlgorithm:
         generation_stats = []
         best_loss_for_stagnation = float("inf")
         generations_without_improvement = 0
-        # Track the actual best individual across all generations (on raw loss only)
+        # Track the actual best individual across all generations by MAE.
         overall_best_ind = None
         overall_best_loss = float("inf")
-        # Track the overall best selected individual using the elite-slice ranking.
-        overall_selected_ind = None
-        overall_selected_state = None
+        # Track each generation representative so final selection can apply
+        # the same staged rule globally across generations.
+        generation_representatives = []
         selection_mode_prev = None
 
         # Use in-process evaluation for workers=1 to maximize reproducibility
@@ -671,15 +678,14 @@ class GeneticAlgorithm:
             (
                 overall_best_ind,
                 overall_best_loss,
-                overall_selected_ind,
-                overall_selected_state,
             ) = self._update_best_trackers(
                 population,
                 overall_best_ind,
                 overall_best_loss,
-                overall_selected_ind,
-                overall_selected_state,
             )
+            initial_rep_ind, initial_rep_state = self._select_generation_representative(population)
+            if initial_rep_ind is not None and initial_rep_state is not None:
+                generation_representatives.append((initial_rep_ind, initial_rep_state))
 
             # Evolution loop
             for gen in range(self.num_generations):
@@ -711,16 +717,15 @@ class GeneticAlgorithm:
                     indpb=self.mutation_indpb,
                 )
 
-                # Parent selection uses a top-E elite slice with balanced secondary ranking.
+                # Parent selection uses a top-MAE elite slice with lexicographic preferences.
                 offspring, selection_plan = self._select_parents(population, tournsize=3)
                 offspring = list(map(self.toolbox.clone, offspring))
 
                 if selection_plan["mode"] != selection_mode_prev:
                     logger.info(
-                        "✅ Parent selection elite-slice ranking active at gen %s: elite_n=%s, fail_free_pop=%s/%s",
+                        "✅ Parent selection MAE-elite lexicographic active at gen %s: elite_n=%s/%s",
                         gen + 1,
                         selection_plan["elite_count"],
-                        selection_plan["feasible_count"],
                         selection_plan["population_size"],
                     )
                     selection_mode_prev = selection_plan["mode"]
@@ -782,7 +787,9 @@ class GeneticAlgorithm:
                     # Similarity-based replacement: each offspring replaces the
                     # most similar member of the *non-elite* population if it is
                     # fitter, preserving niche diversity.
-                    remaining = [ind for ind in population if ind not in elites]
+                    # Use identity-based exclusion so duplicate genomes are retained
+                    # unless they are the exact elite objects.
+                    remaining = self._exclude_by_identity(population, elites)
                     for child in offspring:
                         if not child.fitness.valid:
                             continue
@@ -816,37 +823,35 @@ class GeneticAlgorithm:
                 # Ensure population size is maintained
                 population = population[: self.population_size]
 
-                # --- Track overall best raw objective and best selected candidate ---
-                raw_fits = [ind.fitness.values[0] for ind in population]
+                # --- Track overall best MAE and best selected candidate ---
+                mae_values = [ind.fitness.values[0] for ind in population]
                 (
                     overall_best_ind,
                     overall_best_loss,
-                    overall_selected_ind,
-                    overall_selected_state,
                 ) = self._update_best_trackers(
                     population,
                     overall_best_ind,
                     overall_best_loss,
-                    overall_selected_ind,
-                    overall_selected_state,
                 )
 
-                # Stats use the selected individual's raw loss, while mean/std stay population-wide.
-                current_mean = float(np.mean(raw_fits))
-                current_std = float(np.std(raw_fits))
+                # Stats use the selected individual's MAE, while mean/std stay population-wide.
+                current_mean = float(np.mean(mae_values))
+                current_std = float(np.std(mae_values))
 
                 # Aggregate metrics for the generation's selected individual.
-                generation_selection_plan = self._build_parent_selection_plan(population)
-                best_ind_gen = self._select_best_candidate(
-                    generation_selection_plan["candidate_pool"],
-                    generation_selection_plan["score_by_id"],
-                )
+                best_ind_gen, best_gen_state = self._select_generation_representative(population)
                 if best_ind_gen is None:
-                    best_ind_gen = min(zip(population, raw_fits), key=lambda x: x[1])[0]
+                    best_ind_gen = min(zip(population, mae_values), key=lambda x: x[1])[0]
+                    best_gen_state = self._individual_summary(best_ind_gen, mode="mae_fallback")
+                if best_ind_gen is not None and best_gen_state is not None:
+                    generation_representatives.append(
+                        (self._clone_individual_snapshot(best_ind_gen), dict(best_gen_state))
+                    )
                 best_metrics = getattr(best_ind_gen, "metrics", {})
                 best_fail_total = self._individual_fail_total(best_ind_gen)
-                best_selected_loss = self._individual_raw_loss(best_ind_gen)
-                current_best = float(best_selected_loss)
+                best_failure_rate = self._individual_failure_rate(best_ind_gen)
+                best_selected_mae = self._individual_mae(best_ind_gen)
+                current_best = float(best_selected_mae)
 
                 # Genome magnitude stats
                 magnitudes = [sum(ind) for ind in population]
@@ -859,7 +864,7 @@ class GeneticAlgorithm:
 
                 # Aggregate population-level metrics
                 pop_zero_flows = []
-                pop_failures = []
+                pop_failure_rates = []
                 pop_fail_totals = []
                 for ind in population:
                     m = getattr(ind, "metrics", {})
@@ -869,8 +874,9 @@ class GeneticAlgorithm:
                         zf = self._safe_float(zero_flow_value, default=float("inf"))
                         if np.isfinite(zf):
                             pop_zero_flows.append(zf)
-                    if "routing_failures" in m:
-                        pop_failures.append(m["routing_failures"])
+                    failure_rate = self._individual_failure_rate(ind)
+                    if np.isfinite(failure_rate):
+                        pop_failure_rates.append(failure_rate)
                     pop_fail_totals.append(self._individual_fail_total(ind))
 
                 gen_stat = {
@@ -880,10 +886,10 @@ class GeneticAlgorithm:
                     "std_loss": current_std,
                     "best_magnitude": float(best_magnitude),
                     "mean_magnitude": float(mean_magnitude),
+                    "best_failure_rate": float(best_failure_rate) if np.isfinite(best_failure_rate) else None,
+                    "mean_failure_rate": float(np.mean(pop_failure_rates)) if pop_failure_rates else None,
                     "best_zero_flow": best_metrics.get("zero_flow_edges", None),
                     "mean_zero_flow": float(np.mean(pop_zero_flows)) if pop_zero_flows else None,
-                    "best_routing_failures": best_metrics.get("routing_failures", None),
-                    "mean_routing_failures": float(np.mean(pop_failures)) if pop_failures else None,
                     "best_fail_total": best_fail_total,
                     "mean_fail_total": float(np.mean(pop_fail_totals)) if pop_fail_totals else None,
                     "genotypic_diversity": float(genotypic_diversity),
@@ -899,14 +905,19 @@ class GeneticAlgorithm:
                 if best_metrics:
                     zero_flow = best_metrics.get("zero_flow_edges", "?")
                     avg_dur = best_metrics.get("avg_trip_duration", 0.0)
+                    if np.isfinite(best_failure_rate):
+                        failure_rate_str = f"{best_failure_rate * 100.0:.1f}%"
+                    else:
+                        failure_rate_str = "inf"
                     metric_str += (
                         f", ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, "
+                        f"FailRate={failure_rate_str}, "
                         f"FailTotal={best_fail_total}"
                     )
 
                 boost_str = " [BOOSTED]" if self._mutation_boosted else ""
                 logger.info(
-                    f"✅ Gen {gen+1}/{self.num_generations}: selected={current_best:.2f}, mean={current_mean:.2f}, "
+                    f"✅ Gen {gen+1}/{self.num_generations}: mae={current_best:.2f}, mean_mae={current_mean:.2f}, "
                     f"div={genotypic_diversity:.1f}{metric_str}{boost_str}"
                 )
 
@@ -918,7 +929,7 @@ class GeneticAlgorithm:
                         generation_callback(
                             gen + 1,
                             np.array(best_ind_gen, dtype=int),
-                            best_selected_loss,
+                            best_selected_mae,
                             dict(best_metrics) if isinstance(best_metrics, dict) else {},
                         )
                     except Exception as e:
@@ -940,26 +951,41 @@ class GeneticAlgorithm:
             population,
             overall_best_ind,
             overall_best_loss,
-            overall_selected_ind,
-            overall_selected_state,
+            generation_representatives,
         )
-        best_loss = float(best_selection["raw_loss"])
+        best_loss = float(best_selection["mae"])
         best_genome = np.array(best_individual)
+        best_mae_candidate = (
+            self._individual_summary(overall_best_ind)
+            if overall_best_ind is not None
+            else self._individual_summary(best_individual)
+        )
         logger.info(
-            "GA complete: selected raw=%.2f, E=%.2f, fail_total=%s, magnitude=%.0f, secondary=%.4f",
-            best_selection["raw_loss"],
-            best_selection["e_loss"],
+            "GA complete: selected mae=%.2f, failure_rate=%.4f, fail_total=%s, magnitude=%.0f | best_mae_candidate mae=%.2f, failure_rate=%.4f, fail_total=%s, magnitude=%.0f",
+            best_selection["mae"],
+            best_selection["failure_rate"],
             best_selection["fail_total"],
             best_selection["magnitude"],
-            best_selection["secondary_score"],
+            best_mae_candidate["mae"],
+            best_mae_candidate["failure_rate"],
+            best_mae_candidate["fail_total"],
+            best_mae_candidate["magnitude"],
         )
         self.last_best_selection_mode = best_selection["mode"]
-        self.last_best_selection_value = float(best_selection["secondary_score"])
-        self.last_best_raw_loss = float(overall_best_loss)
-        self.last_best_selected_raw_loss = float(best_selection["raw_loss"])
-        self.last_best_selected_e_loss = float(best_selection["e_loss"])
+        self.last_best_selection_value = float(best_selection["failure_rate"])
+        self.last_best_mae = float(overall_best_loss)
+        self.last_best_mae_candidate_mae = float(best_mae_candidate["mae"])
+        self.last_best_mae_candidate_failure_rate = float(best_mae_candidate["failure_rate"])
+        self.last_best_mae_candidate_fail_total = int(best_mae_candidate["fail_total"])
+        self.last_best_mae_candidate_magnitude = float(best_mae_candidate["magnitude"])
+        self.last_best_selected_mae = float(best_selection["mae"])
+        self.last_best_selected_failure_rate = float(best_selection["failure_rate"])
         self.last_best_selected_fail_total = int(best_selection["fail_total"])
         self.last_best_selected_magnitude = float(best_selection["magnitude"])
+        # Deprecated compatibility aliases.
+        self.last_best_raw_loss = float(overall_best_loss)
+        self.last_best_selected_raw_loss = float(best_selection["mae"])
+        self.last_best_selected_e_loss = float(best_selection["mae"])
 
         return best_genome, best_loss, loss_history, generation_stats
 
