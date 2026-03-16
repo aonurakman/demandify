@@ -6,6 +6,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from demandify.sumo.demand import DemandGenerator
+from demandify.sumo.network import SUMONetwork
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,7 +22,7 @@ class URBDataExporter:
             agents.csv          # Agent definitions (id, origin_idx, dest_idx, time, kind)
             od_<run_id>.txt    # Dictionary mapping indices to Origin/Destination Edge IDs
             <run_id>.net.xml   # SUMO Network
-            <run_id>.rou.xml   # SUMO Routes
+            <run_id>.rou.xml   # RouteRL/JanuX-compatible network graph copy
             <run_id>.edg.xml   # Plain Edges
             <run_id>.nod.xml   # Plain Nodes
             <run_id>.con.xml   # Plain Connections
@@ -33,33 +36,34 @@ class URBDataExporter:
         self.target_dir = output_dir / run_id
         self.target_dir.mkdir(parents=True, exist_ok=True)
         
-    def export(self, network_file: Path, routes_file: Path):
+    def export(self, network_file: Path, routes_file: Path, min_connection_paths: int = 1):
         """Main export workflow."""
         logger.info(f"Starting URB data export to {self.target_dir}")
         
         try:
-            # 1. Copy Network and Routes with new names
+            min_connection_paths = int(min_connection_paths)
+            if min_connection_paths < 1:
+                raise ValueError("min_connection_paths must be at least 1")
+
+            # 1. Parse trips/routes and validate compatibility before writing files
+            agents, origins, destinations, od_pairs = self._parse_routes(routes_file)
+            self._validate_od_pairs(network_file, od_pairs, min_connection_paths)
+
+            # 2. Copy Network and RouteRL graph companion with new names
             new_net = self.target_dir / f"{self.run_id}.net.xml"
             new_rou = self.target_dir / f"{self.run_id}.rou.xml"
             
             shutil.copy2(network_file, new_net)
+            shutil.copy2(network_file, new_rou)
             
-            # 1b. Validate/Generate Route File
-            # The reference 'rou.xml' did not contain trips. It seems the demand is entirely in agents.csv.
-            # We will generate a minimal route file.
-            self._write_minimal_routes(new_rou)
-            
-            # 1b. Copy Network Graph plot
+            # 2b. Copy Network Graph plot
             plot_file = self.target_dir.parent / "plots" / "network.png"
             if plot_file.exists():
                 shutil.copy2(plot_file, self.target_dir / f"{self.run_id}.png")
             
-            # 2. Generate Plain XML output (edg, nod, con, etc.)
+            # 3. Generate Plain XML output (edg, nod, con, etc.)
             self._generate_plain_xml(new_net)
-            
-            # 3. Parse RAW Routes to build Agents and OD lists
-            agents, origins, destinations = self._parse_routes(routes_file)
-            
+
             # 4. Write agents.csv
             self._write_agents_csv(agents)
             
@@ -71,16 +75,6 @@ class URBDataExporter:
         except Exception as e:
             logger.error(f"Failed to export URB data: {e}", exc_info=True)
             # Don't raise, just log error so pipeline doesn't crash on optional export
-
-    def _write_minimal_routes(self, path: Path):
-        """Write a skeletal route file (vTypes only, no trips)."""
-        content = """<?xml version="1.0" encoding="UTF-8"?>
-<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
-    <vType id="Human" vClass="passenger"/>
-</routes>"""
-        with open(path, 'w') as f:
-            f.write(content)
-        logger.debug(f"Created minimal route file: {path}")
 
     def _generate_plain_xml(self, net_file: Path):
         """Run netconvert to generate plain output."""
@@ -100,13 +94,16 @@ class URBDataExporter:
             logger.warning(f"netconvert failed to generate plain XMLs: {e.stderr}")
             # Non-critical, proceed
 
-    def _parse_routes(self, routes_file: Path) -> Tuple[List[Dict], List[str], List[str]]:
+    def _parse_routes(
+        self, routes_file: Path
+    ) -> Tuple[List[Dict], List[str], List[str], List[Tuple[str, str]]]:
         """
         Parse .rou.xml to extract trips.
         Returns:
             agents: List of dicts
             origins: List of unique origin edge IDs
             destinations: List of unique destination edge IDs
+            od_pairs: Sorted unique demanded OD edge pairs
         """
         agents = []
         unique_origins = set()
@@ -175,18 +172,54 @@ class URBDataExporter:
         origin_map = {edge: idx for idx, edge in enumerate(sorted_origins)}
         dest_map = {edge: idx for idx, edge in enumerate(sorted_destinations)}
         
-        # Build final agents list
+        # Build final agents list with sequential integer ids to match
+        # URB/RouteRL expectations that vehicle ids round-trip as ints.
         final_agents = []
-        for trip in raw_trips:
+        for agent_id, trip in enumerate(raw_trips):
             final_agents.append({
-                'id': trip['id'],
+                'id': agent_id,
                 'origin': origin_map[trip['origin_edge']], # Map to index
                 'destination': dest_map[trip['dest_edge']], # Map to index
                 'start_time': trip['start_time'],
                 'kind': trip['kind']
             })
-            
-        return final_agents, sorted_origins, sorted_destinations
+
+        od_pairs = sorted(
+            {
+                (trip["origin_edge"], trip["dest_edge"])
+                for trip in raw_trips
+            }
+        )
+
+        return final_agents, sorted_origins, sorted_destinations, od_pairs
+
+    def _validate_od_pairs(
+        self,
+        network_file: Path,
+        od_pairs: List[Tuple[str, str]],
+        min_connection_paths: int,
+    ) -> None:
+        """Assert that exported OD pairs satisfy the configured path-count requirement."""
+        if not od_pairs:
+            logger.warning("URB export parsed no trips from %s", network_file)
+            return
+
+        network = SUMONetwork(network_file)
+        demand_gen = DemandGenerator(network, seed=0)
+        invalid_pairs = [
+            (origin, destination)
+            for origin, destination in od_pairs
+            if not demand_gen.has_at_least_k_paths(origin, destination, min_connection_paths)
+        ]
+        if not invalid_pairs:
+            return
+
+        preview = ", ".join(f"{origin}->{destination}" for origin, destination in invalid_pairs[:5])
+        raise ValueError(
+            "URB export validation failed: "
+            f"{len(invalid_pairs)} OD pairs do not satisfy min_connection_paths="
+            f"{min_connection_paths}. Examples: {preview}"
+        )
 
     def _write_agents_csv(self, agents: List[Dict]):
         path = self.target_dir / "agents.csv"

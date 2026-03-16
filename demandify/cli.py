@@ -146,6 +146,10 @@ async def cmd_run(args):
             print("   Example: 2.29,48.84,2.31,48.86")
             return
 
+    if args.min_connection_paths < 1:
+        print("❌ --min-connection-paths must be at least 1.")
+        return
+
     print(ASCII_ART)
     print(f"demandify v{__version__}")
 
@@ -161,6 +165,7 @@ async def cmd_run(args):
             print(f"   BBox: {bbox}")
         print(f"   Window: {args.window} min")
         print(f"   Seed: {args.seed}")
+        print(f"   Min Connection Paths: {args.min_connection_paths}")
         print(f"   Run ID: {args.name if args.name else 'Auto-generated'}")
         print("-" * 50)
 
@@ -190,6 +195,7 @@ async def cmd_run(args):
                 ga_assortative_mating=args.ga_assortative_mating,
                 ga_deterministic_crowding=args.ga_deterministic_crowding,
                 max_od_pairs=args.max_ods,
+                min_connection_paths=args.min_connection_paths,
                 bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
                 offline_dataset=(
@@ -490,6 +496,18 @@ def cli():
         type=int,
         default=run_defaults["max_od_pairs"],
         help=f"Max OD pairs to generate (default: {run_defaults['max_od_pairs']})",
+    )
+    run_parser.add_argument(
+        "--min-connection-paths",
+        type=int,
+        default=run_defaults["min_connection_paths"],
+        help=(
+            "Minimum number of distinct simple routes required for an origin-destination "
+            "pair to be eligible during OD sampling. Use 1 to keep reachability-only "
+            "behavior; higher values are useful when you need multiple realistic routing "
+            "alternatives, for example in route-choice benchmarking or fixed-action-space "
+            "experiments such as URB/RouteRL."
+        ),
     )
     run_parser.add_argument(
         "--bin-size",

@@ -28,6 +28,7 @@ def test_run_defaults_have_required_keys():
         "ga_crossover_rate",
         "initial_population",
         "max_od_pairs",
+        "min_connection_paths",
         "bin_minutes",
         "ga_mutation_sigma",
         "ga_mutation_indpb",
@@ -65,6 +66,7 @@ def test_api_form_defaults_match_run_defaults():
     assert _form_default(start_sig, "ga_generations") == defaults["ga_generations"]
     assert _form_default(start_sig, "parallel_workers") == defaults["parallel_workers"]
     assert _form_default(start_sig, "max_od_pairs") == defaults["max_od_pairs"]
+    assert _form_default(start_sig, "min_connection_paths") == defaults["min_connection_paths"]
     assert _form_default(start_sig, "bin_minutes") == defaults["bin_minutes"]
     assert _form_default(start_sig, "ga_checkpoint_interval") == defaults["ga_checkpoint_interval"]
 
@@ -81,5 +83,6 @@ def test_index_template_uses_shared_defaults():
     assert f'name="ga_population"' in html
     assert f'value="{defaults["ga_population"]}"' in html
     assert f'name="max_od_pairs" value="{defaults["max_od_pairs"]}"' in html
+    assert f'name="min_connection_paths" value="{defaults["min_connection_paths"]}"' in html
     assert 'name="num_origins"' not in html
     assert 'name="num_destinations"' not in html
