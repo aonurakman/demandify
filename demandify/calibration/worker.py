@@ -37,14 +37,17 @@ def build_worker_error_metrics(error_message: str, worker_idx: Optional[int] = N
     metrics = {
         "worker_error": True,
         "error": error_message,
+        "mae": float("inf"),
         "routing_failures": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
         "teleports": 0,
         "fail_total": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
+        "failure_rate": float("inf"),
         "reliability_penalty": float("inf"),
         "e_loss": float("inf"),
         "loss": float("inf"),
         "zero_flow_edges": None,
         "total_vehicles": 0,
+        "magnitude": 0,
         "avg_trip_duration": 0.0,
         "avg_waiting_time": 0.0,
     }
@@ -275,26 +278,29 @@ def run_simulation_worker(
             trip_stats=trip_stats,
             expected_vehicles=expected_vehicles
         )
-        loss = loss_components["loss"]
+        mae = float(loss_components["mae"])
 
         routing_failures = int(trip_stats.get("routing_failures", 0) or 0)
         teleports = int(trip_stats.get("teleports", 0) or 0)
         fail_total = int(loss_components.get("fail_total", routing_failures + teleports))
-        
+
         # 4. Metrics
         metrics = objective.calculate_metrics(simulated_speeds)
+        metrics["mae"] = mae
         metrics['routing_failures'] = routing_failures
         metrics['teleports'] = teleports
         metrics['fail_total'] = fail_total
+        metrics['failure_rate'] = float(loss_components.get("failure_rate", 0.0))
         metrics['reliability_penalty'] = float(loss_components.get("reliability_penalty", 0.0))
-        metrics['e_loss'] = float(loss_components.get("e_loss", metrics.get("mae", loss)))
+        metrics['e_loss'] = float(loss_components.get("e_loss", mae))
         metrics['total_vehicles'] = expected_vehicles
+        metrics['magnitude'] = expected_vehicles
         metrics['zero_flow_edges'] = metrics['missing_edges'] # Same thing essentially
         metrics['avg_trip_duration'] = trip_stats.get('avg_duration', 0.0)
         metrics['avg_waiting_time'] = trip_stats.get('avg_waiting_time', 0.0)
         metrics['worker_id'] = worker_idx
-        metrics['loss'] = loss # Explicitly include loss in metrics for aggregation if needed
-        
+        metrics['loss'] = mae
+
         # 5. Debug Artifacts
         if config.debug:
             # Preserve artifacts: move temp_dir to debug storage?
@@ -308,7 +314,7 @@ def run_simulation_worker(
             if temp_dir is not None:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             
-        return loss, metrics
+        return mae, metrics
         
     except Exception as e:
         logger.error(f"Worker {worker_idx} failed: {e}")

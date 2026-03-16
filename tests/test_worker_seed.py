@@ -33,6 +33,9 @@ def test_worker_error_metrics_are_explicitly_infeasible():
     assert metrics["error"] == "boom"
     assert metrics["fail_total"] >= 1
     assert metrics["routing_failures"] >= 1
+    assert metrics["mae"] == float("inf")
+    assert metrics["failure_rate"] == float("inf")
+    assert metrics["magnitude"] == 0
     assert metrics["e_loss"] == float("inf")
     assert metrics["loss"] == float("inf")
     assert metrics["worker_id"] == 7

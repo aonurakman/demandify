@@ -16,15 +16,19 @@ from demandify.export.report import ReportGenerator
 def _simple_evaluate(genome):
     """Evaluate function: loss = mean absolute value, lower is better."""
     loss = float(np.mean(np.abs(genome)))
+    total_vehicles = int(np.sum(genome))
     metrics = {
+        "mae": loss,
         "zero_flow_edges": int(np.sum(genome == 0)),
         "routing_failures": 0,
         "teleports": 0,
         "fail_total": 0,
+        "failure_rate": 0.0,
         "reliability_penalty": 0.0,
         "e_loss": loss,
         "avg_trip_duration": 100.0,
-        "total_vehicles": int(np.sum(genome)),
+        "total_vehicles": total_vehicles,
+        "magnitude": total_vehicles,
     }
     return loss, metrics
 
@@ -166,22 +170,32 @@ class TestMutationBounds:
 
 
 class TestParentSelection:
-    """Test elite-slice parent selection and secondary ranking behavior."""
+    """Test MAE-elite parent selection and lexicographic ordering."""
 
     @staticmethod
-    def _make_ind(vals, loss, e_loss, fail_total, reliability_penalty=0.0):
+    def _make_ind(vals, mae, fail_total, total_vehicles=None, worker_error=False):
         ind = creator.Individual(vals)
-        ind.fitness.values = (loss,)
+        if total_vehicles is None:
+            total_vehicles = int(sum(vals))
+        failure_rate = 0.0 if total_vehicles <= 0 and fail_total <= 0 else fail_total / max(1, total_vehicles)
+        ind.fitness.values = (mae,)
         ind.metrics = {
-            "e_loss": e_loss,
+            "mae": mae,
+            "e_loss": mae,
             "fail_total": fail_total,
             "routing_failures": fail_total,
             "teleports": 0,
-            "reliability_penalty": reliability_penalty,
+            "failure_rate": failure_rate if not worker_error else float("inf"),
+            "reliability_penalty": 0.0,
+            "total_vehicles": total_vehicles,
+            "magnitude": total_vehicles,
         }
+        if worker_error:
+            ind.metrics["worker_error"] = True
+            ind.metrics["error"] = "worker crashed"
         return ind
 
-    def test_candidate_pool_is_top_e_slice_even_with_failures(self):
+    def test_candidate_pool_is_top_mae_slice_even_with_failures(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
@@ -189,61 +203,80 @@ class TestParentSelection:
             elite_top_pct=0.4,  # n = 2
         )
         pop = [
-            self._make_ind([10, 0, 0], 1.0, 1.0, 2),
-            self._make_ind([9, 0, 0], 1.1, 1.1, 0),
-            self._make_ind([8, 0, 0], 1.2, 1.2, 0),
-            self._make_ind([7, 0, 0], 1.3, 1.3, 1),
-            self._make_ind([6, 0, 0], 1.4, 1.4, 0),
+            self._make_ind([10, 0, 0], 1.0, 2),
+            self._make_ind([9, 0, 0], 1.1, 0),
+            self._make_ind([8, 0, 0], 1.2, 0),
+            self._make_ind([7, 0, 0], 1.3, 1),
+            self._make_ind([6, 0, 0], 1.4, 0),
         ]
 
         plan = ga._build_parent_selection_plan(pop)
 
-        assert plan["mode"] == "elite_slice_secondary"
+        assert plan["mode"] == "mae_elite_lexicographic"
         assert plan["elite_count"] == 2
-        assert plan["feasible_count"] == 3
         assert len(plan["candidate_pool"]) == 2
         assert plan["candidate_pool"] == pop[:2]
 
-    def test_secondary_score_penalizes_failures_inside_elite_slice(self):
+    def test_lower_failure_rate_wins_inside_mae_elite(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
             population_size=5,
             elite_top_pct=0.8,  # n = 4
         )
-        a = self._make_ind([10, 0, 0], 1.0, 1.0, 3)
-        b = self._make_ind([10, 0, 0], 1.1, 1.1, 0)
-        c = self._make_ind([12, 0, 0], 1.2, 1.2, 0)
-        d = self._make_ind([13, 0, 0], 1.3, 1.3, 1)
-        outsider = self._make_ind([14, 0, 0], 1.4, 1.4, 0)
+        a = self._make_ind([10, 0, 0], 1.0, 1, total_vehicles=10)  # 10%
+        b = self._make_ind([20, 0, 0], 1.1, 2, total_vehicles=100)  # 2%
+        c = self._make_ind([12, 0, 0], 1.2, 3, total_vehicles=20)  # 15%
+        d = self._make_ind([13, 0, 0], 1.3, 0, total_vehicles=13)  # 0%
+        outsider = self._make_ind([14, 0, 0], 1.4, 0)
 
         plan = ga._build_parent_selection_plan([a, b, c, d, outsider])
-        best = ga._select_best_candidate(plan["candidate_pool"], plan["score_by_id"])
+        best = ga._select_best_candidate(plan["candidate_pool"], plan["selection_key_by_id"])
 
         assert plan["candidate_pool"] == [a, b, c, d]
-        assert best is b
-        assert plan["score_by_id"][id(b)] < plan["score_by_id"][id(a)]
+        assert best is d
+        assert ga._individual_failure_rate_key(d) < ga._individual_failure_rate_key(a)
+        assert ga._individual_failure_rate_key(b) < ga._individual_failure_rate_key(a)
 
-    def test_secondary_score_penalizes_magnitude_inside_elite_slice(self):
+    def test_equal_failure_rate_prefers_lower_magnitude_inside_mae_elite(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
             population_size=5,
             elite_top_pct=0.8,  # n = 4
         )
-        a = self._make_ind([100, 0, 0], 1.0, 1.0, 0)
-        b = self._make_ind([10, 0, 0], 1.1, 1.1, 0)
-        c = self._make_ind([20, 0, 0], 1.2, 1.2, 1)
-        d = self._make_ind([30, 0, 0], 1.3, 1.3, 2)
-        outsider = self._make_ind([40, 0, 0], 1.4, 1.4, 0)
+        a = self._make_ind([20, 0, 0], 1.0, 2, total_vehicles=20)  # 10%, mag 20
+        b = self._make_ind([10, 0, 0], 1.1, 1, total_vehicles=10)  # 10%, mag 10
+        c = self._make_ind([30, 0, 0], 1.2, 6, total_vehicles=30)  # 20%
+        d = self._make_ind([40, 0, 0], 1.3, 0, total_vehicles=40)  # 0%
+        outsider = self._make_ind([50, 0, 0], 1.4, 0, total_vehicles=50)
 
         plan = ga._build_parent_selection_plan([a, b, c, d, outsider])
-        best = ga._select_best_candidate(plan["candidate_pool"], plan["score_by_id"])
+        ranked = sorted(
+            plan["candidate_pool"],
+            key=lambda ind: plan["selection_key_by_id"][id(ind)],
+        )
 
-        assert best is b
-        assert plan["score_by_id"][id(b)] < plan["score_by_id"][id(a)]
+        assert ranked[:3] == [d, b, a]
 
-    def test_survival_elites_follow_secondary_order(self):
+    def test_exact_mae_breaks_remaining_tie_inside_elite(self):
+        ga = GeneticAlgorithm(
+            genome_size=3,
+            seed=42,
+            population_size=4,
+            elite_top_pct=1.0,
+        )
+        better_mae = self._make_ind([10, 0, 0], 1.0, 1, total_vehicles=10)
+        worse_mae = self._make_ind([0, 10, 0], 1.1, 1, total_vehicles=10)
+        other_a = self._make_ind([30, 0, 0], 1.2, 3, total_vehicles=30)
+        other_b = self._make_ind([40, 0, 0], 1.3, 4, total_vehicles=40)
+
+        plan = ga._build_parent_selection_plan([better_mae, worse_mae, other_a, other_b])
+        best = ga._select_best_candidate(plan["candidate_pool"], plan["selection_key_by_id"])
+
+        assert best is better_mae
+
+    def test_survival_elites_follow_failure_rate_then_magnitude_then_mae(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
@@ -251,11 +284,11 @@ class TestParentSelection:
             elite_top_pct=0.8,  # n = 4
             elitism=2,
         )
-        a = self._make_ind([10, 0, 0], 1.0, 1.0, 3)
-        b = self._make_ind([10, 0, 0], 1.1, 1.1, 0)
-        c = self._make_ind([12, 0, 0], 1.2, 1.2, 0)
-        d = self._make_ind([13, 0, 0], 1.3, 1.3, 1)
-        outsider = self._make_ind([14, 0, 0], 1.4, 1.4, 0)
+        a = self._make_ind([10, 0, 0], 1.0, 1, total_vehicles=10)  # 10%, mag 10
+        b = self._make_ind([20, 0, 0], 1.1, 0, total_vehicles=20)  # 0%
+        c = self._make_ind([30, 0, 0], 1.2, 3, total_vehicles=30)  # 10%, mag 30
+        d = self._make_ind([0, 10, 0], 1.3, 1, total_vehicles=10)  # 10%, mag 10, worse mae than a
+        outsider = self._make_ind([14, 0, 0], 1.4, 0)
 
         elites = ga._select_survival_elites([a, b, c, d, outsider], 2)
 
@@ -272,21 +305,7 @@ class TestParentSelection:
         assert not ind.fitness.valid
         assert not hasattr(ind, "metrics")
 
-    def test_error_marked_individual_is_not_feasible(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=1)
-        ind = creator.Individual([1, 1, 1])
-        ind.fitness.values = (1.0,)
-        ind.metrics = {
-            "fail_total": 0,
-            "routing_failures": 0,
-            "teleports": 0,
-            "worker_error": True,
-            "error": "simulation failed",
-        }
-
-        assert ga._is_feasible_individual(ind) is False
-
-    def test_feasible_count_ignores_error_and_invalid_individuals(self):
+    def test_error_and_invalid_individuals_sort_after_valid_mae_candidates(self):
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
@@ -294,80 +313,165 @@ class TestParentSelection:
             elite_top_pct=0.5,  # n = 2
         )
 
-        feasible = self._make_ind([1, 0, 0], 1.0, 1.0, 0)
-
-        worker_error = self._make_ind([2, 0, 0], 0.2, 0.2, 0)
-        worker_error.metrics["worker_error"] = True
-        worker_error.metrics["error"] = "worker crashed"
+        valid_a = self._make_ind([1, 0, 0], 1.0, 0)
+        valid_b = self._make_ind([2, 0, 0], 1.1, 1)
+        worker_error = self._make_ind([3, 0, 0], 0.2, 0, worker_error=True)
 
         invalid = creator.Individual([3, 0, 0])
-        invalid.metrics = {"e_loss": 0.1, "fail_total": 0}
+        invalid.metrics = {"mae": 0.1, "fail_total": 0, "total_vehicles": 3}
 
-        infeasible = self._make_ind([4, 0, 0], 1.2, 1.2, 2)
+        plan = ga._build_parent_selection_plan([valid_a, worker_error, invalid, valid_b])
 
-        plan = ga._build_parent_selection_plan([feasible, worker_error, invalid, infeasible])
+        assert plan["mode"] == "mae_elite_lexicographic"
+        assert plan["candidate_pool"] == [valid_a, valid_b]
 
-        assert ga._is_feasible_individual(feasible) is True
-        assert ga._is_feasible_individual(worker_error) is False
-        assert ga._is_feasible_individual(invalid) is False
-        assert ga._is_feasible_individual(infeasible) is False
-        assert plan["feasible_count"] == 1
-        assert plan["mode"] == "elite_slice_secondary"
+    def test_identity_exclusion_keeps_non_elite_duplicate_genomes(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4, elitism=1)
+        elite = self._make_ind([1, 1, 1], 1.0, 0)
+        duplicate_non_elite = self._make_ind([1, 1, 1], 2.0, 0)
+        other_a = self._make_ind([2, 2, 2], 3.0, 0)
+        other_b = self._make_ind([3, 3, 3], 4.0, 0)
+
+        remaining = ga._exclude_by_identity(
+            [elite, duplicate_non_elite, other_a, other_b],
+            [elite],
+        )
+        remaining_ids = {id(ind) for ind in remaining}
+
+        assert id(elite) not in remaining_ids
+        assert id(duplicate_non_elite) in remaining_ids
+        assert len(remaining) == 3
 
 
 class TestSelectedBestReturn:
-    """Test elite-slice-based final best selection behavior."""
+    """Test MAE-elite-based final best selection behavior."""
 
     def test_prefers_best_selected_candidate_when_available(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
-        raw_best = creator.Individual([1, 1, 1])
-        raw_best.fitness.values = (0.5,)
-        raw_best.metrics = {"e_loss": 0.1, "fail_total": 2}
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4, elite_top_pct=0.5)
+        mae_best = creator.Individual([1, 1, 1])
+        mae_best.fitness.values = (0.5,)
+        mae_best.metrics = {"mae": 0.5, "e_loss": 0.5, "fail_total": 2, "total_vehicles": 3}
 
         selected = creator.Individual([2, 2, 2])
-        selected.fitness.values = (2.0,)
-        selected.metrics = {"e_loss": 2.0, "fail_total": 0}
+        selected.fitness.values = (0.6,)
+        selected.metrics = {"mae": 0.6, "e_loss": 0.6, "fail_total": 0, "total_vehicles": 6}
+
+        other_a = creator.Individual([3, 3, 3])
+        other_a.fitness.values = (1.5,)
+        other_a.metrics = {"mae": 1.5, "e_loss": 1.5, "fail_total": 0, "total_vehicles": 9}
+
+        other_b = creator.Individual([4, 4, 4])
+        other_b.fitness.values = (2.0,)
+        other_b.metrics = {"mae": 2.0, "e_loss": 2.0, "fail_total": 0, "total_vehicles": 12}
 
         best_ind, selected_state = ga._resolve_return_best(
-            population=[raw_best, selected],
-            overall_best_ind=raw_best,
+            population=[mae_best, selected, other_a, other_b],
+            overall_best_ind=mae_best,
             overall_best_loss=0.5,
-            overall_selected_ind=selected,
-            overall_selected_state={
-                "mode": "elite_slice_secondary",
-                "secondary_score": 0.2,
-                "raw_loss": 2.0,
-                "e_loss": 2.0,
-                "fail_total": 0,
-                "magnitude": 6.0,
-            },
+            generation_representatives=[
+                (
+                    mae_best,
+                    {
+                        "mode": "mae_elite_lexicographic",
+                        "mae": 0.5,
+                        "failure_rate": 2 / 3,
+                        "fail_total": 2,
+                        "magnitude": 3.0,
+                    },
+                ),
+                (
+                    selected,
+                    {
+                        "mode": "mae_elite_lexicographic",
+                        "mae": 0.6,
+                        "failure_rate": 0.0,
+                        "fail_total": 0,
+                        "magnitude": 6.0,
+                    },
+                ),
+                (
+                    other_a,
+                    {
+                        "mode": "mae_elite_lexicographic",
+                        "mae": 1.5,
+                        "failure_rate": 0.0,
+                        "fail_total": 0,
+                        "magnitude": 9.0,
+                    },
+                ),
+                (
+                    other_b,
+                    {
+                        "mode": "mae_elite_lexicographic",
+                        "mae": 2.0,
+                        "failure_rate": 0.0,
+                        "fail_total": 0,
+                        "magnitude": 12.0,
+                    },
+                ),
+            ],
         )
 
-        assert selected_state["mode"] == "elite_slice_secondary"
+        assert selected_state["mode"] == "mae_elite_lexicographic"
         assert best_ind is selected
-        assert selected_state["raw_loss"] == 2.0
+        assert selected_state["mae"] == 0.6
 
-    def test_falls_back_to_raw_when_no_selected_snapshot_exists(self):
+    def test_global_mae_elite_blocks_failure_first_cross_generation_inversion(self):
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4, elite_top_pct=0.25)
+        early_safe = creator.Individual([5, 5, 5])
+        early_safe.fitness.values = (24.64,)
+        early_safe.metrics = {"mae": 24.64, "e_loss": 24.64, "fail_total": 15, "total_vehicles": 1513}
+
+        later_better_mae = creator.Individual([6, 6, 6])
+        later_better_mae.fitness.values = (23.79,)
+        later_better_mae.metrics = {"mae": 23.79, "e_loss": 23.79, "fail_total": 18, "total_vehicles": 1547}
+
+        outside_global_elite = creator.Individual([7, 7, 7])
+        outside_global_elite.fitness.values = (30.0,)
+        outside_global_elite.metrics = {"mae": 30.0, "e_loss": 30.0, "fail_total": 0, "total_vehicles": 1200}
+
+        filler = creator.Individual([8, 8, 8])
+        filler.fitness.values = (24.70,)
+        filler.metrics = {"mae": 24.70, "e_loss": 24.70, "fail_total": 16, "total_vehicles": 1520}
+
+        best_ind, selected_state = ga._resolve_return_best(
+            population=[early_safe, later_better_mae, outside_global_elite, filler],
+            overall_best_ind=later_better_mae,
+            overall_best_loss=23.79,
+            generation_representatives=[
+                (early_safe, ga._individual_summary(early_safe, mode="mae_elite_lexicographic")),
+                (later_better_mae, ga._individual_summary(later_better_mae, mode="mae_elite_lexicographic")),
+                (
+                    outside_global_elite,
+                    ga._individual_summary(outside_global_elite, mode="mae_elite_lexicographic"),
+                ),
+                (filler, ga._individual_summary(filler, mode="mae_elite_lexicographic")),
+            ],
+        )
+
+        assert best_ind is later_better_mae
+        assert selected_state["mae"] == pytest.approx(23.79)
+
+    def test_falls_back_to_mae_when_no_selected_snapshot_exists(self):
         ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
-        raw_best = creator.Individual([1, 1, 1])
-        raw_best.fitness.values = (0.5,)
-        raw_best.metrics = {"e_loss": 0.1, "fail_total": 3}
+        mae_best = creator.Individual([1, 1, 1])
+        mae_best.fitness.values = (0.5,)
+        mae_best.metrics = {"mae": 0.5, "e_loss": 0.5, "fail_total": 3, "total_vehicles": 3}
 
         other = creator.Individual([3, 3, 3])
         other.fitness.values = (1.0,)
-        other.metrics = {"e_loss": 0.4, "fail_total": 4}
+        other.metrics = {"mae": 1.0, "e_loss": 1.0, "fail_total": 4, "total_vehicles": 9}
 
         best_ind, selected_state = ga._resolve_return_best(
-            population=[raw_best, other],
-            overall_best_ind=raw_best,
+            population=[mae_best, other],
+            overall_best_ind=mae_best,
             overall_best_loss=0.5,
-            overall_selected_ind=None,
-            overall_selected_state=None,
+            generation_representatives=[],
         )
 
-        assert selected_state["mode"] == "raw_fallback"
-        assert best_ind is raw_best
-        assert selected_state["raw_loss"] == 0.5
+        assert selected_state["mode"] == "mae_fallback"
+        assert best_ind is mae_best
+        assert selected_state["mae"] == 0.5
 
     def test_optimize_exposes_selected_best_metadata(self):
         ga = GeneticAlgorithm(
@@ -381,10 +485,15 @@ class TestSelectedBestReturn:
 
         ga.optimize(_simple_evaluate)
 
-        assert ga.last_best_selection_mode == "elite_slice_secondary"
+        assert ga.last_best_selection_mode == "mae_elite_lexicographic"
         assert ga.last_best_selection_value is not None
-        assert ga.last_best_selected_raw_loss is not None
-        assert ga.last_best_selected_e_loss is not None
+        assert ga.last_best_mae is not None
+        assert ga.last_best_mae_candidate_mae is not None
+        assert ga.last_best_mae_candidate_failure_rate is not None
+        assert ga.last_best_mae_candidate_fail_total is not None
+        assert ga.last_best_mae_candidate_magnitude is not None
+        assert ga.last_best_selected_mae is not None
+        assert ga.last_best_selected_failure_rate is not None
         assert ga.last_best_selected_fail_total is not None
         assert ga.last_best_selected_magnitude is not None
 
@@ -398,18 +507,18 @@ class TestSelectedBestReturn:
         )
         callback_calls = []
 
-        def generation_callback(generation, best_genome, best_loss, best_metrics):
-            callback_calls.append((generation, best_genome, best_loss, best_metrics))
+        def generation_callback(generation, best_genome, best_mae, best_metrics):
+            callback_calls.append((generation, best_genome, best_mae, best_metrics))
 
         ga.optimize(_simple_evaluate, generation_callback=generation_callback)
 
         assert len(callback_calls) == 3
-        for generation, best_genome, best_loss, best_metrics in callback_calls:
+        for generation, best_genome, best_mae, best_metrics in callback_calls:
             assert generation >= 1
             assert isinstance(best_genome, np.ndarray)
             assert best_genome.shape == (3,)
             assert np.issubdtype(best_genome.dtype, np.integer)
-            assert np.isfinite(best_loss)
+            assert np.isfinite(best_mae)
             assert isinstance(best_metrics, dict)
 
 
@@ -508,10 +617,10 @@ class TestGenerationStats:
             "std_loss",
             "best_magnitude",
             "mean_magnitude",
+            "best_failure_rate",
+            "mean_failure_rate",
             "best_zero_flow",
             "mean_zero_flow",
-            "best_routing_failures",
-            "mean_routing_failures",
             "best_fail_total",
             "mean_fail_total",
             "genotypic_diversity",
@@ -526,10 +635,10 @@ class TestGenerationStats:
             "std_loss": 3.0,
             "best_magnitude": 100.0,
             "mean_magnitude": 200.0,
+            "best_failure_rate": 0.05,
+            "mean_failure_rate": 0.08,
             "best_zero_flow": 5,
             "mean_zero_flow": 8.0,
-            "best_routing_failures": 2,
-            "mean_routing_failures": 4.0,
             "best_fail_total": 3,
             "mean_fail_total": 5.0,
             "genotypic_diversity": 50.0,
@@ -558,10 +667,12 @@ class TestDiversityPlot:
                     "std_loss": 15.0 - gen,
                     "best_magnitude": 100 + gen * 10,
                     "mean_magnitude": 200 + gen * 5,
+                    "best_failure_rate": max(0.0, 0.12 - gen * 0.02),
+                    "mean_failure_rate": max(0.0, 0.16 - gen * 0.02),
                     "best_zero_flow": max(0, 10 - gen * 2),
                     "mean_zero_flow": max(0.0, 12 - gen * 1.5),
-                    "best_routing_failures": max(0, 8 - gen),
-                    "mean_routing_failures": max(0.0, 10 - gen * 0.8),
+                    "best_fail_total": max(0, 8 - gen),
+                    "mean_fail_total": max(0.0, 10 - gen * 0.8),
                     "genotypic_diversity": 100.0 - gen * 10,
                     "phenotypic_diversity": 20.0 - gen * 2,
                     "mutation_boosted": gen >= 4,
@@ -602,10 +713,12 @@ class TestDiversityPlot:
                     "std_loss": 10.0,
                     "best_magnitude": 100.0,
                     "mean_magnitude": 200.0,
+                    "best_failure_rate": 0.05,
+                    "mean_failure_rate": 0.08,
                     "best_zero_flow": 5,
                     "mean_zero_flow": 8.0,
-                    "best_routing_failures": 2,
-                    "mean_routing_failures": 4.0,
+                    "best_fail_total": 2,
+                    "mean_fail_total": 4.0,
                     "genotypic_diversity": 100.0 - gen * 10,
                     "phenotypic_diversity": 20.0 - gen * 2,
                     "mutation_boosted": False,

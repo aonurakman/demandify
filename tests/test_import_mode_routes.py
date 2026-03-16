@@ -115,12 +115,14 @@ def test_start_run_create_mode_with_offline_save(monkeypatch, tmp_path):
             "bbox_south": 48.8469,
             "bbox_east": 2.3071,
             "bbox_north": 48.8532,
+            "min_connection_paths": 3,
             "save_offline_dataset": "true",
             "save_offline_dataset_name": "paris_v1",
         },
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "started"
+    assert captured["params"]["min_connection_paths"] == 3
     assert captured["params"]["save_offline_dataset"] is True
     assert captured["params"]["save_offline_dataset_name"] == "paris_v1"
     assert captured["params"]["save_offline_dataset_root"] == str(tmp_path / "offline_root")

@@ -13,6 +13,7 @@
   "ga_crossover_rate": 0.7,
   "initial_population": 1000,
   "max_od_pairs": 50,
+  "min_connection_paths": 1,
   "bin_minutes": 5,
   "ga_mutation_sigma": 20,
   "ga_mutation_indpb": 0.3,

@@ -81,6 +81,7 @@ class CalibrationPipeline:
         ga_assortative_mating: bool = True,
         ga_deterministic_crowding: bool = True,
         max_od_pairs: int = 1000,
+        min_connection_paths: int = 1,
         bin_minutes: float = 1.0,
         initial_population: int = 1000,
         offline_dataset: Optional[str] = None,
@@ -112,6 +113,9 @@ class CalibrationPipeline:
             ga_assortative_mating: Prefer crossover between dissimilar parents
             ga_deterministic_crowding: Offspring replace most similar parents
             max_od_pairs: Maximum number of OD pairs to generate
+            min_connection_paths: Minimum number of distinct simple routes required
+                for an OD pair to be eligible during sampling. Use 1 for
+                reachability-only behavior.
             bin_minutes: Duration of each demand time bin in minutes
             initial_population: Target initial number of vehicles (controls GA init bounds)
             offline_dataset: Optional offline dataset id or name to import (source:name or name)
@@ -158,6 +162,9 @@ class CalibrationPipeline:
         self.ga_assortative_mating = ga_assortative_mating
         self.ga_deterministic_crowding = ga_deterministic_crowding
         self.max_od_pairs = max_od_pairs
+        self.min_connection_paths = int(min_connection_paths)
+        if self.min_connection_paths < 1:
+            raise ValueError("min_connection_paths must be at least 1")
         self.bin_minutes = bin_minutes
         self.initial_population = initial_population
         self.save_offline_dataset = bool(save_offline_dataset)
@@ -215,7 +222,12 @@ class CalibrationPipeline:
         self.progress_callback = progress_callback
 
         logger.info(
-            f"Pipeline initialized: mode={self.data_mode}, bbox={bbox}, seed={seed}, run_id={self.run_id}"
+            "Pipeline initialized: mode=%s, bbox=%s, seed=%s, run_id=%s, min_connection_paths=%s",
+            self.data_mode,
+            bbox,
+            seed,
+            self.run_id,
+            self.min_connection_paths,
         )
 
     def _report_progress(self, stage: int, name: str, msg: str, level: str = "info"):
@@ -511,7 +523,7 @@ class CalibrationPipeline:
         self._report_progress(
             6,
             "Calibrating Demand",
-            f"✓ Complete: optimization={best_loss:.2f}",
+            f"✓ Complete: mae={best_loss:.2f}",
         )
 
         # Stage 7: Generate final demand files
@@ -922,6 +934,8 @@ class CalibrationPipeline:
         od_pairs = demand_gen.select_od_pairs(
             max_od_pairs=self.max_od_pairs,
             min_trip_distance=self.min_trip_distance,
+            min_connection_paths=self.min_connection_paths,
+            num_workers=self.parallel_workers or self.config.default_parallel_workers,
         )
 
         # Create departure bins - cover ENTIRE duration (warmup + window)
@@ -1031,7 +1045,7 @@ class CalibrationPipeline:
         def generation_checkpoint_callback(
             generation: int,
             best_genome_snapshot: np.ndarray,
-            current_best_loss: float,
+            current_best_mae: float,
             best_metrics: Dict[str, Any],
         ) -> None:
             if generation != 1 and generation % self.ga_checkpoint_interval != 0:
@@ -1039,7 +1053,7 @@ class CalibrationPipeline:
             self._save_generation_checkpoint(
                 generation=generation,
                 best_genome=best_genome_snapshot,
-                best_loss=current_best_loss,
+                best_loss=current_best_mae,
                 best_metrics=best_metrics,
                 demand_gen=demand_gen,
                 od_pairs=od_pairs,
@@ -1051,13 +1065,18 @@ class CalibrationPipeline:
             evaluate_func_clean,
             generation_callback=generation_checkpoint_callback,
         )
-        selected_mode = getattr(ga, "last_best_selection_mode", None) or "elite_slice_secondary"
-        selected_value = getattr(ga, "last_best_selection_value", best_loss)
-        selected_raw_loss = getattr(ga, "last_best_selected_raw_loss", best_loss)
-        selected_e_loss = getattr(ga, "last_best_selected_e_loss", best_loss)
+        selected_mode = getattr(ga, "last_best_selection_mode", None) or "mae_elite_lexicographic"
+        selected_mae = getattr(ga, "last_best_selected_mae", best_loss)
+        selected_failure_rate = getattr(ga, "last_best_selected_failure_rate", None)
         selected_fail_total = getattr(ga, "last_best_selected_fail_total", None)
         selected_magnitude = getattr(ga, "last_best_selected_magnitude", None)
-        best_raw_loss = getattr(ga, "last_best_raw_loss", best_loss)
+        best_mae = getattr(ga, "last_best_mae", best_loss)
+        best_mae_candidate_mae = getattr(ga, "last_best_mae_candidate_mae", best_mae)
+        best_mae_candidate_failure_rate = getattr(
+            ga, "last_best_mae_candidate_failure_rate", None
+        )
+        best_mae_candidate_fail_total = getattr(ga, "last_best_mae_candidate_fail_total", None)
+        best_mae_candidate_magnitude = getattr(ga, "last_best_mae_candidate_magnitude", None)
 
         def _normalize_float(value: Any) -> Optional[float]:
             try:
@@ -1068,20 +1087,31 @@ class CalibrationPipeline:
 
         self._last_optimization_result = {
             "selected_mode": selected_mode,
-            "selected_value": _normalize_float(selected_value),
-            "selected_value_label": "elite-slice secondary score",
-            "selected_raw_loss": _normalize_float(selected_raw_loss),
-            "selected_e_loss": _normalize_float(selected_e_loss),
+            "selected_mae": _normalize_float(selected_mae),
+            "selected_failure_rate": _normalize_float(selected_failure_rate),
             "selected_fail_total": (
                 int(selected_fail_total) if selected_fail_total is not None else None
             ),
             "selected_magnitude": _normalize_float(selected_magnitude),
-            "best_raw_loss": _normalize_float(best_raw_loss),
-            "loss_history_metric": "selected raw objective per generation",
+            "best_mae": _normalize_float(best_mae),
+            "best_mae_candidate_mae": _normalize_float(best_mae_candidate_mae),
+            "best_mae_candidate_failure_rate": _normalize_float(best_mae_candidate_failure_rate),
+            "best_mae_candidate_fail_total": (
+                int(best_mae_candidate_fail_total)
+                if best_mae_candidate_fail_total is not None
+                else None
+            ),
+            "best_mae_candidate_magnitude": _normalize_float(best_mae_candidate_magnitude),
+            "loss_history_metric": "selected MAE per generation",
         }
 
         logger.info(
-            f"✅ Calibration complete: optimization={best_loss:.2f}, vehicles={int(best_genome.sum())}"
+            "✅ Calibration complete: selected_mae=%.2f, best_mae_candidate=%.2f, vehicles=%s",
+            best_loss,
+            _normalize_float(best_mae_candidate_mae)
+            if _normalize_float(best_mae_candidate_mae) is not None
+            else float("inf"),
+            int(best_genome.sum()),
         )
 
         return best_genome, best_loss, loss_history, generation_stats
@@ -1120,12 +1150,18 @@ class CalibrationPipeline:
             demand_gen.demand_csv_to_trips_xml(demand_csv, trips_file)
 
             export_id = self._checkpoint_export_id()
-            URBDataExporter(export_id, checkpoint_dir).export(network_file, trips_file)
+            URBDataExporter(export_id, checkpoint_dir).export(
+                network_file,
+                trips_file,
+                min_connection_paths=self.min_connection_paths,
+            )
 
             checkpoint_meta = {
                 "generation": int(generation),
+                "best_mae": float(best_loss),
                 "best_loss": float(best_loss),
                 "trip_count": int(np.sum(best_genome)),
+                "min_connection_paths": int(self.min_connection_paths),
                 "timestamp": datetime.now().isoformat(),
                 "best_metrics": best_metrics or {},
             }
@@ -1299,6 +1335,8 @@ class CalibrationPipeline:
             str(self.ga_checkpoint_interval),
             "--max-ods",
             str(self.max_od_pairs),
+            "--min-connection-paths",
+            str(self.min_connection_paths),
             "--bin-size",
             self._format_cli_value(self.bin_minutes),
             "--initial-population",
@@ -1376,6 +1414,7 @@ class CalibrationPipeline:
             },
             "demand_config": {
                 "max_od_pairs": self.max_od_pairs,
+                "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
             },
@@ -1388,29 +1427,20 @@ class CalibrationPipeline:
                 "loss_history": (
                     [round(x, 2) for x in loss_history] if loss_history[0] != float("inf") else []
                 ),
-                "loss_history_label": "selected raw objective value per generation",
+                "loss_history_label": "selected MAE per generation",
                 "optimization_result": {
                     "selected_mode": self._last_optimization_result.get(
-                        "selected_mode", "elite_slice_secondary"
+                        "selected_mode", "mae_elite_lexicographic"
                     ),
-                    "selected_value": (
-                        round(self._last_optimization_result["selected_value"], 2)
-                        if self._last_optimization_result.get("selected_value") is not None
+                    "selected_mae": (
+                        round(self._last_optimization_result["selected_mae"], 2)
+                        if self._last_optimization_result.get("selected_mae") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
                     ),
-                    "selected_value_label": self._last_optimization_result.get(
-                        "selected_value_label",
-                        "elite-slice secondary score",
-                    ),
-                    "selected_raw_loss": (
-                        round(self._last_optimization_result["selected_raw_loss"], 2)
-                        if self._last_optimization_result.get("selected_raw_loss") is not None
-                        else (round(best_loss, 2) if best_loss != float("inf") else None)
-                    ),
-                    "selected_e_loss": (
-                        round(self._last_optimization_result["selected_e_loss"], 2)
-                        if self._last_optimization_result.get("selected_e_loss") is not None
-                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    "selected_failure_rate": (
+                        round(self._last_optimization_result["selected_failure_rate"], 6)
+                        if self._last_optimization_result.get("selected_failure_rate") is not None
+                        else None
                     ),
                     "selected_fail_total": self._last_optimization_result.get(
                         "selected_fail_total"
@@ -1420,14 +1450,40 @@ class CalibrationPipeline:
                         if self._last_optimization_result.get("selected_magnitude") is not None
                         else None
                     ),
-                    "best_raw_loss": (
-                        round(self._last_optimization_result["best_raw_loss"], 2)
-                        if self._last_optimization_result.get("best_raw_loss") is not None
+                    "best_mae": (
+                        round(self._last_optimization_result["best_mae"], 2)
+                        if self._last_optimization_result.get("best_mae") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "best_mae_candidate_mae": (
+                        round(self._last_optimization_result["best_mae_candidate_mae"], 2)
+                        if self._last_optimization_result.get("best_mae_candidate_mae") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "best_mae_candidate_failure_rate": (
+                        round(
+                            self._last_optimization_result["best_mae_candidate_failure_rate"], 6
+                        )
+                        if self._last_optimization_result.get(
+                            "best_mae_candidate_failure_rate"
+                        )
+                        is not None
+                        else None
+                    ),
+                    "best_mae_candidate_fail_total": self._last_optimization_result.get(
+                        "best_mae_candidate_fail_total"
+                    ),
+                    "best_mae_candidate_magnitude": (
+                        round(self._last_optimization_result["best_mae_candidate_magnitude"], 2)
+                        if self._last_optimization_result.get(
+                            "best_mae_candidate_magnitude"
+                        )
+                        is not None
+                        else None
                     ),
                     "loss_history_metric": self._last_optimization_result.get(
                         "loss_history_metric",
-                        "selected raw objective per generation",
+                        "selected MAE per generation",
                     ),
                 },
                 "quality_metrics": {
@@ -1494,6 +1550,7 @@ class CalibrationPipeline:
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
                 "max_od_pairs": self.max_od_pairs,
+                "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
                 "save_offline_dataset": self.save_offline_dataset,
@@ -1564,7 +1621,11 @@ class CalibrationPipeline:
         try:
             run_id = self.output_dir.name.replace("run_", "")
             custom_exporter = URBDataExporter(run_id, self.output_dir)
-            custom_exporter.export(network_file, trips_file)  # Pass trips.xml
+            custom_exporter.export(
+                network_file,
+                trips_file,
+                min_connection_paths=self.min_connection_paths,
+            )  # Pass trips.xml
         except Exception as e:
             logger.warning(f"URB export failed: {e}")
 

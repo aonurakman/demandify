@@ -223,13 +223,13 @@ demandify follows a multi-stage pipeline:
 
 The genetic algorithm includes several mechanisms to avoid common pitfalls like local optima stagnation and trip count explosion:
 
-- **Elite-slice parent selection**: Individuals are first ordered by flow-fit error `E`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the parent pool. Inside that slice, demandify builds a secondary score from equally weighted normalized ranks of `E`, `fail_total`, and genome magnitude, so main fit, reliability, and total demand all matter on comparable scales.
+- **MAE-elite lexicographic parent selection**: Individuals are first ordered by `mae`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the parent pool. Inside that slice, demandify prefers lower `failure_rate`, then lower genome magnitude, and uses exact `mae` only as the final deterministic tie-break. This keeps MAE as the sole global optimization target while still preferring more reliable and smaller-demand candidates within the MAE frontier.
 - **Random immigrants**: A small fraction of completely random individuals is injected each generation to maintain genetic diversity and escape local optima.
 - **Assortative mating**: Parents are paired by dissimilarity (by genome magnitude) for crossover, promoting exploration of the search space.
 - **Deterministic crowding**: Offspring compete with similar parents for population slots, preserving niche diversity.
 - **Adaptive mutation boost**: If the best fitness stagnates for K generations, mutation sigma and rate are temporarily increased by a configurable multiplier. They reset automatically when improvement resumes.
 
-The final return policy uses that same **elite-slice secondary score** across generations, so the returned individual comes from the strongest top-by-`E` slice while still balancing failures and total demand.
+The final return policy uses that same **MAE-elite lexicographic order** across generations, so the returned individual always comes from the strongest MAE frontier while still preferring lower failure rate and smaller total demand within that frontier.
 
 The calibration report includes plots for **genotypic diversity** (mean pairwise L2 distance) and **phenotypic diversity** (σ of fitness values) across generations, along with markers indicating when mutation boost was active.
 
@@ -342,7 +342,7 @@ The canonical metadata for GitHub's "Cite this repository" is in `CITATION.cff`.
   author       = {{Ahmet Onur Akman}},
   title        = {{demandify: Calibrate SUMO traffic scenarios against real-world congestion using genetic algorithms}},
   year         = {2026},
-  version      = {0.0.4},
+  version      = {0.0.5},
   publisher    = {PyPI},
   url          = {https://pypi.org/project/demandify/},
   repository   = {https://github.com/aonurakman/demandify},

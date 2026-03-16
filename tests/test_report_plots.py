@@ -44,8 +44,10 @@ def generation_stats():
             'mean_magnitude': 200 + gen * 5,
             'best_zero_flow': max(0, 10 - gen * 2),
             'mean_zero_flow': max(0.0, 12 - gen * 1.5),
-            'best_routing_failures': max(0, 8 - gen),
-            'mean_routing_failures': max(0.0, 10 - gen * 0.8),
+            'best_failure_rate': max(0.0, 0.12 - gen * 0.02),
+            'mean_failure_rate': max(0.0, 0.16 - gen * 0.02),
+            'best_fail_total': max(0, 8 - gen),
+            'mean_fail_total': max(0.0, 10 - gen * 0.8),
         })
     return stats
 
@@ -98,6 +100,7 @@ def test_report_generates_with_generation_stats(
     assert "GA Population Statistics" in html
     assert "Failures" in html
     assert "Genome Magnitude" in html
+    assert "MAE Convergence" in html
 
 
 def test_report_generates_without_generation_stats(
@@ -153,7 +156,7 @@ def test_failures_plot_with_no_data(tmp_path):
     """Failures plot returns None when no failure data available."""
     stats = [
         {'generation': 1, 'best_zero_flow': None, 'mean_zero_flow': None,
-         'best_routing_failures': None, 'mean_routing_failures': None}
+         'best_fail_total': None, 'mean_fail_total': None}
     ]
     gen = ReportGenerator(tmp_path)
     result = gen._create_failures_plot(stats)
@@ -202,6 +205,7 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
         bbox=(0.0, 0.0, 1.0, 1.0),
         window_minutes=10,
         seed=42,
+        min_connection_paths=3,
         output_dir=tmp_path / "run_semantics",
         run_id="semantics",
     )
@@ -234,15 +238,17 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
         "total_edges": 1,
     }
     pipeline._last_optimization_result = {
-        "selected_mode": "elite_slice_secondary",
-        "selected_value": 5.55,
-        "selected_value_label": "elite-slice secondary score",
-        "selected_raw_loss": 8.88,
-        "selected_e_loss": 5.55,
+        "selected_mode": "mae_elite_lexicographic",
+        "selected_mae": 8.88,
+        "selected_failure_rate": 0.0125,
         "selected_fail_total": 1,
         "selected_magnitude": 321.0,
-        "best_raw_loss": 9.99,
-        "loss_history_metric": "selected raw objective per generation",
+        "best_mae": 9.99,
+        "best_mae_candidate_mae": 9.99,
+        "best_mae_candidate_failure_rate": 0.0225,
+        "best_mae_candidate_fail_total": 3,
+        "best_mae_candidate_magnitude": 444.0,
+        "loss_history_metric": "selected MAE per generation",
     }
 
     metadata = pipeline._export_results(
@@ -263,20 +269,28 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     results = metadata["results"]
     assert results["final_loss_mae_kmh"] == 12.34
     assert results["loss_history"] == [9.99, 8.88]
-    assert results["optimization_result"]["selected_mode"] == "elite_slice_secondary"
-    assert results["optimization_result"]["selected_value"] == 5.55
-    assert results["optimization_result"]["selected_raw_loss"] == 8.88
-    assert results["optimization_result"]["selected_e_loss"] == 5.55
+    assert results["loss_history_label"] == "selected MAE per generation"
+    assert results["optimization_result"]["selected_mode"] == "mae_elite_lexicographic"
+    assert results["optimization_result"]["selected_mae"] == 8.88
+    assert results["optimization_result"]["selected_failure_rate"] == 0.0125
     assert results["optimization_result"]["selected_fail_total"] == 1
     assert results["optimization_result"]["selected_magnitude"] == 321.0
-    assert results["optimization_result"]["best_raw_loss"] == 9.99
+    assert results["optimization_result"]["best_mae"] == 9.99
+    assert results["optimization_result"]["best_mae_candidate_mae"] == 9.99
+    assert results["optimization_result"]["best_mae_candidate_failure_rate"] == 0.0225
+    assert results["optimization_result"]["best_mae_candidate_fail_total"] == 3
+    assert results["optimization_result"]["best_mae_candidate_magnitude"] == 444.0
+    assert results["optimization_result"]["loss_history_metric"] == "selected MAE per generation"
 
     user_inputs = metadata["user_inputs"]
     assert user_inputs["run_id"] == "semantics"
     assert user_inputs["window_minutes"] == 10
     assert user_inputs["traffic_tile_zoom"] == 12
     assert user_inputs["initial_population"] == 1000
+    assert user_inputs["min_connection_paths"] == 3
     assert user_inputs["parallel_workers"] is None
+
+    assert metadata["demand_config"]["min_connection_paths"] == 3
 
     assert metadata["simulation_config"]["traffic_tile_zoom"] == 12
     assert metadata["calibration_config"]["requested_parallel_workers"] is None
@@ -291,6 +305,7 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert "--seed 42" in rerun_cmd
     assert "--tile-zoom 12" in rerun_cmd
     assert "--initial-population 1000" in rerun_cmd
+    assert "--min-connection-paths 3" in rerun_cmd
     assert "--name semantics" in rerun_cmd
     assert "--origins" not in rerun_cmd
     assert "--destinations" not in rerun_cmd

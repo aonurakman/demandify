@@ -90,12 +90,12 @@ class ReportGenerator:
     def _create_loss_plot(
         self, loss_history: List[float], generation_stats: Optional[List[dict]] = None
     ) -> str:
-        """Create loss convergence plot with optional mean±stddev band."""
+        """Create MAE convergence plot with optional mean±stddev band."""
         fig, ax = plt.subplots(figsize=(8, 4))
 
         generations = list(range(1, len(loss_history) + 1))
 
-        # Best loss line
+        # Selected MAE line
         ax.plot(
             generations,
             loss_history,
@@ -103,7 +103,7 @@ class ReportGenerator:
             linewidth=2,
             color="#2563eb",
             markersize=5,
-            label="Selected Loss",
+            label="Selected MAE",
             zorder=3,
         )
 
@@ -118,7 +118,7 @@ class ReportGenerator:
                 linewidth=1.5,
                 linestyle="--",
                 color="#f59e0b",
-                label="Mean Loss",
+                label="Mean MAE",
                 zorder=2,
             )
 
@@ -129,7 +129,7 @@ class ReportGenerator:
             )
 
         ax.set_xlabel("Generation")
-        ax.set_ylabel("Loss (MAE, km/h)")
+        ax.set_ylabel("MAE (km/h)")
         ax.set_title("Calibration Convergence")
         ax.legend(loc="upper right", fontsize=9)
         ax.grid(True, alpha=0.3)
@@ -625,7 +625,7 @@ class ReportGenerator:
     <div class="section">
         <h2>📊 Results Summary</h2>
         <div class="metrics">
-            <p>Final Loss (MAE): <span class="metric">{final_loss_str} km/h</span></p>
+            <p>Final MAE: <span class="metric">{final_loss_str} km/h</span></p>
             <p>Observed Segments: <span class="metric">{total_edges}</span></p>
             <p>Covered in Simulation: <span class="metric">{matched_edges}</span></p>
         </div>
@@ -647,8 +647,8 @@ class ReportGenerator:
         <h2>📈 Calibration Progress</h2>
         <div class="plots">
             <div class="plot">
-                <h3>Loss Convergence</h3>
-                <img src="{loss_plot}" alt="Loss Plot">
+                <h3>MAE Convergence</h3>
+                <img src="{loss_plot}" alt="MAE Plot">
             </div>
             <div class="plot">
                 <h3>Speed Comparison</h3>

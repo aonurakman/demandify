@@ -2,6 +2,8 @@
 Seeded demand generation for SUMO.
 """
 from collections import Counter
+from heapq import heappop, heappush
+from multiprocessing import get_all_start_methods, get_context
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import numpy as np
@@ -9,6 +11,8 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import logging
 import math
+import sys
+import time
 
 from demandify.sumo.network import SUMONetwork
 from demandify.sumo.departure_schedule import (
@@ -17,6 +21,129 @@ from demandify.sumo.departure_schedule import (
 )
 
 logger = logging.getLogger(__name__)
+
+_OD_VALIDATION_CONTEXT: Dict[str, object] = {}
+
+
+def _reverse_shortest_steps(
+    reverse_adjacency: Dict[str, Tuple[str, ...]],
+    destination: str,
+    state_limit: int,
+    deadline: Optional[float],
+) -> Optional[Dict[str, int]]:
+    """Compute reverse shortest-path steps from every reachable edge to destination."""
+    distances = {destination: 0}
+    queue = [destination]
+    idx = 0
+
+    while idx < len(queue):
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        if idx > state_limit:
+            return None
+
+        current = queue[idx]
+        idx += 1
+        current_distance = distances[current]
+        for predecessor in reverse_adjacency.get(current, ()):
+            if predecessor in distances:
+                continue
+            distances[predecessor] = current_distance + 1
+            queue.append(predecessor)
+
+    return distances
+
+
+def _has_at_least_k_paths_bounded(
+    adjacency: Dict[str, Tuple[str, ...]],
+    reverse_adjacency: Dict[str, Tuple[str, ...]],
+    from_edge: str,
+    to_edge: str,
+    k: int,
+    *,
+    state_limit: int,
+    timeout_seconds: float,
+) -> bool:
+    """
+    Find up to ``k`` distinct simple paths using bounded shortest-first expansion.
+
+    This is intentionally cheaper than exhaustive DFS: it prioritizes shorter
+    alternatives, prunes obviously dead branches, and returns False if the
+    per-pair state or time budget is exhausted.
+    """
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    if from_edge == to_edge:
+        return k == 1
+
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    reverse_steps = _reverse_shortest_steps(reverse_adjacency, to_edge, state_limit, deadline)
+    if reverse_steps is None or from_edge not in reverse_steps:
+        return False
+
+    found_paths = 0
+    explored_states = 0
+    frontier = [(reverse_steps[from_edge], 0, (from_edge,))]
+
+    while frontier:
+        if time.monotonic() >= deadline:
+            return False
+        if explored_states >= state_limit:
+            return False
+
+        _estimated_total, path_steps, path = heappop(frontier)
+        current = path[-1]
+
+        if current == to_edge:
+            found_paths += 1
+            if found_paths >= k:
+                return True
+            continue
+
+        explored_states += 1
+        visited = set(path)
+        for neighbor in adjacency.get(current, ()):
+            if neighbor in visited:
+                continue
+            remaining_steps = reverse_steps.get(neighbor)
+            if remaining_steps is None:
+                continue
+            new_path = path + (neighbor,)
+            new_steps = path_steps + 1
+            heappush(frontier, (new_steps + remaining_steps, new_steps, new_path))
+
+    return False
+
+
+def _init_od_validation_worker(
+    adjacency: Dict[str, Tuple[str, ...]],
+    reverse_adjacency: Dict[str, Tuple[str, ...]],
+    state_limit: int,
+    timeout_seconds: float,
+) -> None:
+    """Initialize process-local read-only OD validation context."""
+    global _OD_VALIDATION_CONTEXT
+    _OD_VALIDATION_CONTEXT = {
+        "adjacency": adjacency,
+        "reverse_adjacency": reverse_adjacency,
+        "state_limit": int(state_limit),
+        "timeout_seconds": float(timeout_seconds),
+    }
+
+
+def _validate_od_pair_task(task: Tuple[str, str, int]) -> Tuple[Tuple[str, str, int], bool]:
+    """Validate one OD pair inside a worker process."""
+    origin, destination, k = task
+    result = _has_at_least_k_paths_bounded(
+        _OD_VALIDATION_CONTEXT["adjacency"],
+        _OD_VALIDATION_CONTEXT["reverse_adjacency"],
+        origin,
+        destination,
+        k,
+        state_limit=int(_OD_VALIDATION_CONTEXT["state_limit"]),
+        timeout_seconds=float(_OD_VALIDATION_CONTEXT["timeout_seconds"]),
+    )
+    return (origin, destination, k), result
 
 
 class DemandGenerator:
@@ -32,6 +159,11 @@ class DemandGenerator:
     BOUNDARY_MARGIN_RATIO = 0.08
     BOUNDARY_MARGIN_MIN_METERS = 25.0
     BOUNDARY_MARGIN_MAX_METERS = 200.0
+    OD_PROGRESS_TIME_SECONDS = 2.0
+    OD_VALIDATION_BATCH_MULTIPLIER = 4
+    OD_VALIDATION_BATCH_MAX = 64
+    K_PATH_SEARCH_STATE_LIMIT = 15000
+    K_PATH_SEARCH_TIMEOUT_SECONDS = 0.20
     
     def __init__(self, network: SUMONetwork, seed: int = 42):
         """
@@ -52,17 +184,30 @@ class DemandGenerator:
             edge_id: tuple(sorted(neighbors))
             for edge_id, neighbors in adjacency_source.items()
         }
+        reverse_adjacency: Dict[str, List[str]] = {}
+        for edge_id, neighbors in self._deterministic_adjacency.items():
+            reverse_adjacency.setdefault(edge_id, [])
+            for neighbor in neighbors:
+                reverse_adjacency.setdefault(neighbor, []).append(edge_id)
+        self._deterministic_reverse_adjacency = {
+            edge_id: tuple(sorted(predecessors))
+            for edge_id, predecessors in reverse_adjacency.items()
+        }
         self._route_cache: Dict[Tuple[str, str], bool] = {}
+        self._k_path_cache: Dict[Tuple[str, str, int], bool] = {}
     
     def select_od_pairs(
         self,
         max_od_pairs: int = 150,
         max_consecutive_failures: int = 10000,
         min_trip_distance: float = 0.0,
+        min_connection_paths: int = 1,
+        num_workers: int = 1,
     ) -> List[Tuple[str, str]]:
         """
         Select origin/destination edges by building validated OD pairs.
-        Validates EACH pair individually (reachability + min distance) and resamples failures.
+        Validates EACH pair individually (route-count eligibility + min distance)
+        and resamples failures.
 
         Notes:
             - Validation is based on the network topology and lane permissions for passenger vehicles.
@@ -72,10 +217,19 @@ class DemandGenerator:
             max_od_pairs: Target number of OD pairs to create
             max_consecutive_failures: Max failures before giving up
             min_trip_distance: Minimum Euclidean distance between origin and destination O/D
+            min_connection_paths: Minimum number of distinct simple routes required
+                between origin and destination for the pair to be eligible. Use 1
+                for reachability-only behavior.
+            num_workers: Number of workers to use when validating sampled OD pairs.
 
         Returns:
             List of (origin_edge, destination_edge) pairs that should be routable in SUMO.
         """
+        min_connection_paths = int(min_connection_paths)
+        if min_connection_paths < 1:
+            raise ValueError("min_connection_paths must be at least 1")
+        num_workers = max(1, int(num_workers))
+
         all_edges = self.network.get_all_edges()
         
         if len(all_edges) < 2:
@@ -92,8 +246,19 @@ class DemandGenerator:
         total_attempts = 0
         selected_origin_roles: Counter = Counter()
         selected_destination_roles: Counter = Counter()
-        
-        logger.info(f"Building up to {max_od_pairs} validated OD pairs (min_dist={min_trip_distance}m)...")
+        last_progress_log_time = time.monotonic()
+        last_logged_found = -1
+        validation_batch_size = min(
+            self.OD_VALIDATION_BATCH_MAX,
+            max(1, num_workers * self.OD_VALIDATION_BATCH_MULTIPLIER),
+        )
+
+        logger.info(
+            "Building up to %s validated OD pairs (min_dist=%sm, min_connection_paths=%s)...",
+            max_od_pairs,
+            min_trip_distance,
+            min_connection_paths,
+        )
         logger.info(
             "OD selection profiles: incoming=%s, outgoing=%s, internal=%s, "
             "through_share=%.2f, boundary_margin=%.1fm",
@@ -103,94 +268,157 @@ class DemandGenerator:
             self.THROUGH_TRAFFIC_SHARE if has_boundary_bias else 0.0,
             sampling_profiles["boundary_margin_m"],
         )
+        logger.info(
+            "OD validation strategy: workers=%s, batch_size=%s, state_limit=%s, timeout=%.2fs",
+            num_workers,
+            validation_batch_size,
+            self.K_PATH_SEARCH_STATE_LIMIT,
+            self.K_PATH_SEARCH_TIMEOUT_SECONDS,
+        )
 
         current_min_dist = min_trip_distance
         logger.info(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
-        
-        while len(valid_pairs) < max_od_pairs:
-            # Safety break
-            if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
-                logger.warning(f"Reached maximum attempt limit ({total_attempts}). Stopping with {len(valid_pairs)} pairs.")
-                break
-                
-            if consecutive_failures > max_consecutive_failures:
-                logger.warning(f"Stopped after {consecutive_failures} consecutive failures. Created {len(valid_pairs)} pairs.")
-                break
-                
-            # Progress Logging (every 100 pairs)
-            if len(valid_pairs) > 0 and len(valid_pairs) % 100 == 0 and consecutive_failures == 0:
-                 logger.info(f"  ... {len(valid_pairs)}/{max_od_pairs} OD pairs found")
 
-            # Adaptive Relaxation: If stuck, reduce min distance requirement
-            if consecutive_failures > 500 and consecutive_failures % 500 == 0 and current_min_dist > 0:
-                 old_dist = current_min_dist
-                 current_min_dist *= 0.8
-                 logger.info(f"  Relaxing min_dist from {int(old_dist)}m to {int(current_min_dist)}m after failures")
+        pool = None
+        if num_workers > 1:
+            start_method = self._preferred_mp_start_method()
+            ctx = get_context(start_method) if start_method else get_context()
+            logger.info(
+                "OD validation multiprocessing start method: %s",
+                start_method or "default",
+            )
+            pool = ctx.Pool(
+                processes=num_workers,
+                initializer=_init_od_validation_worker,
+                initargs=(
+                    self._deterministic_adjacency,
+                    self._deterministic_reverse_adjacency,
+                    self.K_PATH_SEARCH_STATE_LIMIT,
+                    self.K_PATH_SEARCH_TIMEOUT_SECONDS,
+                ),
+            )
 
-            # Most attempts use a boundary-biased origin/destination profile to mimic
-            # traffic entering and leaving a partial-city calibration bbox. The rest
-            # use neutral road-importance weights so internal trips still appear.
-            use_through_profile = has_boundary_bias and self.rng.rand() < self.THROUGH_TRAFFIC_SHARE
-            if use_through_profile:
-                origin = self._sample_edge(
-                    all_edges,
-                    sampling_profiles["origin_probs"],
-                    sampling_profiles["edge_index"],
+        try:
+            while len(valid_pairs) < max_od_pairs:
+                # Safety break
+                if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                    logger.warning(
+                        "Reached maximum attempt limit (%s). Stopping with %s pairs.",
+                        total_attempts,
+                        len(valid_pairs),
+                    )
+                    break
+
+                if consecutive_failures > max_consecutive_failures:
+                    logger.warning(
+                        "Stopped after %s consecutive failures. Created %s pairs.",
+                        consecutive_failures,
+                        len(valid_pairs),
+                    )
+                    break
+
+                if consecutive_failures > 500 and consecutive_failures % 500 == 0 and current_min_dist > 0:
+                    old_dist = current_min_dist
+                    current_min_dist *= 0.8
+                    logger.info(
+                        "Relaxing min_dist from %sm to %sm after repeated OD failures",
+                        int(old_dist),
+                        int(current_min_dist),
+                    )
+
+                candidate_pairs: List[Tuple[str, str]] = []
+                candidate_set = set()
+                target_batch = min(validation_batch_size, max_od_pairs - len(valid_pairs))
+
+                while len(candidate_pairs) < target_batch:
+                    if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                        break
+                    if consecutive_failures > max_consecutive_failures:
+                        break
+
+                    use_through_profile = has_boundary_bias and self.rng.rand() < self.THROUGH_TRAFFIC_SHARE
+                    if use_through_profile:
+                        origin = self._sample_edge(
+                            all_edges,
+                            sampling_profiles["origin_probs"],
+                            sampling_profiles["edge_index"],
+                        )
+                        destination = self._sample_edge(
+                            all_edges,
+                            sampling_profiles["destination_probs"],
+                            sampling_profiles["edge_index"],
+                            exclude_edge=origin,
+                        )
+                    else:
+                        origin = self._sample_edge(
+                            all_edges,
+                            sampling_profiles["base_probs"],
+                            sampling_profiles["edge_index"],
+                        )
+                        destination = self._sample_edge(
+                            all_edges,
+                            sampling_profiles["base_probs"],
+                            sampling_profiles["edge_index"],
+                            exclude_edge=origin,
+                        )
+
+                    if origin is None or destination is None:
+                        raise ValueError("Could not sample a valid OD pair from the network")
+
+                    total_attempts += 1
+                    pair = (origin, destination)
+
+                    valid_dist = True
+                    if current_min_dist > 0:
+                        ox, oy = self.network.get_edge_centroid(origin)
+                        dx, dy = self.network.get_edge_centroid(destination)
+                        dist = math.hypot(dx - ox, dy - oy)
+                        if dist < current_min_dist:
+                            valid_dist = False
+
+                    if not valid_dist or pair in valid_pairs_set or pair in candidate_set:
+                        consecutive_failures += 1
+                        continue
+
+                    candidate_pairs.append(pair)
+                    candidate_set.add(pair)
+
+                results = self._validate_candidate_pairs(
+                    candidate_pairs,
+                    min_connection_paths=min_connection_paths,
+                    pool=pool,
                 )
-                destination = self._sample_edge(
-                    all_edges,
-                    sampling_profiles["destination_probs"],
-                    sampling_profiles["edge_index"],
-                    exclude_edge=origin,
-                )
-            else:
-                origin = self._sample_edge(
-                    all_edges,
-                    sampling_profiles["base_probs"],
-                    sampling_profiles["edge_index"],
-                )
-                destination = self._sample_edge(
-                    all_edges,
-                    sampling_profiles["base_probs"],
-                    sampling_profiles["edge_index"],
-                    exclude_edge=origin,
-                )
 
-            if origin is None or destination is None:
-                raise ValueError("Could not sample a valid OD pair from the network")
-            
-            total_attempts += 1
-            
-            # 1. Filter by minimum Euclidean distance
-            valid_dist = True
-            if current_min_dist > 0:
-                ox, oy = self.network.get_edge_centroid(origin)
-                dx, dy = self.network.get_edge_centroid(destination)
-                dist = math.hypot(dx - ox, dy - oy)
-                if dist < current_min_dist:
-                    valid_dist = False
-            
-            if not valid_dist:
-                consecutive_failures += 1
-                continue
+                for origin, destination in candidate_pairs:
+                    if len(valid_pairs) >= max_od_pairs:
+                        break
+                    if results.get((origin, destination), False):
+                        valid_pairs.append((origin, destination))
+                        valid_pairs_set.add((origin, destination))
+                        selected_origin_roles[edge_roles.get(origin, "internal")] += 1
+                        selected_destination_roles[edge_roles.get(destination, "internal")] += 1
+                        consecutive_failures = 0
+                    else:
+                        consecutive_failures += 1
 
-            pair = (origin, destination)
-            if pair in valid_pairs_set:
-                consecutive_failures += 1
-                continue
-
-            # 2. Validate reachability for this specific pair
-            if self._has_route(origin, destination):
-                valid_pairs.append(pair)
-                valid_pairs_set.add(pair)
-                selected_origin_roles[edge_roles.get(origin, "internal")] += 1
-                selected_destination_roles[edge_roles.get(destination, "internal")] += 1
-                consecutive_failures = 0  # Reset on success
-            else:
-                consecutive_failures += 1
+                now = time.monotonic()
+                if (
+                    len(valid_pairs) != last_logged_found
+                    or (now - last_progress_log_time) >= self.OD_PROGRESS_TIME_SECONDS
+                ):
+                    logger.info("%s", self._format_od_progress(len(valid_pairs), max_od_pairs))
+                    last_progress_log_time = now
+                    last_logged_found = len(valid_pairs)
+        finally:
+            if pool is not None:
+                pool.close()
+                pool.join()
         
         if len(valid_pairs) == 0:
-            raise ValueError("Could not create any valid OD pairs - network may be disconnected or constraints too strict")
+            raise ValueError(
+                "Could not create any valid OD pairs - network may be disconnected "
+                f"or constraints too strict (min_connection_paths={min_connection_paths})"
+            )
         
         if consecutive_failures >= max_consecutive_failures:
             logger.warning(f"Stopped after {consecutive_failures} consecutive failures. "
@@ -496,6 +724,79 @@ class DemandGenerator:
         """Format role counts consistently for logs."""
         ordered_roles = ("incoming", "outgoing", "internal")
         return ", ".join(f"{role}={int(counts.get(role, 0))}" for role in ordered_roles)
+
+    @staticmethod
+    def _format_od_progress(found: int, target: int, width: int = 20) -> str:
+        """Render a compact OD-selection progress bar."""
+        if target <= 0:
+            return "OD selection [--------------------] 0/0"
+        filled = int(round(width * (float(found) / float(target))))
+        filled = max(0, min(width, filled))
+        return f"OD selection [{'#' * filled}{'-' * (width - filled)}] {found}/{target}"
+
+    def _validate_candidate_pairs(
+        self,
+        candidate_pairs: List[Tuple[str, str]],
+        *,
+        min_connection_paths: int,
+        pool=None,
+    ) -> Dict[Tuple[str, str], bool]:
+        """Validate one batch of candidate OD pairs, using cache and optional workers."""
+        results: Dict[Tuple[str, str], bool] = {}
+        pending_tasks = []
+
+        for origin, destination in candidate_pairs:
+            cache_key = (origin, destination, min_connection_paths)
+            cached = self._k_path_cache.get(cache_key)
+            if cached is not None:
+                results[(origin, destination)] = cached
+            else:
+                pending_tasks.append((origin, destination, min_connection_paths))
+
+        if not pending_tasks:
+            return results
+
+        if pool is None:
+            resolved = []
+            for origin, destination, k in pending_tasks:
+                is_valid = _has_at_least_k_paths_bounded(
+                    self._deterministic_adjacency,
+                    self._deterministic_reverse_adjacency,
+                    origin,
+                    destination,
+                    k,
+                    state_limit=self.K_PATH_SEARCH_STATE_LIMIT,
+                    timeout_seconds=self.K_PATH_SEARCH_TIMEOUT_SECONDS,
+                )
+                resolved.append(((origin, destination, k), is_valid))
+        else:
+            resolved = pool.map(
+                _validate_od_pair_task,
+                pending_tasks,
+                chunksize=max(1, len(pending_tasks) // max(1, int(len(pending_tasks) ** 0.5))),
+            )
+
+        for (origin, destination, k), is_valid in resolved:
+            self._k_path_cache[(origin, destination, k)] = bool(is_valid)
+            results[(origin, destination)] = bool(is_valid)
+
+        return results
+
+    @staticmethod
+    def _preferred_mp_start_method() -> Optional[str]:
+        """Pick a platform-safe multiprocessing start method."""
+        available = set(get_all_start_methods())
+        if sys.platform == "darwin":
+            if "spawn" in available:
+                return "spawn"
+            return None
+        if "fork" in available:
+            return "fork"
+        if "forkserver" in available:
+            return "forkserver"
+        if "spawn" in available:
+            return "spawn"
+        return None
     
     def _calculate_edge_weights(self, edges: List[str]) -> List[float]:
         """Calculate selection weights for edges based on road importance."""
@@ -555,6 +856,39 @@ class DemandGenerator:
 
         self._route_cache[cache_key] = False
         return False
+
+    def has_at_least_k_paths(self, from_edge: str, to_edge: str, k: int = 1) -> bool:
+        """
+        Check whether at least ``k`` distinct simple edge-sequence paths exist.
+
+        Uses a bounded shortest-first search rather than exhaustive enumeration.
+        """
+        k = int(k)
+        if k < 1:
+            raise ValueError("k must be at least 1")
+        if from_edge == to_edge:
+            return k == 1
+
+        cache_key = (from_edge, to_edge, k)
+        cached = self._k_path_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if not self._has_route(from_edge, to_edge):
+            self._k_path_cache[cache_key] = False
+            return False
+
+        result = _has_at_least_k_paths_bounded(
+            self._deterministic_adjacency,
+            self._deterministic_reverse_adjacency,
+            from_edge,
+            to_edge,
+            k,
+            state_limit=self.K_PATH_SEARCH_STATE_LIMIT,
+            timeout_seconds=self.K_PATH_SEARCH_TIMEOUT_SECONDS,
+        )
+        self._k_path_cache[cache_key] = bool(result)
+        return bool(result)
     
     def genome_to_demand_csv(
         self,

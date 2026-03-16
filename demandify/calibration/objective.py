@@ -35,6 +35,15 @@ def calculate_reliability_penalty(
     return failure_rate * penalty_scale
 
 
+def calculate_failure_rate(fail_total: int, expected_vehicles: int) -> float:
+    """Compute failure rate with explicit zero/invalid handling."""
+    if fail_total <= 0 and expected_vehicles <= 0:
+        return 0.0
+    if expected_vehicles <= 0:
+        return float("inf")
+    return fail_total / expected_vehicles
+
+
 class EdgeSpeedObjective:
     """Objective function based on edge speed matching."""
 
@@ -57,7 +66,7 @@ class EdgeSpeedObjective:
         self.observed_edges = observed_edges.set_index("edge_id")
         self.weight_by_confidence = weight_by_confidence
 
-        logger.info(f"Objective initialized with {len(observed_edges)} observed edges")
+        logger.debug("Objective initialized with %s observed edges", len(observed_edges))
 
     def _calculate_edge_errors(self, simulated_speeds: Dict[str, float]) -> Tuple[List[float], int]:
         """Return per-edge speed errors and count of missing observed edges."""
@@ -92,7 +101,7 @@ class EdgeSpeedObjective:
 
         Returns:
             Dict with keys: mae, coverage_penalty, e_loss, fail_total,
-            reliability_penalty, loss, missing_edges.
+            failure_rate, reliability_penalty, loss, missing_edges.
         """
         errors, missing_count = self._calculate_edge_errors(simulated_speeds)
 
@@ -102,6 +111,7 @@ class EdgeSpeedObjective:
                 "coverage_penalty": 0.0,
                 "e_loss": float("inf"),
                 "fail_total": compute_fail_total(trip_stats),
+                "failure_rate": float("inf"),
                 "reliability_penalty": 0.0,
                 "loss": float("inf"),
                 "missing_edges": missing_count,
@@ -115,12 +125,12 @@ class EdgeSpeedObjective:
 
         e_loss = mae + coverage_penalty
         fail_total = compute_fail_total(trip_stats)
+        failure_rate = calculate_failure_rate(fail_total, expected_vehicles)
         reliability_penalty = calculate_reliability_penalty(fail_total, expected_vehicles)
 
         if reliability_penalty > 0.0:
             routing_failures = int((trip_stats or {}).get("routing_failures", 0) or 0)
             teleports = int((trip_stats or {}).get("teleports", 0) or 0)
-            failure_rate = fail_total / expected_vehicles
             logger.debug(
                 "Failure penalty: %s backlog + %s teleports = %s/%s (%.1f%%) = +%.2f km/h",
                 routing_failures,
@@ -136,8 +146,10 @@ class EdgeSpeedObjective:
             "coverage_penalty": float(coverage_penalty),
             "e_loss": float(e_loss),
             "fail_total": int(fail_total),
+            "failure_rate": float(failure_rate),
             "reliability_penalty": float(reliability_penalty),
-            "loss": float(e_loss + reliability_penalty),
+            # MAE is the optimization target; penalty terms remain diagnostics.
+            "loss": float(mae),
             "missing_edges": int(missing_count),
         }
 
@@ -148,7 +160,7 @@ class EdgeSpeedObjective:
         expected_vehicles: int = 0,
     ) -> float:
         """
-        Calculate loss (Weighted MAE + Penalty).
+        Calculate loss (MAE).
 
         Args:
             simulated_speeds: Dict mapping edge_id -> mean speed (km/h)
@@ -156,14 +168,14 @@ class EdgeSpeedObjective:
             expected_vehicles: Total vehicles that SHOULD have run
 
         Returns:
-            Float loss value (lower is better)
+            Float MAE value (lower is better)
         """
         components = self.calculate_loss_components(
             simulated_speeds,
             trip_stats=trip_stats,
             expected_vehicles=expected_vehicles,
         )
-        return components["loss"]
+        return components["mae"]
 
     def calculate_metrics(
         self,

@@ -35,6 +35,7 @@ def _build_run_args(**overrides):
         "ga_assortative_mating": True,
         "ga_deterministic_crowding": True,
         "max_ods": 50,
+        "min_connection_paths": 1,
         "bin_size": 5,
         "initial_population": 1000,
     }
@@ -130,3 +131,4 @@ def test_cmd_run_import_mode_uses_resolved_dataset(monkeypatch):
         20.0566,
         50.0875,
     )
+    assert FakePipeline.received_kwargs["min_connection_paths"] == 1

@@ -1,0 +1,56 @@
+{
+  "dataset_name": "nurnberg_v1",
+  "created_at": "2026-03-12T13:49:34.147363",
+  "bbox": {
+    "west": 11.0662,
+    "south": 49.4577,
+    "east": 11.0924,
+    "north": 49.4684
+  },
+  "traffic_tile_zoom": 15,
+  "provider": {
+    "provider": "tomtom",
+    "api_version": "v4",
+    "style": "absolute",
+    "data_type": "vector_flow_tiles",
+    "tile_zoom": 15
+  },
+  "stats": {
+    "fetched_segments": 109,
+    "matched_edges": 107,
+    "total_network_edges": 623
+  },
+  "quality": {
+    "score": 95,
+    "label": "excellent",
+    "recommendation": "proceed",
+    "summary": "EXCELLENT quality (95/100): 107 traffic segments map-matched to graph edges from 109 fetched segments (map-match rate 98.2%).",
+    "warnings": [],
+    "components": {
+      "availability": 35,
+      "match_rate": 25,
+      "confidence": 10,
+      "density": 15,
+      "network_coverage": 10
+    },
+    "metrics": {
+      "fetched_segments": 109,
+      "matched_edges": 107,
+      "total_network_edges": 623,
+      "match_rate": 0.981651376146789,
+      "observed_to_total_ratio": 0.17174959871589085,
+      "area_km2": 2.244931819450802,
+      "edges_per_km2": 47.66291745384783,
+      "median_match_confidence": 1.0,
+      "low_confidence_share": 0.19626168224299065
+    }
+  },
+  "files": {
+    "traffic_data_raw_csv": "data/traffic_data_raw.csv",
+    "observed_edges_csv": "data/observed_edges.csv",
+    "osm_file": "data/map.osm",
+    "sumo_network": "sumo/network.net.xml",
+    "network_plot": "plots/network.png",
+    "pipeline_log": "logs/pipeline.log"
+  }
+}

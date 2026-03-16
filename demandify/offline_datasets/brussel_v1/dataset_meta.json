@@ -1,0 +1,56 @@
+{
+  "dataset_name": "brussel_v1",
+  "created_at": "2026-03-12T13:52:18.765984",
+  "bbox": {
+    "west": 4.2926,
+    "south": 50.8568,
+    "east": 4.3236,
+    "north": 50.875
+  },
+  "traffic_tile_zoom": 15,
+  "provider": {
+    "provider": "tomtom",
+    "api_version": "v4",
+    "style": "absolute",
+    "data_type": "vector_flow_tiles",
+    "tile_zoom": 15
+  },
+  "stats": {
+    "fetched_segments": 178,
+    "matched_edges": 174,
+    "total_network_edges": 1098
+  },
+  "quality": {
+    "score": 95,
+    "label": "excellent",
+    "recommendation": "proceed",
+    "summary": "EXCELLENT quality (95/100): 174 traffic segments map-matched to graph edges from 178 fetched segments (map-match rate 97.8%).",
+    "warnings": [],
+    "components": {
+      "availability": 35,
+      "match_rate": 25,
+      "confidence": 10,
+      "density": 15,
+      "network_coverage": 10
+    },
+    "metrics": {
+      "fetched_segments": 178,
+      "matched_edges": 174,
+      "total_network_edges": 1098,
+      "match_rate": 0.9775280898876404,
+      "observed_to_total_ratio": 0.15846994535519127,
+      "area_km2": 4.387357961013901,
+      "edges_per_km2": 39.65940357412489,
+      "median_match_confidence": 1.0,
+      "low_confidence_share": 0.10344827586206896
+    }
+  },
+  "files": {
+    "traffic_data_raw_csv": "data/traffic_data_raw.csv",
+    "observed_edges_csv": "data/observed_edges.csv",
+    "osm_file": "data/map.osm",
+    "sumo_network": "sumo/network.net.xml",
+    "network_plot": "plots/network.png",
+    "pipeline_log": "logs/pipeline.log"
+  }
+}

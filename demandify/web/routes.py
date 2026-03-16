@@ -184,6 +184,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             ga_assortative_mating=params.get("ga_assortative_mating", True),
             ga_deterministic_crowding=params.get("ga_deterministic_crowding", True),
             max_od_pairs=params.get("max_od_pairs", 50),
+            min_connection_paths=params.get("min_connection_paths", 1),
             bin_minutes=params.get("bin_minutes", 5),
             initial_population=params.get("initial_population", 1000),
             offline_dataset=params.get("offline_dataset"),
@@ -335,6 +336,7 @@ async def start_run(
     ga_assortative_mating: bool = Form(RUN_DEFAULTS["ga_assortative_mating"]),
     ga_deterministic_crowding: bool = Form(RUN_DEFAULTS["ga_deterministic_crowding"]),
     max_od_pairs: int = Form(RUN_DEFAULTS["max_od_pairs"]),
+    min_connection_paths: int = Form(RUN_DEFAULTS["min_connection_paths"]),
     bin_minutes: int = Form(RUN_DEFAULTS["bin_minutes"]),
     initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
     parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
@@ -418,6 +420,12 @@ async def start_run(
             detail="save_offline_dataset_name requires save_offline_dataset=true",
         )
 
+    if min_connection_paths < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="min_connection_paths must be at least 1",
+        )
+
     # Create or use run ID
     actual_run_id = run_id if run_id else str(uuid.uuid4())
 
@@ -453,6 +461,7 @@ async def start_run(
         "ga_assortative_mating": ga_assortative_mating,
         "ga_deterministic_crowding": ga_deterministic_crowding,
         "max_od_pairs": max_od_pairs,
+        "min_connection_paths": min_connection_paths,
         "bin_minutes": bin_minutes,
         "initial_population": initial_population,
         "parallel_workers": parallel_workers,

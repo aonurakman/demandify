@@ -233,7 +233,7 @@
                                         <h6 class="config-section-title">Demand</h6>
                                     </div>
                                     <div class="row g-3">
-                                        <div class="col-md-6">
+                                        <div class="col-md-4">
                                             <label for="initial_population" class="form-label">
                                                 Initial Vehicles
                                                 <span class="info-icon" data-bs-toggle="tooltip"
@@ -244,7 +244,7 @@
                                             <input type="number" class="form-control" id="initial_population"
                                                 name="initial_population" value="{{ run_defaults.initial_population }}" min="10" step="10">
                                         </div>
-                                        <div class="col-md-6">
+                                        <div class="col-md-4">
                                             <label for="max_od_pairs" class="form-label">
                                                 Max Routes
                                                 <span class="info-icon" data-bs-toggle="tooltip"
@@ -255,6 +255,17 @@
                                             <input type="number" class="form-control" id="max_od_pairs"
                                                 name="max_od_pairs" value="{{ run_defaults.max_od_pairs }}" min="5">
                                         </div>
+                                        <div class="col-md-4">
+                                            <label for="min_connection_paths" class="form-label">
+                                                Minimum Connection Paths
+                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                    title="Minimum number of distinct simple routes required for an origin-destination pair to be eligible during OD sampling. Use 1 to keep the current reachability-only behavior. Higher values are useful when you need multiple realistic routing alternatives, for example in route-choice benchmarking or fixed-action-space experiments such as URB/RouteRL.">
+                                                    <i class="bi bi-info-circle"></i>
+                                                </span>
+                                            </label>
+                                            <input type="number" class="form-control" id="min_connection_paths"
+                                                name="min_connection_paths" value="{{ run_defaults.min_connection_paths }}" min="1" step="1">
+                                        </div>
                                         <div class="col-12">
                                             <label for="bin_minutes" class="form-label">
                                                 Bin Duration: <span id="bin-val">{{ run_defaults.bin_minutes }}</span> min
@@ -263,7 +274,7 @@
                                                     <i class="bi bi-info-circle"></i>
                                                 </span>
                                             </label>
-                                            <input type="range" class="form-range" id="bin_minutes" name="bin_minutes"
+                                            <input type="range" class="form-range emphasized-range" id="bin_minutes" name="bin_minutes"
                                                 min="1" max="{{ run_defaults.window_minutes }}" value="{{ run_defaults.bin_minutes }}" step="1"
                                                 oninput="document.getElementById('bin-val').textContent = this.value">
                                         </div>
