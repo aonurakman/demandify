@@ -346,6 +346,6 @@ The canonical metadata for GitHub's "Cite this repository" is in `CITATION.cff`.
   publisher    = {PyPI},
   url          = {https://pypi.org/project/demandify/},
   repository   = {https://github.com/aonurakman/demandify},
-  doi          = {10.5281/zenodo.18877067}
+  doi          = {10.5281/zenodo.19050050}
 }
 ```
