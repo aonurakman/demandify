@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 import xml.etree.ElementTree as ET
 import logging
 import pandas as pd
@@ -54,10 +54,10 @@ class SUMOSimulation:
 
     @staticmethod
     def _resolve_routing_failures(
-        expected_vehicles: int | None,
+        expected_vehicles: Optional[int],
         loaded: int,
         inserted: int,
-    ) -> tuple[int, int]:
+    ) -> Tuple[int, int]:
         """
         Resolve routing/insertion failures for the calibration objective.
 
