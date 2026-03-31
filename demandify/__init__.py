@@ -11,7 +11,7 @@ Issues: https://github.com/aonurakman/demandify/issues
 PyPI: https://pypi.org/project/demandify/
 """
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 __author__ = "Ahmet Onur Akman"
 __repository__ = "https://github.com/aonurakman/demandify/"
 __issues__ = "https://github.com/aonurakman/demandify/issues"

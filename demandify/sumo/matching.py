@@ -53,7 +53,7 @@ def get_network_projection(network_file: Path) -> Tuple[Optional[str], Tuple[flo
                 try:
                     x_off, y_off = map(float, net_offset.split(','))
                     offset = (x_off, y_off)
-                    logger.info(f"Network offset: {offset}")
+                    logger.debug(f"Network offset: {offset}")
                 except Exception as e:
                     logger.warning(f"Could not parse netOffset: {e}")
     except Exception as e:
@@ -110,15 +110,15 @@ class EdgeMatcher:
         proj_str = None
         if self.network_file:
             proj_str, self.offset = get_network_projection(self.network_file)
-            logger.info(f"Network projection: {proj_str[:50] if proj_str else None}")
-            logger.info(f"Network offset: {self.offset}")
+            logger.debug(f"Network projection: {proj_str[:50] if proj_str else None}")
+            logger.debug(f"Network offset: {self.offset}")
         
         if proj_str:
             # Try to create transformer from proj string
             try:
                 target_crs = CRS.from_proj4(proj_str)
                 self.transformer = Transformer.from_crs("EPSG:4326", target_crs, always_xy=True)
-                logger.info("Created transformer from network projection")
+                logger.debug("Created transformer from network projection")
                 return
             except Exception as e:
                 logger.warning(f"Could not create transformer from proj: {e}")
@@ -128,7 +128,7 @@ class EdgeMatcher:
         if utm_epsg:
             try:
                 self.transformer = Transformer.from_crs("EPSG:4326", utm_epsg, always_xy=True)
-                logger.info(f"Using fallback transformer {utm_epsg} from bbox center")
+                logger.debug(f"Using fallback transformer {utm_epsg} from bbox center")
                 return
             except Exception as e:
                 logger.error(f"Could not create fallback transformer {utm_epsg}: {e}")
@@ -230,28 +230,33 @@ class EdgeMatcher:
     def match_traffic_data(
         self,
         traffic_df: pd.DataFrame,
-        min_confidence: float = 0.1
+        min_confidence: float = 0.1,
+        debug_log_path: Optional[Path] = None,
     ) -> pd.DataFrame:
         """
-        Match all traffic segments to SUMO edges with extensive debug logging.
-        
+        Match all traffic segments to SUMO edges.
+
         Args:
             traffic_df: DataFrame from traffic provider with 'geometry' column
             min_confidence: Minimum confidence threshold for matches
+            debug_log_path: Optional path for verbose tracing log (opt-in)
         
         Returns:
             DataFrame with matched edges
         """
-        # EXTENSIVE DEBUG LOGGING TO FILE
-        import sys
-        debug_log_file = Path.home() / '.demandify' / 'matching_debug.log'
-        debug_log_file.parent.mkdir(exist_ok=True)
-        
+        debug_log_file = Path(debug_log_path) if debug_log_path else None
+        if debug_log_file:
+            debug_log_file.parent.mkdir(parents=True, exist_ok=True)
+
         def debug_log(msg):
+            if not debug_log_file:
+                return
             logger.debug(msg)
-            with open(debug_log_file, 'a') as f:
+            with open(debug_log_file, 'a', encoding='utf-8') as f:
                 f.write(f"{msg}\n")
-        
+
+        # Verbose tracing is opt-in via debug_log_path.
+        import sys
         debug_log("=" * 80)
         debug_log("MATCHING SESSION STARTED")
         debug_log("=" * 80)
@@ -297,11 +302,14 @@ class EdgeMatcher:
                 debug_log(f"  Result: edge={edge_id}, conf={confidence:.4f}")
                 
                 if edge_id and confidence >= min_confidence:
+                    edge_attrs = self.network.get_edge_attributes(edge_id)
+                    sumo_freeflow_speed_kmh = float(edge_attrs.get('speed', 13.89)) * 3.6
                     matches.append({
                         'edge_id': edge_id,
                         'segment_id': segment_id,
                         'current_speed': row.get('current_speed'),
                         'freeflow_speed': row.get('freeflow_speed'),
+                        'sumo_freeflow_speed_kmh': sumo_freeflow_speed_kmh,
                         'timestamp': row.get('timestamp'),
                         'match_confidence': confidence
                     })
@@ -319,10 +327,23 @@ class EdgeMatcher:
         debug_log(f"{'=' * 80}\n")
         
         if len(matches) > 0:
-            return pd.DataFrame(matches)
+            result_df = pd.DataFrame(matches)
+            preferred_cols = [
+                'edge_id',
+                'segment_id',
+                'current_speed',
+                'freeflow_speed',
+                'sumo_freeflow_speed_kmh',
+                'timestamp',
+                'match_confidence',
+            ]
+            cols = [c for c in preferred_cols if c in result_df.columns] + [
+                c for c in result_df.columns if c not in preferred_cols
+            ]
+            return result_df[cols]
         else:
             logger.warning("No matches - returning empty DataFrame")
             return pd.DataFrame(columns=[
-                'edge_id', 'segment_id', 'current_speed', 
-                'freeflow_speed', 'timestamp', 'match_confidence'
+                'edge_id', 'segment_id', 'current_speed',
+                'freeflow_speed', 'sumo_freeflow_speed_kmh', 'timestamp', 'match_confidence'
             ])

@@ -3,7 +3,7 @@ Genetic algorithm for demand calibration.
 Fully seeded for reproducibility with parallel evaluation.
 
 Advanced features:
-- MAE-elite lexicographic selection (MAE -> failure rate -> magnitude)
+- MAE-elite Pareto selection with teleport filtering
 - Random immigrants: inject random individuals each generation to maintain diversity
 - Assortative mating: prefer crossover between dissimilar parents
 - Deterministic crowding: offspring replace most similar parents
@@ -22,6 +22,7 @@ from deap import base, creator, tools
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+MAX_EVAL_CACHE_ENTRIES = 10000
 
 
 class GeneticAlgorithm:
@@ -98,20 +99,22 @@ class GeneticAlgorithm:
         self._base_mutation_rate = mutation_rate
         self._mutation_boosted = False
         self.last_best_selection_mode = None
-        self.last_best_selection_value = None
         self.last_best_mae = None
         self.last_best_mae_candidate_mae = None
+        self.last_best_mae_candidate_teleports = None
         self.last_best_mae_candidate_failure_rate = None
         self.last_best_mae_candidate_fail_total = None
+        self.last_best_mae_candidate_missing_edges = None
         self.last_best_mae_candidate_magnitude = None
         self.last_best_selected_mae = None
+        self.last_best_selected_teleports = None
         self.last_best_selected_failure_rate = None
         self.last_best_selected_fail_total = None
+        self.last_best_selected_missing_edges = None
         self.last_best_selected_magnitude = None
-        # Deprecated compatibility attributes. These now alias MAE-based values.
-        self.last_best_raw_loss = None
-        self.last_best_selected_raw_loss = None
-        self.last_best_selected_e_loss = None
+        self.last_eval_cache_hits = 0
+        self.last_eval_cache_misses = 0
+        self.last_eval_cache_size = 0
 
         # Seeded RNG
         self.rng = np.random.RandomState(seed)
@@ -230,18 +233,6 @@ class GeneticAlgorithm:
             return True
         return bool(metrics.get("error"))
 
-    def _individual_e_loss(self, individual) -> float:
-        """Get flow-fit error E for an individual (fallback to fitness)."""
-        if self._has_worker_error(individual):
-            return float("inf")
-        metrics = getattr(individual, "metrics", {}) or {}
-        e_loss = metrics.get("e_loss")
-        if e_loss is None:
-            if individual.fitness.valid:
-                return self._safe_float(individual.fitness.values[0], default=float("inf"))
-            return float("inf")
-        return self._safe_float(e_loss, default=float("inf"))
-
     def _individual_mae(self, individual) -> float:
         """Get MAE from metrics or fitness with invalid/error protection."""
         if not individual.fitness.valid or self._has_worker_error(individual):
@@ -252,12 +243,8 @@ class GeneticAlgorithm:
             return self._safe_float(mae, default=float("inf"))
         return self._safe_float(individual.fitness.values[0], default=float("inf"))
 
-    def _individual_raw_loss(self, individual) -> float:
-        """Backward-compatible alias for the MAE fitness value."""
-        return self._individual_mae(individual)
-
     def _individual_fail_total(self, individual) -> int:
-        """Get fail_total (routing failures + teleports) with backward-compatible fallback."""
+        """Get fail_total (routing failures + teleports)."""
         metrics = getattr(individual, "metrics", {}) or {}
 
         fail_total = metrics.get("fail_total")
@@ -272,6 +259,28 @@ class GeneticAlgorithm:
         if fallback_total == 0 and routing_raw is None and teleports_raw is None and self._has_worker_error(individual):
             return 1
         return fallback_total
+
+    def _individual_teleports(self, individual) -> int:
+        """Get teleport count with worker-error protection."""
+        metrics = getattr(individual, "metrics", {}) or {}
+        teleports = metrics.get("teleports")
+        if teleports is not None:
+            return self._safe_int(teleports, default=0)
+        if self._has_worker_error(individual):
+            return 1
+        return 0
+
+    def _individual_missing_edges(self, individual) -> int:
+        """Get missing observed-edge count with worker-error protection."""
+        metrics = getattr(individual, "metrics", {}) or {}
+        missing_edges = metrics.get("missing_edges")
+        if missing_edges is None:
+            missing_edges = metrics.get("zero_flow_edges")
+        if missing_edges is not None:
+            return max(0, self._safe_int(missing_edges, default=0))
+        if self._has_worker_error(individual):
+            return 2**31 - 1
+        return 0
 
     @staticmethod
     def _individual_magnitude(individual) -> float:
@@ -313,26 +322,76 @@ class GeneticAlgorithm:
         rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
         return (
             self._individual_mae(individual),
+            self._individual_teleports(individual),
             rate_is_inf,
             rate_fraction,
+            self._individual_missing_edges(individual),
             self._individual_magnitude(individual),
         )
 
-    def _elite_selection_sort_key(self, individual):
-        """Deterministic lexicographic ordering inside the MAE elite."""
+    def _pareto_objective_tuple(self, individual, include_teleports: bool):
+        """Build Pareto objectives for an individual."""
+        rate_key = self._individual_failure_rate_key(individual)
+        missing_edges = self._individual_missing_edges(individual)
+        magnitude = self._individual_magnitude(individual)
+        if include_teleports:
+            return (self._individual_teleports(individual), rate_key, missing_edges, magnitude)
+        return (rate_key, missing_edges, magnitude)
+
+    def _pareto_dominates(self, a, b, include_teleports: bool) -> bool:
+        """Return True when individual a dominates individual b on Pareto objectives."""
+        a_obj = self._pareto_objective_tuple(a, include_teleports)
+        b_obj = self._pareto_objective_tuple(b, include_teleports)
+        return all(a_val <= b_val for a_val, b_val in zip(a_obj, b_obj)) and any(
+            a_val < b_val for a_val, b_val in zip(a_obj, b_obj)
+        )
+
+    def _pareto_rank_by_id(self, candidates, include_teleports: bool) -> Dict[int, int]:
+        """Compute nondominated-sort ranks for a small elite slice."""
+        remaining = list(candidates)
+        rank_by_id: Dict[int, int] = {}
+        rank = 0
+        while remaining:
+            front = []
+            for candidate in remaining:
+                if not any(
+                    self._pareto_dominates(other, candidate, include_teleports)
+                    for other in remaining
+                    if id(other) != id(candidate)
+                ):
+                    front.append(candidate)
+
+            if not front:
+                break
+
+            front_ids = {id(ind) for ind in front}
+            for ind in front:
+                rank_by_id[id(ind)] = rank
+            remaining = [ind for ind in remaining if id(ind) not in front_ids]
+            rank += 1
+
+        for ind in candidates:
+            rank_by_id.setdefault(id(ind), rank)
+        return rank_by_id
+
+    def _selection_sort_key(self, individual, pareto_rank_by_id):
+        """Deterministic selection key inside the MAE elite after Pareto filtering."""
         rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
         return (
+            pareto_rank_by_id.get(id(individual), 0),
+            self._individual_mae(individual),
+            self._individual_teleports(individual),
             rate_is_inf,
             rate_fraction,
+            self._individual_missing_edges(individual),
             self._individual_magnitude(individual),
-            self._individual_mae(individual),
         )
 
     def _select_best_candidate(self, candidates, key_by_id):
-        """Pick the best MAE-elite candidate under the lexicographic key."""
+        """Pick the best MAE-elite Pareto candidate."""
         if not candidates:
             return None
-        return min(candidates, key=lambda ind: key_by_id.get(id(ind), self._elite_selection_sort_key(ind)))
+        return min(candidates, key=lambda ind: key_by_id.get(id(ind)))
 
     def _build_parent_selection_plan(self, population) -> Dict[str, Any]:
         """
@@ -341,10 +400,16 @@ class GeneticAlgorithm:
         Priority:
             1) Sort full population by MAE
             2) Keep the top elite slice defined by elite_top_pct
-            3) Within that elite, prefer:
+            3) If possible, keep only zero-teleport elite candidates
+            4) Pareto-rank the remaining elite on:
+               - (failure_rate, missing_edges, magnitude) if all teleports are zero
+               - otherwise (teleports, failure_rate, missing_edges, magnitude)
+            5) Break ties by:
+               - lower MAE
+               - lower teleports
                - lower failure_rate
+               - lower missing_edges
                - lower magnitude
-               - lower exact MAE
         """
         pop_size = len(population)
         if pop_size == 0:
@@ -359,21 +424,25 @@ class GeneticAlgorithm:
         elite_count = max(1, int(self.elite_top_pct * pop_size))
         mae_sorted = sorted(population, key=self._primary_sort_key)
         elite_slice = mae_sorted[:elite_count]
+        zero_teleport_elite = [ind for ind in elite_slice if self._individual_teleports(ind) == 0]
+        candidate_pool = zero_teleport_elite if zero_teleport_elite else elite_slice
+        include_teleports = not bool(zero_teleport_elite)
+        pareto_rank_by_id = self._pareto_rank_by_id(candidate_pool, include_teleports)
         selection_key_by_id = {
-            id(ind): self._elite_selection_sort_key(ind)
-            for ind in elite_slice
+            id(ind): self._selection_sort_key(ind, pareto_rank_by_id)
+            for ind in candidate_pool
         }
 
         return {
-            "mode": "mae_elite_lexicographic",
-            "candidate_pool": elite_slice,
+            "mode": "mae_elite_pareto",
+            "candidate_pool": candidate_pool,
             "selection_key_by_id": selection_key_by_id,
             "population_size": pop_size,
             "elite_count": elite_count,
         }
 
     def _tournament_select_by_key(self, candidates, key_by_id, k, tournsize: int = 3):
-        """Tournament selection minimizing explicit lexicographic key."""
+        """Tournament selection minimizing explicit staged selection key."""
         if not candidates:
             return []
 
@@ -383,13 +452,13 @@ class GeneticAlgorithm:
             aspirants = [candidates[int(self.rng.randint(0, len(candidates)))] for _ in range(tournsize)]
             winner = min(
                 aspirants,
-                key=lambda ind: key_by_id.get(id(ind), self._elite_selection_sort_key(ind)),
+                key=lambda ind: key_by_id.get(id(ind)),
             )
             selected.append(winner)
         return selected
 
     def _select_parents(self, population, tournsize: int = 3):
-        """Select parents from the MAE elite using lexicographic preferences."""
+        """Select parents from the MAE elite using Pareto-ranked preferences."""
         plan = self._build_parent_selection_plan(population)
         parents = self._tournament_select_by_key(
             plan["candidate_pool"],
@@ -400,16 +469,14 @@ class GeneticAlgorithm:
         return parents, plan
 
     def _select_survival_elites(self, population, k: int):
-        """Keep elites using the same MAE-elite lexicographic ordering as parent selection."""
+        """Keep elites using the same MAE-elite Pareto ordering as parent selection."""
         if k <= 0 or not population:
             return []
 
         plan = self._build_parent_selection_plan(population)
         ranked_slice = sorted(
             plan["candidate_pool"],
-            key=lambda ind: plan["selection_key_by_id"].get(
-                id(ind), self._elite_selection_sort_key(ind)
-            ),
+            key=lambda ind: plan["selection_key_by_id"].get(id(ind)),
         )
         if len(ranked_slice) >= k:
             return ranked_slice[:k]
@@ -439,8 +506,10 @@ class GeneticAlgorithm:
         """Build a compact metrics summary for a tracked individual."""
         summary = {
             "mae": float(self._individual_mae(individual)),
+            "teleports": int(self._individual_teleports(individual)),
             "failure_rate": float(self._individual_failure_rate(individual)),
             "fail_total": int(self._individual_fail_total(individual)),
+            "missing_edges": int(self._individual_missing_edges(individual)),
             "magnitude": float(self._individual_magnitude(individual)),
         }
         if mode is not None:
@@ -466,7 +535,7 @@ class GeneticAlgorithm:
         return overall_best_ind, overall_best_loss
 
     def _select_generation_representative(self, population):
-        """Select the per-generation representative using the MAE-elite rule."""
+        """Select the per-generation representative using the MAE-elite Pareto rule."""
         if not population:
             return None, None
 
@@ -484,29 +553,23 @@ class GeneticAlgorithm:
         )
 
     def _select_best_generation_representative(self, representatives):
-        """Apply a global MAE-elite pass over generation representatives."""
+        """Apply the same MAE-elite Pareto rule over generation representatives."""
         if not representatives:
             return None, None
 
-        elite_count = max(1, int(self.elite_top_pct * len(representatives)))
-        mae_sorted = sorted(
-            representatives,
-            key=lambda item: (
-                item[1]["mae"],
-                self._individual_failure_rate_key(item[0]),
-                item[1]["magnitude"],
-            ),
+        population = [item[0] for item in representatives]
+        selection_plan = self._build_parent_selection_plan(population)
+        selected_ind = self._select_best_candidate(
+            selection_plan["candidate_pool"],
+            selection_plan["selection_key_by_id"],
         )
-        mae_elite = mae_sorted[:elite_count]
-        best_ind, best_state = min(
-            mae_elite,
-            key=lambda item: (
-                self._individual_failure_rate_key(item[0]),
-                item[1]["magnitude"],
-                item[1]["mae"],
-            ),
-        )
-        return best_ind, dict(best_state)
+        if selected_ind is None:
+            return None, None
+
+        state_by_id = {id(ind): dict(state) for ind, state in representatives}
+        selected_state = state_by_id.get(id(selected_ind), self._individual_summary(selected_ind))
+        selected_state["mode"] = selection_plan["mode"]
+        return selected_ind, selected_state
 
     def _resolve_return_best(
         self,
@@ -516,7 +579,7 @@ class GeneticAlgorithm:
         generation_representatives,
     ):
         """
-        Resolve final best individual with MAE-elite lexicographic policy.
+        Resolve final best individual with MAE-elite Pareto policy.
 
         Returns:
             (best_individual, selected_state)
@@ -568,8 +631,6 @@ class GeneticAlgorithm:
     def optimize(
         self,
         evaluate_func: Callable[[np.ndarray], Union[float, Tuple[float, Dict[str, Any]]]],
-        early_stopping_patience: int = 5,
-        early_stopping_epsilon: float = 0.1,
         progress_callback: Callable[[int, float, float], None] = None,
         generation_callback: Optional[
             Callable[[int, np.ndarray, float, Dict[str, Any]], None]
@@ -582,8 +643,6 @@ class GeneticAlgorithm:
             evaluate_func: Function that takes a genome and returns either a float loss
                            or a (loss, metrics_dict) tuple.
                            MUST be picklable (e.g. partial of top-level func).
-            early_stopping_patience: Stop if no improvement for N generations
-            early_stopping_epsilon: Minimum improvement threshold
             generation_callback: Optional callback executed once per generation with
                                 (generation_idx, selected_genome_snapshot,
                                  selected_mae, selected_metrics).
@@ -595,9 +654,9 @@ class GeneticAlgorithm:
         logger.info(
             f"Starting GA optimization (pop={self.population_size}, gen={self.num_generations}, workers={self.num_workers})"
         )
-        logger.info(
+        logger.debug(
             f"Advanced GA: immigrants={self.immigrant_rate:.0%}, elite_top={self.elite_top_pct:.0%}, "
-            "elite_secondary=(failure_rate -> magnitude -> MAE within MAE elite), "
+            "elite_secondary=(teleport filter -> Pareto within MAE elite), "
             f"stagnation_K={self.stagnation_patience}, "
             f"assortative={self.assortative_mating}, crowding={self.deterministic_crowding}"
         )
@@ -627,11 +686,15 @@ class GeneticAlgorithm:
         # the same staged rule globally across generations.
         generation_representatives = []
         selection_mode_prev = None
+        # In-run deterministic cache for expensive worker evaluations.
+        eval_cache: Dict[Tuple[int, ...], Tuple[float, Dict[str, Any]]] = {}
+        eval_cache_hits = 0
+        eval_cache_misses = 0
 
         # Use in-process evaluation for workers=1 to maximize reproducibility
         # and avoid multiprocessing spawn/fork side effects.
         if self.num_workers <= 1:
-            logger.info("Using single-process evaluation mode (workers=1)")
+            logger.debug("Using single-process evaluation mode (workers=1)")
 
             class _SerialPool:
                 @staticmethod
@@ -646,34 +709,94 @@ class GeneticAlgorithm:
         # Context manager ensures worker cleanup in parallel mode.
         with eval_context as pool:
 
-            # Helper for parallel evaluation
-            def parallel_evaluate(individuals):
-                arrays = [np.array(ind) for ind in individuals]
+            def _genome_key(individual) -> Tuple[int, ...]:
+                return tuple(int(gene) for gene in individual)
 
-                results = []
-                # pool.imap allows return of any object
-                for res in tqdm(
-                    pool.imap(evaluate_func, arrays),
-                    total=len(individuals),
-                    desc="  Evaluating",
-                    leave=False,
-                ):
-                    results.append(res)
-                return results
-
-            # Initial Evaluation
-            logger.info("Evaluating initial population...")
-            results = parallel_evaluate(population)
-            for ind, res in zip(population, results):
+            def _normalize_eval_result(
+                res: Union[float, Tuple[float, Dict[str, Any]]]
+            ) -> Tuple[float, Dict[str, Any]]:
                 if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], dict):
                     loss, metrics = res
+                    return float(loss), dict(metrics)
+                # Fallback for pure float return (or tuple-like legacy values).
+                loss = res[0] if isinstance(res, tuple) else res
+                return float(loss), {}
+
+            def evaluate_with_cache(individuals) -> Tuple[int, int]:
+                """
+                Evaluate individuals with in-run genome memoization.
+
+                Returns:
+                    (hits_delta, misses_delta) for this evaluation call.
+                """
+                nonlocal eval_cache_hits, eval_cache_misses
+
+                if not individuals:
+                    return 0, 0
+
+                hits_before = eval_cache_hits
+                misses_before = eval_cache_misses
+                pending_arrays = []
+                pending_keys = []
+                pending_by_key = set()
+                keys = []
+
+                for ind in individuals:
+                    key = _genome_key(ind)
+                    keys.append(key)
+                    if key in eval_cache:
+                        eval_cache_hits += 1
+                        continue
+                    if key in pending_by_key:
+                        # Duplicate in the same batch; evaluate once.
+                        eval_cache_hits += 1
+                        continue
+                    pending_by_key.add(key)
+                    pending_keys.append(key)
+                    pending_arrays.append(np.array(ind))
+                    eval_cache_misses += 1
+
+                if pending_arrays:
+                    for key, res in zip(
+                        pending_keys,
+                        tqdm(
+                            pool.imap(evaluate_func, pending_arrays),
+                            total=len(pending_arrays),
+                            desc="  Evaluating",
+                            leave=False,
+                        ),
+                    ):
+                        eval_cache[key] = _normalize_eval_result(res)
+
+                for ind, key in zip(individuals, keys):
+                    loss, metrics = eval_cache[key]
                     ind.fitness.values = (loss,)
-                    ind.metrics = metrics
-                else:
-                    # Fallback for pure float return
-                    loss = res[0] if isinstance(res, tuple) else res
-                    ind.fitness.values = (loss,)
-                    ind.metrics = {}
+                    ind.metrics = dict(metrics)
+
+                if len(eval_cache) > MAX_EVAL_CACHE_ENTRIES:
+                    trim_to = max(1, MAX_EVAL_CACHE_ENTRIES // 2)
+                    evicted = 0
+                    while len(eval_cache) > trim_to:
+                        eval_cache.pop(next(iter(eval_cache)))
+                        evicted += 1
+                    logger.debug(
+                        "Trimmed GA eval cache: evicted=%s size=%s cap=%s",
+                        evicted,
+                        len(eval_cache),
+                        MAX_EVAL_CACHE_ENTRIES,
+                    )
+
+                return eval_cache_hits - hits_before, eval_cache_misses - misses_before
+
+            # Initial Evaluation
+            logger.debug("Evaluating initial population...")
+            init_hits, init_misses = evaluate_with_cache(population)
+            logger.debug(
+                "GA eval cache (init): hits=%s misses=%s size=%s",
+                init_hits,
+                init_misses,
+                len(eval_cache),
+            )
 
             (
                 overall_best_ind,
@@ -717,13 +840,13 @@ class GeneticAlgorithm:
                     indpb=self.mutation_indpb,
                 )
 
-                # Parent selection uses a top-MAE elite slice with lexicographic preferences.
+                # Parent selection uses a top-MAE elite slice with teleport-aware Pareto preferences.
                 offspring, selection_plan = self._select_parents(population, tournsize=3)
                 offspring = list(map(self.toolbox.clone, offspring))
 
                 if selection_plan["mode"] != selection_mode_prev:
-                    logger.info(
-                        "✅ Parent selection MAE-elite lexicographic active at gen %s: elite_n=%s/%s",
+                    logger.debug(
+                        "✅ Parent selection MAE-elite Pareto active at gen %s: elite_n=%s/%s",
                         gen + 1,
                         selection_plan["elite_count"],
                         selection_plan["population_size"],
@@ -765,20 +888,18 @@ class GeneticAlgorithm:
 
                 # Evaluate (Parallel)
                 if invalid_ind:
-                    logger.info(
+                    logger.debug(
                         f"🧬 Generation {gen+1}/{self.num_generations}: evaluating {len(invalid_ind)} individuals"
                         f" ({num_immigrants} immigrants)..."
                     )
-                    results = parallel_evaluate(invalid_ind)
-                    for ind, res in zip(invalid_ind, results):
-                        if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], dict):
-                            loss, metrics = res
-                            ind.fitness.values = (loss,)
-                            ind.metrics = metrics
-                        else:
-                            loss = res[0] if isinstance(res, tuple) else res
-                            ind.fitness.values = (loss,)
-                            ind.metrics = {}
+                    hits_delta, misses_delta = evaluate_with_cache(invalid_ind)
+                    logger.debug(
+                        "GA eval cache (gen %s): hits=%s misses=%s size=%s",
+                        gen + 1,
+                        hits_delta,
+                        misses_delta,
+                        len(eval_cache),
+                    )
 
                 # --- Replacement: deterministic crowding or standard elitism ---
                 elites = self._select_survival_elites(population, self.elitism)
@@ -848,7 +969,15 @@ class GeneticAlgorithm:
                         (self._clone_individual_snapshot(best_ind_gen), dict(best_gen_state))
                     )
                 best_metrics = getattr(best_ind_gen, "metrics", {})
+                best_metrics = dict(best_metrics) if isinstance(best_metrics, dict) else {}
+                best_metrics["selection_mode"] = best_gen_state["mode"]
+                best_metrics["mae"] = best_gen_state["mae"]
+                best_metrics["teleports"] = best_gen_state["teleports"]
+                best_metrics["failure_rate"] = best_gen_state["failure_rate"]
+                best_metrics["fail_total"] = best_gen_state["fail_total"]
+                best_metrics["magnitude"] = best_gen_state["magnitude"]
                 best_fail_total = self._individual_fail_total(best_ind_gen)
+                best_teleports = self._individual_teleports(best_ind_gen)
                 best_failure_rate = self._individual_failure_rate(best_ind_gen)
                 best_selected_mae = self._individual_mae(best_ind_gen)
                 current_best = float(best_selected_mae)
@@ -911,6 +1040,7 @@ class GeneticAlgorithm:
                         failure_rate_str = "inf"
                     metric_str += (
                         f", ZeroFlow={zero_flow}, AvgDur={avg_dur:.1f}s, "
+                        f"Teleports={best_teleports}, "
                         f"FailRate={failure_rate_str}, "
                         f"FailTotal={best_fail_total}"
                     )
@@ -972,20 +1102,28 @@ class GeneticAlgorithm:
             best_mae_candidate["magnitude"],
         )
         self.last_best_selection_mode = best_selection["mode"]
-        self.last_best_selection_value = float(best_selection["failure_rate"])
         self.last_best_mae = float(overall_best_loss)
         self.last_best_mae_candidate_mae = float(best_mae_candidate["mae"])
+        self.last_best_mae_candidate_teleports = int(best_mae_candidate["teleports"])
         self.last_best_mae_candidate_failure_rate = float(best_mae_candidate["failure_rate"])
         self.last_best_mae_candidate_fail_total = int(best_mae_candidate["fail_total"])
+        self.last_best_mae_candidate_missing_edges = int(best_mae_candidate["missing_edges"])
         self.last_best_mae_candidate_magnitude = float(best_mae_candidate["magnitude"])
         self.last_best_selected_mae = float(best_selection["mae"])
+        self.last_best_selected_teleports = int(best_selection["teleports"])
         self.last_best_selected_failure_rate = float(best_selection["failure_rate"])
         self.last_best_selected_fail_total = int(best_selection["fail_total"])
+        self.last_best_selected_missing_edges = int(best_selection["missing_edges"])
         self.last_best_selected_magnitude = float(best_selection["magnitude"])
-        # Deprecated compatibility aliases.
-        self.last_best_raw_loss = float(overall_best_loss)
-        self.last_best_selected_raw_loss = float(best_selection["mae"])
-        self.last_best_selected_e_loss = float(best_selection["mae"])
+        self.last_eval_cache_hits = int(eval_cache_hits)
+        self.last_eval_cache_misses = int(eval_cache_misses)
+        self.last_eval_cache_size = int(len(eval_cache))
+        logger.debug(
+            "GA eval cache summary: hits=%s misses=%s size=%s",
+            self.last_eval_cache_hits,
+            self.last_eval_cache_misses,
+            self.last_eval_cache_size,
+        )
 
         return best_genome, best_loss, loss_history, generation_stats
 

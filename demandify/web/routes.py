@@ -4,6 +4,7 @@ Web routes for demandify with pipeline execution.
 
 import asyncio
 import logging
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -110,8 +111,9 @@ async def index(request: Request):
     config = get_config()
     offline_datasets = get_offline_dataset_catalog(include_generated=True, include_packaged=True)
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request,
+        name="index.html",
+        context={
             "request": request,
             "config": config,
             "run_defaults": RUN_DEFAULTS,
@@ -235,8 +237,9 @@ async def check_feasibility(
     from demandify.config import get_config
     from demandify.pipeline import CalibrationPipeline
 
-    # Use provided ID or generate temp one
-    actual_run_id = run_id if run_id else f"check_{uuid.uuid4().hex}"
+    # Feasibility checks are intentionally isolated from real runs.
+    # Ignore any submitted run_id and always use a transient ID + temp output dir.
+    transient_run_id = f"check_{uuid.uuid4().hex}"
 
     data_mode = (data_mode or "create").strip().lower()
     bbox: Optional[tuple] = None
@@ -271,17 +274,21 @@ async def check_feasibility(
             raise HTTPException(status_code=400, detail="TomTom API key not configured")
 
     try:
-        pipeline = CalibrationPipeline(
-            bbox=bbox,
-            window_minutes=RUN_DEFAULTS["window_minutes"],
-            seed=RUN_DEFAULTS["seed"],
-            traffic_tile_zoom=traffic_tile_zoom,
-            offline_dataset=selected_dataset_ref,
-            run_id=actual_run_id,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix=f"demandify_feasibility_{transient_run_id}_"
+        ) as transient_output_dir:
+            pipeline = CalibrationPipeline(
+                bbox=bbox,
+                window_minutes=RUN_DEFAULTS["window_minutes"],
+                seed=RUN_DEFAULTS["seed"],
+                traffic_tile_zoom=traffic_tile_zoom,
+                offline_dataset=selected_dataset_ref,
+                run_id=transient_run_id,
+                output_dir=Path(transient_output_dir),
+            )
 
-        # Run preparation
-        context = await pipeline.prepare()
+            # Run preparation
+            context = await pipeline.prepare()
         quality = assess_data_quality(
             context["traffic_df"],
             context["observed_edges"],
@@ -291,7 +298,7 @@ async def check_feasibility(
 
         return {
             "status": "success",
-            "run_id": actual_run_id,
+            "run_id": transient_run_id,
             "stats": {
                 "fetched_segments": len(context["traffic_df"]),
                 "matched_edges": len(context["observed_edges"]),
@@ -426,8 +433,25 @@ async def start_run(
             detail="min_connection_paths must be at least 1",
         )
 
+    if ga_generations < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="ga_generations must be at least 1",
+        )
+    requested_run_id = run_id.strip() if run_id and run_id.strip() else None
+    if requested_run_id:
+        requested_output_dir = Path.cwd() / "demandify_runs" / f"run_{requested_run_id}"
+        if requested_output_dir.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run ID '{requested_run_id}' already exists. "
+                    "Choose a different run_id."
+                ),
+            )
+
     # Create or use run ID
-    actual_run_id = run_id if run_id else str(uuid.uuid4())
+    actual_run_id = requested_run_id if requested_run_id else str(uuid.uuid4())
 
     # Store run metadata
     active_runs[actual_run_id] = {
@@ -516,7 +540,9 @@ async def results_page(request: Request, run_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
 
     return templates.TemplateResponse(
-        "results.html", {"request": request, "run_id": run_id, "run_data": active_runs[run_id]}
+        request=request,
+        name="results.html",
+        context={"request": request, "run_id": run_id, "run_data": active_runs[run_id]},
     )
 
 

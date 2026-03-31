@@ -38,7 +38,7 @@ class URBDataExporter:
         
     def export(self, network_file: Path, routes_file: Path, min_connection_paths: int = 1):
         """Main export workflow."""
-        logger.info(f"Starting URB data export to {self.target_dir}")
+        logger.debug(f"Starting URB data export to {self.target_dir}")
         
         try:
             min_connection_paths = int(min_connection_paths)
@@ -70,7 +70,7 @@ class URBDataExporter:
             # 5. Write od_<id>.txt
             self._write_od_txt(origins, destinations)
             
-            logger.info("URB data export completed successfully")
+            logger.debug("URB data export completed successfully")
             
         except Exception as e:
             logger.error(f"Failed to export URB data: {e}", exc_info=True)

@@ -60,12 +60,12 @@ class OSMFetcher:
         out body;
         """
         
-        logger.info(f"Fetching OSM data for bbox {bbox}")
+        logger.debug(f"Fetching OSM data for bbox {bbox}")
         
         # Try each instance with retries
         last_error = None
         for instance_url in self.OVERPASS_INSTANCES:
-            logger.info(f"Trying Overpass instance: {instance_url}")
+            logger.debug(f"Trying Overpass instance: {instance_url}")
             
             for attempt in range(max_retries):
                 try:
@@ -80,7 +80,7 @@ class OSMFetcher:
                         with open(output_file, 'wb') as f:
                             f.write(response.content)
                         
-                        logger.info(f"OSM data saved to {output_file} ({len(response.content)} bytes)")
+                        logger.debug(f"OSM data saved to {output_file} ({len(response.content)} bytes)")
                         return output_file
                     
                     elif response.status_code == 429:
@@ -108,7 +108,7 @@ class OSMFetcher:
                     logger.error(f"HTTP error on {instance_url}: {e}")
                     if attempt < max_retries - 1:
                         wait_time = 2 ** attempt
-                        logger.info(f"Retrying in {wait_time}s...")
+                        logger.debug(f"Retrying in {wait_time}s...")
                         await asyncio.sleep(wait_time)
                     else:
                         break  # Try next instance

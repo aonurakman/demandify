@@ -670,8 +670,7 @@ function initEventListeners() {
             var cb = document.getElementById(name);
             if (cb) formData.set(name, cb.checked ? 'true' : 'false');
         });
-        // Ensure we use the SAME run_id
-        formData.set('run_id', pendingRunId);
+        // Do not force feasibility run_id into the real run request.
         formData.set('save_offline_dataset', shouldSaveOffline ? 'true' : 'false');
         if (shouldSaveOffline) {
             formData.set('save_offline_dataset_name', saveName);

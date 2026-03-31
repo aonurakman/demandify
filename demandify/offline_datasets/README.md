@@ -18,5 +18,6 @@ offline_datasets/
 Notes:
 
 - Do not add raw `.osm` files here; they are excluded from packaging.
+- `data/observed_edges.csv` should ideally include `sumo_freeflow_speed_kmh`; if it does not, the runtime pipeline will enrich it from the packaged SUMO network before calibration.
 - Runtime-generated datasets are created in `demandify_datasets/` and are ignored by Git.
 - Promote a runtime dataset by copying only the required files into this directory.

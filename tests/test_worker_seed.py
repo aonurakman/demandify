@@ -26,6 +26,13 @@ def test_stable_seed_changes_with_genome_or_base():
     assert seed_a != seed_c
 
 
+def test_stable_seed_stays_within_sumo_integer_range():
+    genome = np.arange(1000, dtype=np.int64)
+    seed = worker._stable_seed(genome, base_seed=42)
+
+    assert 0 <= seed < worker.SUMO_MAX_SEED
+
+
 def test_worker_error_metrics_are_explicitly_infeasible():
     metrics = worker.build_worker_error_metrics("boom", worker_idx=7)
 
@@ -36,7 +43,6 @@ def test_worker_error_metrics_are_explicitly_infeasible():
     assert metrics["mae"] == float("inf")
     assert metrics["failure_rate"] == float("inf")
     assert metrics["magnitude"] == 0
-    assert metrics["e_loss"] == float("inf")
     assert metrics["loss"] == float("inf")
     assert metrics["worker_id"] == 7
 

@@ -29,6 +29,7 @@ from demandify.calibration.objective import EdgeSpeedObjective
 # We rely on the parent process setting up logging before pool creation or basicConfig.
 logger = logging.getLogger(__name__)
 WORKER_FAILURE_FAIL_TOTAL_SENTINEL = 1
+SUMO_MAX_SEED = 2**31 - 1
 _UNUSABLE_TEMP_ROOTS: set[str] = set()
 
 
@@ -42,8 +43,6 @@ def build_worker_error_metrics(error_message: str, worker_idx: Optional[int] = N
         "teleports": 0,
         "fail_total": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
         "failure_rate": float("inf"),
-        "reliability_penalty": float("inf"),
-        "e_loss": float("inf"),
         "loss": float("inf"),
         "zero_flow_edges": None,
         "total_vehicles": 0,
@@ -117,7 +116,7 @@ def _stable_seed(genome: np.ndarray, base_seed: int) -> int:
     """Deterministic seed from genome + base seed."""
     digest = hashlib.sha256(genome.tobytes()).digest()
     seed_val = int.from_bytes(digest[:8], byteorder="little")
-    return (seed_val ^ base_seed) % (2**32 - 1)
+    return (seed_val ^ base_seed) % SUMO_MAX_SEED
 
 
 def generate_demand_files(
@@ -291,8 +290,6 @@ def run_simulation_worker(
         metrics['teleports'] = teleports
         metrics['fail_total'] = fail_total
         metrics['failure_rate'] = float(loss_components.get("failure_rate", 0.0))
-        metrics['reliability_penalty'] = float(loss_components.get("reliability_penalty", 0.0))
-        metrics['e_loss'] = float(loss_components.get("e_loss", mae))
         metrics['total_vehicles'] = expected_vehicles
         metrics['magnitude'] = expected_vehicles
         metrics['zero_flow_edges'] = metrics['missing_edges'] # Same thing essentially

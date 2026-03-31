@@ -12,10 +12,10 @@ def sequential_departure_times(
     count: int,
 ) -> np.ndarray:
     """
-    Create equally spaced departures over (start_time, end_time], including end_time.
+    Create deterministic, evenly spaced departures strictly inside a bin.
 
     Example:
-        start=0, end=120, count=4 -> [30, 60, 90, 120]
+        start=0, end=120, count=4 -> [24, 48, 72, 96]
 
     If the bin duration is zero or negative, departures fall back to end_time.
     """
@@ -28,10 +28,8 @@ def sequential_departure_times(
     if end <= start:
         return np.full(count, end, dtype=float)
 
-    step = (end - start) / float(count)
-    departures = start + step * np.arange(1, count + 1, dtype=float)
-    departures[-1] = end  # avoid floating drift on the last value
-    return departures
+    section = (end - start) / float(count + 1)
+    return start + section * np.arange(1, count + 1, dtype=float)
 
 
 def format_departure_time(value: float, decimals: int = 6) -> str:

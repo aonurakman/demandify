@@ -32,7 +32,7 @@ from demandify.calibration.worker import (
 from functools import partial
 from demandify.cache.manager import CacheManager
 from demandify.cache.keys import bbox_key, osm_key, network_key, traffic_key, matching_key
-from demandify.export.exporter import ScenarioExporter
+from demandify.export.exporter import ScenarioExporter, write_sumocfg
 from demandify.export.report import ReportGenerator
 from demandify.utils.visualization import (
     plot_edge_speed_heatmap,
@@ -148,7 +148,9 @@ class CalibrationPipeline:
         self.parallel_workers = parallel_workers
         self.traffic_tile_zoom = traffic_tile_zoom
         self.ga_population = ga_population
-        self.ga_generations = ga_generations
+        self.ga_generations = int(ga_generations)
+        if self.ga_generations < 1:
+            raise ValueError("ga_generations must be at least 1")
         self.ga_mutation_rate = ga_mutation_rate
         self.ga_crossover_rate = ga_crossover_rate
         self.ga_elitism = ga_elitism
@@ -221,7 +223,7 @@ class CalibrationPipeline:
 
         self.progress_callback = progress_callback
 
-        logger.info(
+        logger.debug(
             "Pipeline initialized: mode=%s, bbox=%s, seed=%s, run_id=%s, min_connection_paths=%s",
             self.data_mode,
             bbox,
@@ -297,6 +299,34 @@ class CalibrationPipeline:
             .to_dict()
         )
         return {str(edge_id): float(speed) for edge_id, speed in aggregated.items()}
+
+    @staticmethod
+    def _ensure_observed_edges_sumo_freeflow(
+        observed_edges: Optional[pd.DataFrame],
+        network: SUMONetwork,
+    ) -> pd.DataFrame:
+        """Ensure observed edges include the matched SUMO edge free-flow speed in km/h."""
+        if observed_edges is None:
+            return pd.DataFrame()
+        if observed_edges.empty:
+            enriched = observed_edges.copy()
+            if "sumo_freeflow_speed_kmh" not in enriched.columns:
+                enriched["sumo_freeflow_speed_kmh"] = pd.Series(dtype=float)
+            return enriched
+
+        enriched = observed_edges.copy()
+        if "edge_id" not in enriched.columns:
+            enriched["sumo_freeflow_speed_kmh"] = pd.Series([50.0] * len(enriched), dtype=float)
+            return enriched
+
+        def _lookup_sumo_freeflow(edge_id: Any) -> float:
+            attrs = network.get_edge_attributes(str(edge_id))
+            return float(attrs.get("speed", 13.89)) * 3.6
+
+        freeflow_series = enriched["edge_id"].map(_lookup_sumo_freeflow)
+        freeflow_series = pd.to_numeric(freeflow_series, errors="coerce").fillna(50.0)
+        enriched["sumo_freeflow_speed_kmh"] = freeflow_series.astype(float)
+        return enriched
 
     async def _write_network_plot(
         self,
@@ -448,6 +478,8 @@ class CalibrationPipeline:
         self._report_progress(4, "Import Dataset", "Loading offline matched observed edges...")
         observed_edges_file = copied["data/observed_edges.csv"]
         observed_edges = pd.read_csv(observed_edges_file)
+        observed_edges = self._ensure_observed_edges_sumo_freeflow(observed_edges, net)
+        observed_edges.to_csv(observed_edges_file, index=False)
         await self._write_network_plot(network_file, observed_edges=observed_edges)
         self._report_progress(
             4, "Import Dataset", f"✓ Imported {len(observed_edges)} matched observed edges"
@@ -539,7 +571,7 @@ class CalibrationPipeline:
         )
         # Use the same seed policy as GA evaluation for the selected genome.
         final_sim_seed = int(_stable_seed(np.asarray(best_genome), self.seed))
-        logger.info(f"Final simulation seed (genome-aligned): {final_sim_seed}")
+        logger.debug(f"Final simulation seed (genome-aligned): {final_sim_seed}")
         simulated_speeds = self._run_final_simulation(
             network_file,
             trips_file,
@@ -643,7 +675,7 @@ class CalibrationPipeline:
             return
 
         if self.data_mode != "create":
-            logger.info("Skipping offline dataset save in import mode.")
+            logger.debug("Skipping offline dataset save in import mode.")
             return
 
         dataset_name = normalize_offline_dataset_name(self.save_offline_dataset_name or "")
@@ -750,7 +782,7 @@ class CalibrationPipeline:
         # Check if already fetched (idempotency for UI confirmation flow)
         traffic_data_file = self.output_dir / "data" / "traffic_data_raw.csv"
         if traffic_data_file.exists():
-            logger.info("Using existing traffic data from run directory")
+            logger.debug("Using existing traffic data from run directory")
             df = pd.read_csv(traffic_data_file)
             if len(df) > 0 and "geometry" in df.columns and isinstance(df.iloc[0]["geometry"], str):
                 import ast
@@ -796,7 +828,7 @@ class CalibrationPipeline:
             return False
 
         if self.cache_manager.exists(traffic_cache_path):
-            logger.info(f"Using cached traffic snapshot {traffic_cache_key}")
+            logger.debug(f"Using cached traffic snapshot {traffic_cache_key}")
             df = pd.read_pickle(traffic_cache_path)
             if len(df) > 0 and "timestamp" not in df.columns:
                 df["timestamp"] = self.traffic_timestamp
@@ -880,23 +912,29 @@ class CalibrationPipeline:
 
         # Check if already matches (idempotency)
         observed_edges_file = self.output_dir / "data" / "observed_edges.csv"
+        network = SUMONetwork(network_file)
         if observed_edges_file.exists():
-            logger.info("Using existing observed edges from run directory")
-            return pd.read_csv(observed_edges_file)
+            logger.debug("Using existing observed edges from run directory")
+            existing = pd.read_csv(observed_edges_file)
+            existing = self._ensure_observed_edges_sumo_freeflow(existing, network)
+            existing.to_csv(observed_edges_file, index=False)
+            return existing
 
         if observed_edges_cache and self.cache_manager.exists(observed_edges_cache):
-            logger.info(f"Using cached observed edges {cache_key_match}")
+            logger.debug(f"Using cached observed edges {cache_key_match}")
             cached = pd.read_csv(observed_edges_cache)
+            cached = self._ensure_observed_edges_sumo_freeflow(cached, network)
+            cached.to_csv(observed_edges_cache, index=False)
             if len(cached) > 0:
                 return cached
-            logger.info("Cached observed edges were empty; recomputing.")
+            logger.debug("Cached observed edges were empty; recomputing.")
 
-        network = SUMONetwork(network_file)
         matcher = EdgeMatcher(
             network, network_file, bbox=self.bbox
         )  # Pass file for projection info
 
         observed_edges = matcher.match_traffic_data(traffic_df, min_confidence=0.1)
+        observed_edges = self._ensure_observed_edges_sumo_freeflow(observed_edges, network)
 
         logger.debug(f"Matched {len(observed_edges)} edges")
 
@@ -926,7 +964,7 @@ class CalibrationPipeline:
         # But cap it at 1km for very large maps to avoid filtering too much
         self.min_trip_distance = min(1000.0, max(200.0, diag * 0.10))
 
-        logger.info(
+        logger.debug(
             f"Network diagonal ~{int(diag)}m. Using min_trip_distance={int(self.min_trip_distance)}m"
         )
 
@@ -960,7 +998,7 @@ class CalibrationPipeline:
                 end = total_duration
             departure_bins.append((start, end))
 
-        logger.info(
+        logger.debug(
             f"Created {len(od_pairs)} OD pairs and {len(departure_bins)} departure bins (duration={target_bin_duration}s)"
         )
 
@@ -1011,10 +1049,10 @@ class CalibrationPipeline:
             init_prob = avg_trips_per_gene / max(0.1, avg_val_if_active)
             init_prob = min(1.0, max(0.001, init_prob))  # Clamp
 
-        logger.info(
+        logger.debug(
             f"Dynamic GA Initialization: Target {self.initial_population} vehicles -> Bounds {bounds} (Avg {avg_trips_per_gene:.2f}/gene)"
         )
-        logger.info(
+        logger.debug(
             f"GA mutation sigma: using user-configured sigma={self.ga_mutation_sigma}"
         )
 
@@ -1048,6 +1086,16 @@ class CalibrationPipeline:
             current_best_mae: float,
             best_metrics: Dict[str, Any],
         ) -> None:
+            self._save_latest_selected_export(
+                generation=generation,
+                best_genome=best_genome_snapshot,
+                best_loss=current_best_mae,
+                best_metrics=best_metrics,
+                demand_gen=demand_gen,
+                od_pairs=od_pairs,
+                departure_bins=departure_bins,
+                network_file=network_file,
+            )
             if generation != 1 and generation % self.ga_checkpoint_interval != 0:
                 return
             self._save_generation_checkpoint(
@@ -1065,17 +1113,23 @@ class CalibrationPipeline:
             evaluate_func_clean,
             generation_callback=generation_checkpoint_callback,
         )
-        selected_mode = getattr(ga, "last_best_selection_mode", None) or "mae_elite_lexicographic"
+        selected_mode = getattr(ga, "last_best_selection_mode", None) or "mae_elite_pareto"
         selected_mae = getattr(ga, "last_best_selected_mae", best_loss)
+        selected_teleports = getattr(ga, "last_best_selected_teleports", None)
         selected_failure_rate = getattr(ga, "last_best_selected_failure_rate", None)
         selected_fail_total = getattr(ga, "last_best_selected_fail_total", None)
+        selected_missing_edges = getattr(ga, "last_best_selected_missing_edges", None)
         selected_magnitude = getattr(ga, "last_best_selected_magnitude", None)
         best_mae = getattr(ga, "last_best_mae", best_loss)
         best_mae_candidate_mae = getattr(ga, "last_best_mae_candidate_mae", best_mae)
+        best_mae_candidate_teleports = getattr(ga, "last_best_mae_candidate_teleports", None)
         best_mae_candidate_failure_rate = getattr(
             ga, "last_best_mae_candidate_failure_rate", None
         )
         best_mae_candidate_fail_total = getattr(ga, "last_best_mae_candidate_fail_total", None)
+        best_mae_candidate_missing_edges = getattr(
+            ga, "last_best_mae_candidate_missing_edges", None
+        )
         best_mae_candidate_magnitude = getattr(ga, "last_best_mae_candidate_magnitude", None)
 
         def _normalize_float(value: Any) -> Optional[float]:
@@ -1088,17 +1142,33 @@ class CalibrationPipeline:
         self._last_optimization_result = {
             "selected_mode": selected_mode,
             "selected_mae": _normalize_float(selected_mae),
+            "selected_teleports": (
+                int(selected_teleports) if selected_teleports is not None else None
+            ),
             "selected_failure_rate": _normalize_float(selected_failure_rate),
             "selected_fail_total": (
                 int(selected_fail_total) if selected_fail_total is not None else None
             ),
+            "selected_missing_edges": (
+                int(selected_missing_edges) if selected_missing_edges is not None else None
+            ),
             "selected_magnitude": _normalize_float(selected_magnitude),
             "best_mae": _normalize_float(best_mae),
             "best_mae_candidate_mae": _normalize_float(best_mae_candidate_mae),
+            "best_mae_candidate_teleports": (
+                int(best_mae_candidate_teleports)
+                if best_mae_candidate_teleports is not None
+                else None
+            ),
             "best_mae_candidate_failure_rate": _normalize_float(best_mae_candidate_failure_rate),
             "best_mae_candidate_fail_total": (
                 int(best_mae_candidate_fail_total)
                 if best_mae_candidate_fail_total is not None
+                else None
+            ),
+            "best_mae_candidate_missing_edges": (
+                int(best_mae_candidate_missing_edges)
+                if best_mae_candidate_missing_edges is not None
                 else None
             ),
             "best_mae_candidate_magnitude": _normalize_float(best_mae_candidate_magnitude),
@@ -1119,6 +1189,75 @@ class CalibrationPipeline:
     def _checkpoint_export_id(self) -> str:
         """Return stable experiment id used for URB-style export folders."""
         return self.output_dir.name.replace("run_", "")
+
+    def _save_latest_selected_export(
+        self,
+        generation: int,
+        best_genome: np.ndarray,
+        best_loss: float,
+        best_metrics: Dict[str, Any],
+        demand_gen: DemandGenerator,
+        od_pairs: List[Tuple[str, str]],
+        departure_bins: List[Tuple[int, int]],
+        network_file: Path,
+    ) -> None:
+        """Persist a lightweight runnable snapshot of the latest selected genome."""
+        latest_dir = self.output_dir / "latest_selected"
+        data_dir = latest_dir / "data"
+        sumo_dir = latest_dir / "sumo"
+        demand_csv = data_dir / "demand.csv"
+        trips_file = sumo_dir / "trips.xml"
+        latest_network = sumo_dir / "network.net.xml"
+
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            sumo_dir.mkdir(parents=True, exist_ok=True)
+
+            demand_gen.genome_to_demand_csv(best_genome, od_pairs, departure_bins, demand_csv)
+            demand_gen.demand_csv_to_trips_xml(demand_csv, trips_file)
+            shutil.copy2(network_file, latest_network)
+            latest_seed = int(_stable_seed(np.asarray(best_genome), self.seed))
+            write_sumocfg(
+                network_file=latest_network,
+                trips_file=trips_file,
+                output_file=sumo_dir / "scenario.sumocfg",
+                simulation_time=(self.window_minutes + self.warmup_minutes) * 60,
+                step_length=self.step_length,
+                seed=latest_seed,
+            )
+
+            latest_meta = {
+                "run_info": {
+                    "timestamp": datetime.now().isoformat(),
+                    "seed": self.seed,
+                    "sumo_seed": latest_seed,
+                },
+                "simulation_config": {
+                    "window_minutes": self.window_minutes,
+                    "warmup_minutes": self.warmup_minutes,
+                    "step_length_seconds": self.step_length,
+                },
+                "latest_selected": {
+                    "generation": int(generation),
+                    "selected_mae": float(best_loss),
+                    "selected_teleports": int(best_metrics.get("teleports", 0) or 0),
+                    "selected_failure_rate": float(best_metrics.get("failure_rate", 0.0) or 0.0),
+                    "selected_fail_total": int(best_metrics.get("fail_total", 0) or 0),
+                    "selected_missing_edges": int(best_metrics.get("missing_edges", 0) or 0),
+                    "selected_magnitude": float(best_metrics.get("magnitude", np.sum(best_genome))),
+                    "selected_mode": best_metrics.get("selection_mode", "mae_elite_pareto"),
+                },
+                "output_files": {
+                    "demand_csv": "data/demand.csv",
+                    "trips_xml": "sumo/trips.xml",
+                    "network_xml": "sumo/network.net.xml",
+                    "scenario_config": "sumo/scenario.sumocfg",
+                },
+            }
+            with open(latest_dir / "run_meta.json", "w", encoding="utf-8") as f:
+                json.dump(latest_meta, f, indent=2)
+        except Exception as e:
+            logger.warning("Latest selected export failed at gen %s: %s", generation, e)
 
     def _save_generation_checkpoint(
         self,
@@ -1168,7 +1307,7 @@ class CalibrationPipeline:
             with open(checkpoint_dir / "checkpoint_meta.json", "w") as f:
                 json.dump(checkpoint_meta, f, indent=2, default=str)
 
-            logger.info(
+            logger.debug(
                 "💾 Saved generation checkpoint at gen=%s (%s)",
                 generation,
                 checkpoint_dir,
@@ -1375,6 +1514,12 @@ class CalibrationPipeline:
     ) -> Dict:
         """Export scenario and generate report with comprehensive metadata."""
         # Comprehensive metadata per user request
+        loss_history_export = (
+            [round(x, 2) for x in loss_history]
+            if loss_history and loss_history[0] != float("inf")
+            else []
+        )
+
         metadata = {
             "run_info": {
                 "timestamp": datetime.now().isoformat(),
@@ -1424,19 +1569,18 @@ class CalibrationPipeline:
                     if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
                     else None
                 ),
-                "loss_history": (
-                    [round(x, 2) for x in loss_history] if loss_history[0] != float("inf") else []
-                ),
+                "loss_history": loss_history_export,
                 "loss_history_label": "selected MAE per generation",
                 "optimization_result": {
                     "selected_mode": self._last_optimization_result.get(
-                        "selected_mode", "mae_elite_lexicographic"
+                        "selected_mode", "mae_elite_pareto"
                     ),
                     "selected_mae": (
                         round(self._last_optimization_result["selected_mae"], 2)
                         if self._last_optimization_result.get("selected_mae") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
                     ),
+                    "selected_teleports": self._last_optimization_result.get("selected_teleports"),
                     "selected_failure_rate": (
                         round(self._last_optimization_result["selected_failure_rate"], 6)
                         if self._last_optimization_result.get("selected_failure_rate") is not None
@@ -1444,6 +1588,9 @@ class CalibrationPipeline:
                     ),
                     "selected_fail_total": self._last_optimization_result.get(
                         "selected_fail_total"
+                    ),
+                    "selected_missing_edges": self._last_optimization_result.get(
+                        "selected_missing_edges"
                     ),
                     "selected_magnitude": (
                         round(self._last_optimization_result["selected_magnitude"], 2)
@@ -1460,6 +1607,9 @@ class CalibrationPipeline:
                         if self._last_optimization_result.get("best_mae_candidate_mae") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
                     ),
+                    "best_mae_candidate_teleports": self._last_optimization_result.get(
+                        "best_mae_candidate_teleports"
+                    ),
                     "best_mae_candidate_failure_rate": (
                         round(
                             self._last_optimization_result["best_mae_candidate_failure_rate"], 6
@@ -1472,6 +1622,9 @@ class CalibrationPipeline:
                     ),
                     "best_mae_candidate_fail_total": self._last_optimization_result.get(
                         "best_mae_candidate_fail_total"
+                    ),
+                    "best_mae_candidate_missing_edges": self._last_optimization_result.get(
+                        "best_mae_candidate_missing_edges"
                     ),
                     "best_mae_candidate_magnitude": (
                         round(self._last_optimization_result["best_mae_candidate_magnitude"], 2)
@@ -1646,7 +1799,7 @@ class CalibrationPipeline:
         network_viz_file = self.output_dir / "plots" / "network.png"
         try:
             visualize_network(network_file, network_viz_file)
-            logger.info(f"Network visualization saved: {network_viz_file}")
+            logger.debug(f"Network visualization saved: {network_viz_file}")
         except Exception as e:
             logger.warning(f"Failed to create network visualization: {e}")
 

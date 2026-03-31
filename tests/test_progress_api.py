@@ -95,6 +95,24 @@ def test_progress_response_failed_status(run_entry):
     assert data["status"] == "failed"
 
 
+def test_results_page_renders_for_active_run(run_entry):
+    """Results page should render successfully for an existing in-memory run."""
+    run_id = run_entry(
+        "test-results-page",
+        "completed",
+        8,
+        "Complete",
+        [{"message": "Done", "level": "info"}],
+    )
+    active_runs[run_id]["metadata"] = {"results": {"final_loss_mae_kmh": 12.3}}
+
+    client = TestClient(app)
+
+    resp = client.get(f"/results?run_id={run_id}")
+    assert resp.status_code == 200
+    assert run_id in resp.text
+
+
 def test_log_trimming_in_progress_endpoint(run_entry):
     """Logs should be trimmed to MAX_LOG_ENTRIES when appended via update callback."""
     from demandify.web.routes import MAX_LOG_ENTRIES
@@ -243,4 +261,3 @@ def test_progress_log_ingestion_is_incremental(run_entry, tmp_path):
         "Third line",
         "Fourth line",
     ]
-

@@ -85,11 +85,13 @@ async def _run_tiny_import_calibration(dataset_id: str, output_dir: Path, run_id
         "loss_history": metadata["results"]["loss_history"],
         "selected_mode": metadata["results"]["optimization_result"]["selected_mode"],
         "selected_mae": metadata["results"]["optimization_result"]["selected_mae"],
+        "selected_teleports": metadata["results"]["optimization_result"]["selected_teleports"],
         "selected_failure_rate": metadata["results"]["optimization_result"]["selected_failure_rate"],
         "selected_fail_total": metadata["results"]["optimization_result"]["selected_fail_total"],
         "selected_magnitude": metadata["results"]["optimization_result"]["selected_magnitude"],
         "best_mae": metadata["results"]["optimization_result"]["best_mae"],
         "best_mae_candidate_mae": metadata["results"]["optimization_result"]["best_mae_candidate_mae"],
+        "best_mae_candidate_teleports": metadata["results"]["optimization_result"]["best_mae_candidate_teleports"],
         "best_mae_candidate_failure_rate": metadata["results"]["optimization_result"]["best_mae_candidate_failure_rate"],
         "best_mae_candidate_fail_total": metadata["results"]["optimization_result"]["best_mae_candidate_fail_total"],
         "best_mae_candidate_magnitude": metadata["results"]["optimization_result"]["best_mae_candidate_magnitude"],
@@ -128,11 +130,13 @@ def test_random_offline_dataset_reproducibility(tmp_path):
     assert run1["loss_history"] == run2["loss_history"]
     assert run1["selected_mode"] == run2["selected_mode"]
     assert run1["selected_mae"] == run2["selected_mae"]
+    assert run1["selected_teleports"] == run2["selected_teleports"]
     assert run1["selected_failure_rate"] == run2["selected_failure_rate"]
     assert run1["selected_fail_total"] == run2["selected_fail_total"]
     assert run1["selected_magnitude"] == run2["selected_magnitude"]
     assert run1["best_mae"] == run2["best_mae"]
     assert run1["best_mae_candidate_mae"] == run2["best_mae_candidate_mae"]
+    assert run1["best_mae_candidate_teleports"] == run2["best_mae_candidate_teleports"]
     assert run1["best_mae_candidate_failure_rate"] == run2["best_mae_candidate_failure_rate"]
     assert run1["best_mae_candidate_fail_total"] == run2["best_mae_candidate_fail_total"]
     assert run1["best_mae_candidate_magnitude"] == run2["best_mae_candidate_magnitude"]

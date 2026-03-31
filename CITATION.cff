@@ -6,7 +6,7 @@ authors:
   - given-names: Ahmet Onur
     family-names: Akman
     orcid: "https://orcid.org/0009-0006-4461-5025"
-version: 0.0.5
+version: 0.0.6
 doi: "10.5281/zenodo.19050050"
 url: "https://pypi.org/project/demandify/"
 repository-code: "https://github.com/aonurakman/demandify"
