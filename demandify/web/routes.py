@@ -433,6 +433,11 @@ async def start_run(
             detail="min_connection_paths must be at least 1",
         )
 
+    if ga_generations < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="ga_generations must be at least 1",
+        )
     requested_run_id = run_id.strip() if run_id and run_id.strip() else None
     if requested_run_id:
         requested_output_dir = Path.cwd() / "demandify_runs" / f"run_{requested_run_id}"
