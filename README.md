@@ -25,7 +25,7 @@ Pick a spot on the map and demandify will:
 - 📦 **Offline calibration import**: Run from bundled/offline traffic+network snapshots
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
-- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with advanced dynamics (elite-slice parent selection, immigrants, assortative mating, adaptive mutation boost)
+- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with MAE-elite Pareto selection, teleport filtering, immigrants, assortative mating, and adaptive mutation boost
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
@@ -179,6 +179,7 @@ Bundled snapshot previews:
 | `--sigma` | Int | 20 | Mutation magnitude (step size) |
 | `--indpb` | Float | 0.3 | Mutation probability (per gene) |
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
+| `--min-connection-paths` | Int | 1 | Minimum number of distinct simple routes required for an OD pair to be eligible during sampling |
 | `--bin-size` | Float | 5 | Time bin size in minutes |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
 
@@ -196,7 +197,7 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--immigrant-rate` | Float | 0.03 | Fraction of random individuals injected per generation (0–1) |
-| `--elite-top-pct` | Float | 0.1 | Defines the size of the top-by-`E` elite slice per generation: `n=max(1, elite_top_pct * population)` |
+| `--elite-top-pct` | Float | 0.1 | Defines the size of the top-by-MAE elite slice per generation: `n=max(1, elite_top_pct * population)` |
 | `--stagnation-patience` | Int | 20 | Generations without improvement before mutation boost activates |
 | `--stagnation-boost` | Float | 1.5 | Multiplier for mutation sigma and rate during stagnation |
 | `--checkpoint-interval` | Int | 10 | Save best-individual checkpoint artifacts every N generations |
@@ -223,13 +224,13 @@ demandify follows a multi-stage pipeline:
 
 The genetic algorithm includes several mechanisms to avoid common pitfalls like local optima stagnation and trip count explosion:
 
-- **MAE-elite lexicographic parent selection**: Individuals are first ordered by `mae`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the parent pool. Inside that slice, demandify prefers lower `failure_rate`, then lower genome magnitude, and uses exact `mae` only as the final deterministic tie-break. This keeps MAE as the sole global optimization target while still preferring more reliable and smaller-demand candidates within the MAE frontier.
+- **MAE-elite Pareto parent selection**: Individuals are first ordered by `mae`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the elite pool. If that pool contains any zero-teleport candidates, teleporting candidates are discarded. The remaining elite is Pareto-ranked on `(failure_rate, magnitude)` when teleports are all zero, or on `(teleports, failure_rate, magnitude)` otherwise.
 - **Random immigrants**: A small fraction of completely random individuals is injected each generation to maintain genetic diversity and escape local optima.
 - **Assortative mating**: Parents are paired by dissimilarity (by genome magnitude) for crossover, promoting exploration of the search space.
 - **Deterministic crowding**: Offspring compete with similar parents for population slots, preserving niche diversity.
 - **Adaptive mutation boost**: If the best fitness stagnates for K generations, mutation sigma and rate are temporarily increased by a configurable multiplier. They reset automatically when improvement resumes.
 
-The final return policy uses that same **MAE-elite lexicographic order** across generations, so the returned individual always comes from the strongest MAE frontier while still preferring lower failure rate and smaller total demand within that frontier.
+Parent choice, survival elitism, per-generation representatives, and the final returned solution all follow that same **MAE-elite Pareto rule** across generations, so the returned individual still comes from the strongest MAE frontier while preferring lower teleports, lower failure rate, and lower total demand inside that frontier.
 
 The calibration report includes plots for **genotypic diversity** (mean pairwise L2 distance) and **phenotypic diversity** (σ of fitness values) across generations, along with markers indicating when mutation boost was active.
 
@@ -286,12 +287,14 @@ Each run creates a folder with:
 - **`network.net.xml`** - SUMO network
 - **`scenario.sumocfg`** - SUMO configuration (ready to run; ignores route errors by default)
 - **`observed_edges.csv`** - Observed traffic speeds
-- **`run_meta.json`** - Complete run metadata
+- **`run_meta.json`** - Complete run metadata with MAE-first optimization summary
 - **`report.html`** - Calibration report with visualizations
+- **`latest_selected/`** - Lightweight rolling recovery export with `demand.csv`, `trips.xml`, `network.net.xml`, `scenario.sumocfg`, and minimal metadata
+- **`<run_id>/`** - URB/RouteRL-compatible export bundle
 
 Run the scenario:
 ```bash
-cd demandify_runs/run_<timestamp>
+cd demandify_runs/run_<timestamp>/sumo
 sumo-gui -c scenario.sumocfg
 ```
 
@@ -342,7 +345,7 @@ The canonical metadata for GitHub's "Cite this repository" is in `CITATION.cff`.
   author       = {{Ahmet Onur Akman}},
   title        = {{demandify: Calibrate SUMO traffic scenarios against real-world congestion using genetic algorithms}},
   year         = {2026},
-  version      = {0.0.5},
+  version      = {0.0.6},
   publisher    = {PyPI},
   url          = {https://pypi.org/project/demandify/},
   repository   = {https://github.com/aonurakman/demandify},
