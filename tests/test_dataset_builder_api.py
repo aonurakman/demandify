@@ -144,6 +144,50 @@ def test_dataset_build_rejects_invalid_name(monkeypatch, tmp_path):
     assert "Dataset name must use only letters" in resp.text
 
 
+def test_dataset_build_rejects_packaged_name_collision(monkeypatch, tmp_path):
+    generated_root = tmp_path / "generated"
+    packaged_root = tmp_path / "packaged"
+    generated_root.mkdir()
+    packaged_root.mkdir()
+
+    pkg_ds = packaged_root / "krakow_v1"
+    pkg_ds.mkdir()
+    (pkg_ds / "dataset_meta.json").write_text(
+        json.dumps(
+            {
+                "bbox": {"west": 20.0, "south": 50.0, "east": 20.1, "north": 50.1},
+                "quality": {"label": "good", "score": 80},
+                "created_at": "2026-02-17T13:00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(dataset_routes, "DATASETS_ROOT", generated_root)
+    monkeypatch.setattr(dataset_routes, "PACKAGED_DATASETS_ROOT", packaged_root)
+    monkeypatch.setattr(
+        dataset_routes,
+        "get_config",
+        lambda: SimpleNamespace(tomtom_api_key="abc", max_bbox_area_km2=25.0),
+    )
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/datasets/build",
+        data={
+            "dataset_name": "krakow_v1",
+            "bbox_west": 2.2961,
+            "bbox_south": 48.8469,
+            "bbox_east": 2.3071,
+            "bbox_north": 48.8532,
+            "traffic_tile_zoom": 12,
+        },
+    )
+    assert resp.status_code == 409
+    assert "already exists" in resp.text
+    assert "packaged" in resp.text
+
+
 def test_dataset_build_start_creates_job(monkeypatch, tmp_path):
     monkeypatch.setattr(dataset_routes, "DATASETS_ROOT", tmp_path / "datasets")
     monkeypatch.setattr(

@@ -1,5 +1,6 @@
 """Tests for import-mode calibration flows in web routes."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -65,6 +66,150 @@ def test_check_feasibility_import_mode_works_without_api_key(monkeypatch):
     assert "quality" in payload
 
 
+def test_check_feasibility_uses_transient_run_context(monkeypatch):
+    captured = {}
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def prepare(self):
+            return {
+                "traffic_df": pd.DataFrame(
+                    {
+                        "segment_id": ["s1", "s2"],
+                        "current_speed": [20.0, 22.0],
+                        "freeflow_speed": [40.0, 40.0],
+                        "timestamp": ["2026-02-17 12:00:00"] * 2,
+                    }
+                ),
+                "observed_edges": pd.DataFrame(
+                    {
+                        "edge_id": ["e1"],
+                        "segment_id": ["s1"],
+                        "current_speed": [20.0],
+                        "freeflow_speed": [40.0],
+                        "match_confidence": [0.99],
+                    }
+                ),
+                "total_edges": 120,
+            }
+
+    import demandify.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "CalibrationPipeline", FakePipeline)
+    monkeypatch.setattr(
+        routes,
+        "resolve_offline_dataset",
+        lambda _: SimpleNamespace(
+            dataset_id="packaged:krakow_v1",
+            bbox={"west": 20.0174, "south": 50.0702, "east": 20.0566, "north": 50.0875},
+        ),
+    )
+
+    requested_run_id = "user_requested_real_run_id"
+    client = TestClient(app)
+    resp = client.post(
+        "/api/check_feasibility",
+        data={
+            "data_mode": "import",
+            "offline_dataset": "krakow_v1",
+            "run_id": requested_run_id,
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "success"
+    assert payload["run_id"].startswith("check_")
+    assert payload["run_id"] != requested_run_id
+    assert captured["run_id"] == payload["run_id"]
+    assert isinstance(captured["output_dir"], Path)
+    assert not Path(captured["output_dir"]).exists()
+
+
+def test_start_run_after_feasibility_does_not_reuse_requested_run_dir(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            captured["run_id"] = kwargs["run_id"]
+            captured["output_dir"] = kwargs["output_dir"]
+
+        async def prepare(self):
+            output_dir = Path(captured["output_dir"])
+            (output_dir / "data").mkdir(parents=True, exist_ok=True)
+            (output_dir / "data" / "traffic_data_raw.csv").write_text(
+                "segment_id,current_speed,freeflow_speed,timestamp\n",
+                encoding="utf-8",
+            )
+            (output_dir / "data" / "observed_edges.csv").write_text(
+                "edge_id,segment_id,current_speed,freeflow_speed,match_confidence\n",
+                encoding="utf-8",
+            )
+            return {
+                "traffic_df": pd.DataFrame(
+                    {
+                        "segment_id": ["s1"],
+                        "current_speed": [20.0],
+                        "freeflow_speed": [40.0],
+                        "timestamp": ["2026-02-17 12:00:00"],
+                    }
+                ),
+                "observed_edges": pd.DataFrame(
+                    {
+                        "edge_id": ["e1"],
+                        "segment_id": ["s1"],
+                        "current_speed": [20.0],
+                        "freeflow_speed": [40.0],
+                        "match_confidence": [0.99],
+                    }
+                ),
+                "total_edges": 120,
+            }
+
+    import demandify.pipeline as pipeline_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pipeline_module, "CalibrationPipeline", FakePipeline)
+    monkeypatch.setattr(routes, "run_calibration_pipeline", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        routes,
+        "resolve_offline_dataset",
+        lambda _: SimpleNamespace(
+            dataset_id="packaged:rennes_v1",
+            bbox={"west": -1.69, "south": 48.1054, "east": -1.6576, "north": 48.1189},
+        ),
+    )
+
+    requested_run_id = "shared_import_run"
+    client = TestClient(app)
+
+    feasibility_resp = client.post(
+        "/api/check_feasibility",
+        data={
+            "data_mode": "import",
+            "offline_dataset": "rennes_v1",
+            "run_id": requested_run_id,
+        },
+    )
+    assert feasibility_resp.status_code == 200
+    assert feasibility_resp.json()["run_id"] != requested_run_id
+
+    requested_run_dir = tmp_path / "demandify_runs" / f"run_{requested_run_id}"
+    assert not requested_run_dir.exists()
+
+    run_resp = client.post(
+        "/api/run",
+        data={
+            "data_mode": "import",
+            "offline_dataset": "rennes_v1",
+            "run_id": requested_run_id,
+        },
+    )
+    assert run_resp.status_code == 200
+    assert run_resp.json()["run_id"] == requested_run_id
+
+
 def test_start_run_import_mode_accepts_missing_bbox(monkeypatch):
     monkeypatch.setattr(
         routes,
@@ -88,6 +233,36 @@ def test_start_run_import_mode_accepts_missing_bbox(monkeypatch):
     payload = resp.json()
     assert payload["status"] == "started"
     assert "run_id" in payload
+
+
+def test_start_run_rejects_existing_user_run_id_directory(monkeypatch, tmp_path):
+    run_id = "existing_web_run"
+    existing_dir = tmp_path / "demandify_runs" / f"run_{run_id}"
+    existing_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(routes, "run_calibration_pipeline", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        routes,
+        "resolve_offline_dataset",
+        lambda _: SimpleNamespace(
+            dataset_id="packaged:rennes_v1",
+            bbox={"west": -1.69, "south": 48.1054, "east": -1.6576, "north": 48.1189},
+        ),
+    )
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/run",
+        data={
+            "data_mode": "import",
+            "offline_dataset": "rennes_v1",
+            "run_id": run_id,
+        },
+    )
+    assert resp.status_code == 409
+    assert "already exists" in resp.text
+    assert "run_id" in resp.text
 
 
 def test_start_run_create_mode_with_offline_save(monkeypatch, tmp_path):

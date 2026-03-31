@@ -229,8 +229,9 @@ async def dataset_builder_page(request: Request):
     config = get_config()
     known_datasets = _known_datasets_catalog()
     return templates.TemplateResponse(
-        "dataset_builder.html",
-        {
+        request=request,
+        name="dataset_builder.html",
+        context={
             "request": request,
             "run_defaults": RUN_DEFAULTS,
             "has_api_key": config.tomtom_api_key is not None,
@@ -352,6 +353,15 @@ async def start_dataset_build(
 
     DATASETS_ROOT.mkdir(parents=True, exist_ok=True)
     output_dir = DATASETS_ROOT / normalized_name
+    existing_names = {item["name"] for item in _known_datasets_catalog()}
+    if normalized_name in existing_names:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Dataset '{normalized_name}' already exists in generated or packaged datasets. "
+                "Use a different name."
+            ),
+        )
     if output_dir.exists():
         raise HTTPException(
             status_code=409,
