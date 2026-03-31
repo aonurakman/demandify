@@ -134,7 +134,7 @@ class TomTomProvider(TrafficProvider):
         if not HAS_MVT:
             logger.warning("mapbox-vector-tile not available; falling back to Flow Segment sampling.")
         elif not tiles_enabled:
-            logger.info(
+            logger.debug(
                 "TomTom vector tile mode disabled via DEMANDIFY_ENABLE_TOMTOM_TILES; "
                 "using Flow Segment sampling."
             )
@@ -437,7 +437,7 @@ class TomTomProvider(TrafficProvider):
                 self.TILE_FREEFLOW_SPEED,
                 len(df),
             )
-            logger.info(f"Fetched {len(df)} segments from {len(tiles)} tiles (zoom={self.tile_zoom})")
+            logger.debug(f"Fetched {len(df)} segments from {len(tiles)} tiles (zoom={self.tile_zoom})")
             return df
 
         logger.warning(
@@ -492,9 +492,9 @@ class TomTomProvider(TrafficProvider):
         Prefers vector flow tiles; falls back to Flow Segment grid sampling.
         """
         if timestamp is not None:
-            logger.info("TomTom Flow is real-time; ignoring timestamp override (bucketed upstream).")
+            logger.debug("TomTom Flow is real-time; ignoring timestamp override (bucketed upstream).")
         
-        logger.info(f"Fetching TomTom flow data for bbox {bbox} (tiles preferred)")
+        logger.debug(f"Fetching TomTom flow data for bbox {bbox} (tiles preferred)")
         
         df = await self._fetch_via_tiles(bbox) if self.use_tiles else pd.DataFrame()
         if df.empty:

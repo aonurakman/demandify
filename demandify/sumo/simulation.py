@@ -51,6 +51,27 @@ class SUMOSimulation:
         
         if use_dynamic_routing and seed is None:
             logger.warning("Dynamic routing enabled but no seed provided - results may not be reproducible")
+
+    @staticmethod
+    def _resolve_routing_failures(
+        expected_vehicles: int | None,
+        loaded: int,
+        inserted: int,
+    ) -> tuple[int, int]:
+        """
+        Resolve routing/insertion failures for the calibration objective.
+
+        We count vehicles that never enter the network as failures, but we do
+        not count vehicles still running at the simulation end. When the
+        expected demand size is known, that is the authoritative baseline.
+        """
+        if expected_vehicles is not None:
+            expected = max(0, int(expected_vehicles))
+            return max(0, expected - max(0, inserted)), expected
+
+        loaded_i = max(0, int(loaded))
+        inserted_i = max(0, int(inserted))
+        return max(0, loaded_i - inserted_i), loaded_i
     
     def run(
         self,
@@ -128,21 +149,21 @@ class SUMOSimulation:
             # Parse global statistics if available
             if statistic_output.exists():
                 global_stats = self._parse_statistic_output(statistic_output)
-                # Update failures:
-                # True Failures = Loaded (Intent) - Inserted (Success)
-                # Note: "Waiting" vehicles are also failures for this specific simulation window
-                if global_stats['loaded'] > 0:
-                    loaded = global_stats['loaded']
-                    inserted = global_stats['inserted']
-                    trip_stats['routing_failures'] = loaded - inserted
-                    trip_stats['teleports'] = global_stats.get('teleports', 0)
-                    trip_stats['total_trips'] = loaded
-                    
-                    # Log if there's a discrepancy
-                    if trip_stats['routing_failures'] > 0:
-                         logger.debug(f"Insertion Backlog: {trip_stats['routing_failures']} vehicles failed to enter")
-                    if trip_stats['teleports'] > 0:
-                         logger.debug(f"Teleportations: {trip_stats['teleports']} vehicles teleported")
+                loaded = global_stats['loaded']
+                inserted = global_stats['inserted']
+                routing_failures, total_trips = self._resolve_routing_failures(
+                    expected_vehicles=expected_vehicles,
+                    loaded=loaded,
+                    inserted=inserted,
+                )
+                trip_stats['routing_failures'] = routing_failures
+                trip_stats['teleports'] = global_stats.get('teleports', 0)
+                trip_stats['total_trips'] = total_trips
+
+                if trip_stats['routing_failures'] > 0:
+                     logger.debug(f"Insertion Backlog: {trip_stats['routing_failures']} vehicles failed to enter")
+                if trip_stats['teleports'] > 0:
+                     logger.debug(f"Teleportations: {trip_stats['teleports']} vehicles teleported")
 
             # Copy edge data if requested
             if edge_data_file:

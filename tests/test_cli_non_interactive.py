@@ -132,3 +132,19 @@ def test_cmd_run_import_mode_uses_resolved_dataset(monkeypatch):
         50.0875,
     )
     assert FakePipeline.received_kwargs["min_connection_paths"] == 1
+
+
+def test_cmd_run_rejects_zero_generations(monkeypatch, capsys):
+    class FakePipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("CalibrationPipeline should not be created")
+
+    import demandify.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "CalibrationPipeline", FakePipeline)
+
+    args = _build_run_args(gen=0)
+    asyncio.run(cli_module.cmd_run(args))
+
+    out = capsys.readouterr().out
+    assert "--gen must be at least 1" in out

@@ -150,6 +150,10 @@ async def cmd_run(args):
         print("❌ --min-connection-paths must be at least 1.")
         return
 
+    if args.gen < 1:
+        print("❌ --gen must be at least 1.")
+        return
+
     print(ASCII_ART)
     print(f"demandify v{__version__}")
 

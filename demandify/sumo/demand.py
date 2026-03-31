@@ -253,13 +253,13 @@ class DemandGenerator:
             max(1, num_workers * self.OD_VALIDATION_BATCH_MULTIPLIER),
         )
 
-        logger.info(
+        logger.debug(
             "Building up to %s validated OD pairs (min_dist=%sm, min_connection_paths=%s)...",
             max_od_pairs,
             min_trip_distance,
             min_connection_paths,
         )
-        logger.info(
+        logger.debug(
             "OD selection profiles: incoming=%s, outgoing=%s, internal=%s, "
             "through_share=%.2f, boundary_margin=%.1fm",
             sampling_profiles["role_counts"].get("incoming", 0),
@@ -268,7 +268,7 @@ class DemandGenerator:
             self.THROUGH_TRAFFIC_SHARE if has_boundary_bias else 0.0,
             sampling_profiles["boundary_margin_m"],
         )
-        logger.info(
+        logger.debug(
             "OD validation strategy: workers=%s, batch_size=%s, state_limit=%s, timeout=%.2fs",
             num_workers,
             validation_batch_size,
@@ -277,13 +277,13 @@ class DemandGenerator:
         )
 
         current_min_dist = min_trip_distance
-        logger.info(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
+        logger.debug(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
 
         pool = None
         if num_workers > 1:
             start_method = self._preferred_mp_start_method()
             ctx = get_context(start_method) if start_method else get_context()
-            logger.info(
+            logger.debug(
                 "OD validation multiprocessing start method: %s",
                 start_method or "default",
             )
@@ -427,11 +427,11 @@ class DemandGenerator:
         origins = {o for o, _ in valid_pairs}
         destinations = {d for _, d in valid_pairs}
 
-        logger.info(
+        logger.debug(
             f"Created {len(valid_pairs)} valid OD pairs from {total_attempts} attempts: "
             f"{len(origins)} unique origins, {len(destinations)} unique destinations"
         )
-        logger.info(
+        logger.debug(
             "Selected OD role mix: origins [%s], destinations [%s]",
             self._format_role_counts(selected_origin_roles),
             self._format_role_counts(selected_destination_roles),

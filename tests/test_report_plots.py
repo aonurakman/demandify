@@ -171,6 +171,43 @@ def test_magnitude_plot_with_no_data(tmp_path):
     assert result is None
 
 
+def test_top_mismatches_use_sumo_freeflow_fallback(tmp_path):
+    """Top mismatches should use SUMO free-flow fallback for missing simulated edges."""
+    observed_edges = pd.DataFrame(
+        {
+            "edge_id": ["e1", "e_missing"],
+            "current_speed": [30.0, 20.0],
+            "sumo_freeflow_speed_kmh": [50.0, 70.0],
+        }
+    )
+    simulated_speeds = {"e1": 40.0}
+
+    gen = ReportGenerator(tmp_path)
+    mismatches = gen._find_top_mismatches(observed_edges, simulated_speeds, top_n=10)
+
+    by_edge = mismatches.set_index("edge_id")
+    assert by_edge.loc["e_missing", "simulated"] == 70.0
+    assert by_edge.loc["e_missing", "error"] == 50.0
+    assert "Free-Flow Fallback" in by_edge.loc["e_missing", "note"]
+
+
+def test_failures_plot_ignores_stale_routing_failure_fallback_keys(tmp_path):
+    """Stale routing-failure fallback keys should not drive failures plotting."""
+    stats = [
+        {
+            "generation": 1,
+            "best_zero_flow": None,
+            "mean_zero_flow": None,
+            "best_routing_failures": 3,
+            "mean_routing_failures": 5,
+        }
+    ]
+    gen = ReportGenerator(tmp_path)
+    result = gen._create_failures_plot(stats)
+    assert result is None
+    assert not (tmp_path / "plots" / "failures_plot.png").exists()
+
+
 def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path, monkeypatch):
     """final_loss_mae_kmh should reflect final simulation MAE, not GA optimization score."""
     from demandify.pipeline import CalibrationPipeline
@@ -226,6 +263,7 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
             "edge_id": ["e1"],
             "current_speed": [30.0],
             "freeflow_speed": [50.0],
+            "sumo_freeflow_speed_kmh": [50.0],
             "match_confidence": [0.9],
         }
     )
@@ -238,15 +276,19 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
         "total_edges": 1,
     }
     pipeline._last_optimization_result = {
-        "selected_mode": "mae_elite_lexicographic",
+        "selected_mode": "mae_elite_pareto",
         "selected_mae": 8.88,
+        "selected_teleports": 0,
         "selected_failure_rate": 0.0125,
         "selected_fail_total": 1,
+        "selected_missing_edges": 4,
         "selected_magnitude": 321.0,
         "best_mae": 9.99,
         "best_mae_candidate_mae": 9.99,
+        "best_mae_candidate_teleports": 2,
         "best_mae_candidate_failure_rate": 0.0225,
         "best_mae_candidate_fail_total": 3,
+        "best_mae_candidate_missing_edges": 8,
         "best_mae_candidate_magnitude": 444.0,
         "loss_history_metric": "selected MAE per generation",
     }
@@ -270,15 +312,19 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert results["final_loss_mae_kmh"] == 12.34
     assert results["loss_history"] == [9.99, 8.88]
     assert results["loss_history_label"] == "selected MAE per generation"
-    assert results["optimization_result"]["selected_mode"] == "mae_elite_lexicographic"
+    assert results["optimization_result"]["selected_mode"] == "mae_elite_pareto"
     assert results["optimization_result"]["selected_mae"] == 8.88
+    assert results["optimization_result"]["selected_teleports"] == 0
     assert results["optimization_result"]["selected_failure_rate"] == 0.0125
     assert results["optimization_result"]["selected_fail_total"] == 1
+    assert results["optimization_result"]["selected_missing_edges"] == 4
     assert results["optimization_result"]["selected_magnitude"] == 321.0
     assert results["optimization_result"]["best_mae"] == 9.99
     assert results["optimization_result"]["best_mae_candidate_mae"] == 9.99
+    assert results["optimization_result"]["best_mae_candidate_teleports"] == 2
     assert results["optimization_result"]["best_mae_candidate_failure_rate"] == 0.0225
     assert results["optimization_result"]["best_mae_candidate_fail_total"] == 3
+    assert results["optimization_result"]["best_mae_candidate_missing_edges"] == 8
     assert results["optimization_result"]["best_mae_candidate_magnitude"] == 444.0
     assert results["optimization_result"]["loss_history_metric"] == "selected MAE per generation"
 
@@ -310,3 +356,87 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert "--origins" not in rerun_cmd
     assert "--destinations" not in rerun_cmd
     assert "--workers" not in rerun_cmd
+
+
+def test_pipeline_export_results_handles_empty_loss_history(tmp_path, monkeypatch):
+    from demandify.pipeline import CalibrationPipeline
+
+    class _DummyScenarioExporter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export(self, *_args, **_kwargs):
+            return None
+
+    class _DummyURBExporter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export(self, *_args, **_kwargs):
+            return None
+
+    class _DummyReportGenerator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def generate(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("demandify.pipeline.ScenarioExporter", _DummyScenarioExporter)
+    monkeypatch.setattr("demandify.pipeline.URBDataExporter", _DummyURBExporter)
+    monkeypatch.setattr("demandify.pipeline.ReportGenerator", _DummyReportGenerator)
+    monkeypatch.setattr("demandify.export.visualize.visualize_network", lambda *_args, **_kwargs: None)
+
+    pipeline = CalibrationPipeline(
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        window_minutes=10,
+        seed=42,
+        output_dir=tmp_path / "run_empty_history",
+        run_id="empty_history",
+    )
+
+    network_file = pipeline.output_dir / "sumo" / "network.net.xml"
+    network_file.write_text("<net></net>", encoding="utf-8")
+    demand_csv = pipeline.output_dir / "data" / "demand.csv"
+    demand_csv.write_text("ID,origin link id,destination link id,departure timestep\n", encoding="utf-8")
+    trips_file = pipeline.output_dir / "sumo" / "trips.xml"
+    trips_file.write_text("<routes></routes>", encoding="utf-8")
+    observed_edges_file = pipeline.output_dir / "data" / "observed_edges.csv"
+    observed_edges_file.write_text("edge_id,current_speed,freeflow_speed,match_confidence\n", encoding="utf-8")
+    traffic_data_file = pipeline.output_dir / "data" / "traffic_data_raw.csv"
+    pd.DataFrame({"segment": [1]}).to_csv(traffic_data_file, index=False)
+
+    observed_edges = pd.DataFrame(
+        {
+            "edge_id": ["e1"],
+            "current_speed": [30.0],
+            "freeflow_speed": [50.0],
+            "sumo_freeflow_speed_kmh": [50.0],
+            "match_confidence": [0.9],
+        }
+    )
+    simulated_speeds = {"e1": 35.0}
+    quality_metrics = {
+        "mae": 12.34,
+        "mse": 200.0,
+        "matched_edges": 1,
+        "missing_edges": 0,
+        "total_edges": 1,
+    }
+
+    metadata = pipeline._export_results(
+        network_file=network_file,
+        demand_csv=demand_csv,
+        trips_file=trips_file,
+        observed_edges_file=observed_edges_file,
+        traffic_data_file=traffic_data_file,
+        observed_edges=observed_edges,
+        simulated_speeds=simulated_speeds,
+        best_loss=float("inf"),
+        loss_history=[],
+        quality_metrics=quality_metrics,
+        generation_stats=[],
+        final_sim_seed=123,
+    )
+
+    assert metadata["results"]["loss_history"] == []

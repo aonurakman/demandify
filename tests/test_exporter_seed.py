@@ -1,6 +1,7 @@
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+import demandify.export.exporter as exporter_module
 from demandify.export.exporter import ScenarioExporter
 
 
@@ -57,3 +58,33 @@ def test_exporter_falls_back_to_run_seed(tmp_path):
     seed_node = cfg.find("./random/seed")
     assert seed_node is not None
     assert seed_node.get("value") == "7"
+
+
+def test_exporter_uses_shared_sumocfg_writer(tmp_path, monkeypatch):
+    network = tmp_path / "inputs" / "network.net.xml"
+    demand = tmp_path / "inputs" / "demand.csv"
+    trips = tmp_path / "inputs" / "trips.xml"
+    observed = tmp_path / "inputs" / "observed_edges.csv"
+    _write(network)
+    _write(demand, "id\n")
+    _write(trips, "<routes/>")
+    _write(observed, "edge_id\n")
+
+    metadata = {
+        "run_info": {"seed": 7},
+        "simulation_config": {"window_minutes": 15, "warmup_minutes": 5, "step_length_seconds": 1.0},
+    }
+
+    calls = []
+
+    def _record_sumocfg_call(**kwargs):
+        calls.append(dict(kwargs))
+
+    monkeypatch.setattr(exporter_module, "write_sumocfg", _record_sumocfg_call)
+
+    out_dir = tmp_path / "exported"
+    exporter = ScenarioExporter(out_dir)
+    exporter.export(network, demand, trips, observed, metadata)
+
+    assert len(calls) == 1
+    assert calls[0]["output_file"] == out_dir / "scenario.sumocfg"

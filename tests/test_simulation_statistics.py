@@ -63,3 +63,25 @@ def test_parse_statistics_prefers_dedicated_teleports_when_both_exist(tmp_path):
     stats = _sim_for_parse()._parse_statistic_output(stats_xml)
 
     assert stats["teleports"] == 9
+
+
+def test_resolve_routing_failures_uses_expected_vehicles_when_available():
+    failures, total = SUMOSimulation._resolve_routing_failures(
+        expected_vehicles=100,
+        loaded=80,
+        inserted=75,
+    )
+
+    assert failures == 25
+    assert total == 100
+
+
+def test_resolve_routing_failures_falls_back_to_loaded_minus_inserted():
+    failures, total = SUMOSimulation._resolve_routing_failures(
+        expected_vehicles=None,
+        loaded=80,
+        inserted=75,
+    )
+
+    assert failures == 5
+    assert total == 80

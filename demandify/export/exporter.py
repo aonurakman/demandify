@@ -2,13 +2,76 @@
 Scenario export and project folder generation.
 """
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 import shutil
 import json
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def write_sumocfg(
+    network_file: Path,
+    trips_file: Path,
+    output_file: Path,
+    simulation_time: int,
+    step_length: float = 1.0,
+    seed: Optional[int] = 42,
+) -> None:
+    """Write a dynamic-routing SUMO scenario configuration file."""
+    import os
+    import xml.etree.ElementTree as ET
+
+    network_file = Path(network_file)
+    trips_file = Path(trips_file)
+    output_file = Path(output_file)
+
+    # Calculate relative paths from sumocfg location.
+    try:
+        rel_net = os.path.relpath(network_file, output_file.parent)
+        rel_trips = os.path.relpath(trips_file, output_file.parent)
+    except ValueError:
+        # Fallback to absolute if on different drives (rare).
+        rel_net = str(network_file)
+        rel_trips = str(trips_file)
+
+    root = ET.Element("configuration")
+
+    # Input
+    input_elem = ET.SubElement(root, "input")
+    ET.SubElement(input_elem, "net-file").set("value", rel_net)
+    ET.SubElement(input_elem, "route-files").set("value", rel_trips)
+
+    # Time
+    time_elem = ET.SubElement(root, "time")
+    ET.SubElement(time_elem, "begin").set("value", "0")
+    ET.SubElement(time_elem, "end").set("value", str(simulation_time))
+    ET.SubElement(time_elem, "step-length").set("value", str(step_length))
+
+    # Processing
+    processing_elem = ET.SubElement(root, "processing")
+    ET.SubElement(processing_elem, "ignore-route-errors").set("value", "true")
+
+    # Routing configuration for dynamic routing
+    routing_elem = ET.SubElement(root, "routing")
+    ET.SubElement(routing_elem, "device.rerouting.probability").set("value", "0")
+    ET.SubElement(routing_elem, "routing-algorithm").set("value", "dijkstra")
+
+    # Seed for reproducibility
+    if seed is not None:
+        random_elem = ET.SubElement(root, "random")
+        ET.SubElement(random_elem, "seed").set("value", str(seed))
+
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    tree.write(output_file, encoding="utf-8", xml_declaration=True)
+
+    logger.debug(
+        "Created scenario.sumocfg with dynamic routing (seed=%s): %s",
+        seed,
+        output_file,
+    )
 
 
 class ScenarioExporter:
@@ -46,7 +109,7 @@ class ScenarioExporter:
         Returns:
             Path to output directory
         """
-        logger.info(f"Exporting scenario to {self.output_dir}")
+        logger.debug(f"Exporting scenario to {self.output_dir}")
         
         # Helper to handle file placement
         def ensure_in_project(src: Path, name: str) -> Path:
@@ -80,7 +143,7 @@ class ScenarioExporter:
         seed = run_info.get('sumo_seed', run_info.get('seed', 42))
         
         # Generate sumocfg with dynamic routing configuration
-        self._create_sumocfg(
+        write_sumocfg(
             network_file=final_net,
             trips_file=final_trips,  # Pass trips.xml instead of routes
             output_file=sumocfg_path,
@@ -93,7 +156,7 @@ class ScenarioExporter:
         # Save metadata
         self._save_metadata(run_metadata)
         
-        logger.info(f"Scenario exported successfully to {self.output_dir}")
+        logger.debug(f"Scenario exported successfully to {self.output_dir}")
         
         return self.output_dir
     
@@ -106,52 +169,15 @@ class ScenarioExporter:
         step_length: float = 1.0,
         seed: int = 42
     ):
-        """Create SUMO configuration file for dynamic routing."""
-        import xml.etree.ElementTree as ET
-        import os
-        
-        # Calculate relative paths from sumocfg location
-        try:
-            rel_net = os.path.relpath(network_file, output_file.parent)
-            rel_trips = os.path.relpath(trips_file, output_file.parent)
-        except ValueError:
-            # Fallback to absolute if on different drives (rare)
-            rel_net = str(network_file)
-            rel_trips = str(trips_file)
-        
-        root = ET.Element('configuration')
-        
-        # Input
-        input_elem = ET.SubElement(root, 'input')
-        ET.SubElement(input_elem, 'net-file').set('value', rel_net)
-        ET.SubElement(input_elem, 'route-files').set('value', rel_trips)  # trips.xml instead of routes.rou.xml
-        
-        # Time
-        time_elem = ET.SubElement(root, 'time')
-        ET.SubElement(time_elem, 'begin').set('value', '0')
-        ET.SubElement(time_elem, 'end').set('value', str(simulation_time))
-        ET.SubElement(time_elem, 'step-length').set('value', str(step_length))
-
-        # Processing
-        processing_elem = ET.SubElement(root, 'processing')
-        ET.SubElement(processing_elem, 'ignore-route-errors').set('value', 'true')
-        
-        # Routing configuration for dynamic routing
-        routing_elem = ET.SubElement(root, 'routing')
-        ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '0')  # No dynamic rerouting
-        ET.SubElement(routing_elem, 'routing-algorithm').set('value', 'dijkstra')
-        
-        # Seed for reproducibility
-        if seed is not None:
-            random_elem = ET.SubElement(root, 'random')
-            ET.SubElement(random_elem, 'seed').set('value', str(seed))
-        
-        # Write
-        tree = ET.ElementTree(root)
-        ET.indent(tree, space='  ')
-        tree.write(output_file, encoding='utf-8', xml_declaration=True)
-        
-        logger.info(f"Created scenario.sumocfg with dynamic routing (seed={seed}): {output_file}")
+        """Backward-compatible wrapper around shared SUMO config writer."""
+        write_sumocfg(
+            network_file=network_file,
+            trips_file=trips_file,
+            output_file=output_file,
+            simulation_time=simulation_time,
+            step_length=step_length,
+            seed=seed,
+        )
     
     def _save_metadata(self, metadata: Dict):
         """Save run metadata as JSON."""
@@ -163,7 +189,7 @@ class ScenarioExporter:
         with open(meta_file, 'w') as f:
             json.dump(serializable_meta, f, indent=2)
         
-        logger.info(f"Saved metadata: {meta_file}")
+        logger.debug(f"Saved metadata: {meta_file}")
     
     def _make_serializable(self, obj):
         """Make object JSON serializable."""

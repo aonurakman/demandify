@@ -3,15 +3,10 @@ Objective function for demand calibration.
 Compares simulated vs observed edge speeds.
 """
 
-import logging
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
-logger = logging.getLogger(__name__)
-
-RELIABILITY_PENALTY_SCALE = 2000.0
 
 
 def compute_fail_total(trip_stats: Optional[Dict[str, float]] = None) -> int:
@@ -21,19 +16,6 @@ def compute_fail_total(trip_stats: Optional[Dict[str, float]] = None) -> int:
     routing_failures = int(trip_stats.get("routing_failures", 0) or 0)
     teleports = int(trip_stats.get("teleports", 0) or 0)
     return routing_failures + teleports
-
-
-def calculate_reliability_penalty(
-    fail_total: int,
-    expected_vehicles: int,
-    penalty_scale: float = RELIABILITY_PENALTY_SCALE,
-) -> float:
-    """Compute reliability penalty from failure rate."""
-    if fail_total <= 0 or expected_vehicles <= 0:
-        return 0.0
-    failure_rate = fail_total / expected_vehicles
-    return failure_rate * penalty_scale
-
 
 def calculate_failure_rate(fail_total: int, expected_vehicles: int) -> float:
     """Compute failure rate with explicit zero/invalid handling."""
@@ -47,11 +29,7 @@ def calculate_failure_rate(fail_total: int, expected_vehicles: int) -> float:
 class EdgeSpeedObjective:
     """Objective function based on edge speed matching."""
 
-    def __init__(
-        self,
-        observed_edges: pd.DataFrame,
-        weight_by_confidence: bool = True,
-    ):
+    def __init__(self, observed_edges: pd.DataFrame):
         """
         Initialize objective function.
 
@@ -59,14 +37,20 @@ class EdgeSpeedObjective:
             observed_edges: DataFrame with columns:
                 - edge_id
                 - current_speed (observed)
-                - freeflow_speed
+                - sumo_freeflow_speed_kmh
                 - match_confidence
-            weight_by_confidence: Weight edges by match confidence
         """
         self.observed_edges = observed_edges.set_index("edge_id")
-        self.weight_by_confidence = weight_by_confidence
 
-        logger.debug("Objective initialized with %s observed edges", len(observed_edges))
+    @staticmethod
+    def _sumo_freeflow_kmh(obs_row: pd.Series) -> float:
+        """Return a finite SUMO free-flow fallback speed in km/h."""
+        value = obs_row.get("sumo_freeflow_speed_kmh", 50.0)
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return 50.0
+        return value_f if np.isfinite(value_f) else 50.0
 
     def _calculate_edge_errors(self, simulated_speeds: Dict[str, float]) -> Tuple[List[float], int]:
         """Return per-edge speed errors and count of missing observed edges."""
@@ -80,9 +64,9 @@ class EdgeSpeedObjective:
                 sim_speed = simulated_speeds[edge_id]
                 error = sim_speed - obs_speed
             else:
-                # Missing edge = no simulated traffic, assume free-flow speed.
-                freeflow = obs_row.get("freeflow_speed", 50.0)
-                sim_speed = freeflow
+                # Missing observed edge = no simulated speed signal, use the matched
+                # SUMO edge free-flow speed as the uncongested fallback.
+                sim_speed = self._sumo_freeflow_kmh(obs_row)
                 error = sim_speed - obs_speed
                 missing_count += 1
 
@@ -100,55 +84,27 @@ class EdgeSpeedObjective:
         Calculate objective components.
 
         Returns:
-            Dict with keys: mae, coverage_penalty, e_loss, fail_total,
-            failure_rate, reliability_penalty, loss, missing_edges.
+            Dict with keys: mae, fail_total, failure_rate, loss, missing_edges.
         """
         errors, missing_count = self._calculate_edge_errors(simulated_speeds)
 
         if not errors:
             return {
                 "mae": float("inf"),
-                "coverage_penalty": 0.0,
-                "e_loss": float("inf"),
                 "fail_total": compute_fail_total(trip_stats),
                 "failure_rate": float("inf"),
-                "reliability_penalty": 0.0,
                 "loss": float("inf"),
                 "missing_edges": missing_count,
             }
 
         mae = float(np.mean(np.abs(errors)))
-
-        coverage_penalty = 0.0
-        if missing_count > 0:
-            coverage_penalty = (missing_count / len(self.observed_edges)) * 10.0
-
-        e_loss = mae + coverage_penalty
         fail_total = compute_fail_total(trip_stats)
         failure_rate = calculate_failure_rate(fail_total, expected_vehicles)
-        reliability_penalty = calculate_reliability_penalty(fail_total, expected_vehicles)
-
-        if reliability_penalty > 0.0:
-            routing_failures = int((trip_stats or {}).get("routing_failures", 0) or 0)
-            teleports = int((trip_stats or {}).get("teleports", 0) or 0)
-            logger.debug(
-                "Failure penalty: %s backlog + %s teleports = %s/%s (%.1f%%) = +%.2f km/h",
-                routing_failures,
-                teleports,
-                fail_total,
-                expected_vehicles,
-                failure_rate * 100.0,
-                reliability_penalty,
-            )
 
         return {
             "mae": mae,
-            "coverage_penalty": float(coverage_penalty),
-            "e_loss": float(e_loss),
             "fail_total": int(fail_total),
             "failure_rate": float(failure_rate),
-            "reliability_penalty": float(reliability_penalty),
-            # MAE is the optimization target; penalty terms remain diagnostics.
             "loss": float(mae),
             "missing_edges": int(missing_count),
         }
@@ -200,9 +156,9 @@ class EdgeSpeedObjective:
                 matched += 1
             else:
                 missing += 1
-                # Use freeflow for error calculation in metrics too
-                freeflow = obs_row.get("freeflow_speed", 50.0)
-                error = freeflow - obs_speed
+                # Use SUMO free-flow fallback in metrics as well.
+                sumo_freeflow = self._sumo_freeflow_kmh(obs_row)
+                error = sumo_freeflow - obs_speed
 
             errors.append(error)
 

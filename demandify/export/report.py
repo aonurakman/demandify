@@ -49,7 +49,7 @@ class ReportGenerator:
         Returns:
             Path to report.html
         """
-        logger.info("Generating calibration report")
+        logger.debug("Generating calibration report")
 
         # Create visualizations
         loss_plot = self._create_loss_plot(loss_history, generation_stats)
@@ -83,7 +83,7 @@ class ReportGenerator:
         with open(report_file, "w", encoding="utf-8") as f:
             f.write(html)
 
-        logger.info(f"Report generated: {report_file}")
+        logger.debug(f"Report generated: {report_file}")
 
         return report_file
 
@@ -274,10 +274,7 @@ class ReportGenerator:
         generations = [s["generation"] for s in generation_stats]
 
         has_zero_flow = any(s.get("best_zero_flow") is not None for s in generation_stats)
-        has_failures = any(
-            (s.get("best_fail_total") is not None) or (s.get("best_routing_failures") is not None)
-            for s in generation_stats
-        )
+        has_failures = any(s.get("best_fail_total") is not None for s in generation_stats)
 
         if not has_zero_flow and not has_failures:
             return None
@@ -313,18 +310,8 @@ class ReportGenerator:
 
         if has_failures:
             ax2 = ax1.twinx()
-            best_rf = [
-                s.get("best_fail_total")
-                if s.get("best_fail_total") is not None
-                else (s.get("best_routing_failures", 0) or 0)
-                for s in generation_stats
-            ]
-            mean_rf = [
-                s.get("mean_fail_total")
-                if s.get("mean_fail_total") is not None
-                else (s.get("mean_routing_failures", 0) or 0)
-                for s in generation_stats
-            ]
+            best_rf = [s.get("best_fail_total", 0) or 0 for s in generation_stats]
+            mean_rf = [s.get("mean_fail_total", 0) or 0 for s in generation_stats]
             ax2.plot(
                 generations,
                 best_rf,
@@ -504,9 +491,17 @@ class ReportGenerator:
                 error = abs(sim_speed - obs_speed)
                 note = ""
             else:
-                sim_speed = 0.0
-                error = obs_speed  # penalty for missing traffic
-                note = "(No Traffic)"
+                # Keep report fallback aligned with objective semantics.
+                # Missing simulated edge uses SUMO free-flow speed as uncongested fallback.
+                sumo_freeflow = row.get("sumo_freeflow_speed_kmh", 50.0)
+                try:
+                    sim_speed = float(sumo_freeflow)
+                except (TypeError, ValueError):
+                    sim_speed = 50.0
+                if not np.isfinite(sim_speed):
+                    sim_speed = 50.0
+                error = abs(sim_speed - obs_speed)
+                note = "(No Traffic: Free-Flow Fallback)"
 
             mismatches.append(
                 {
