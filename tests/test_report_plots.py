@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from demandify.export.report import ReportGenerator
+from demandify.sumo.simulation import EdgeSpeedSnapshot
 
 
 @pytest.fixture
@@ -13,6 +14,7 @@ def observed_edges():
         'edge_id': ['e1', 'e2', 'e3', 'e4', 'e5'],
         'current_speed': [30.0, 50.0, 20.0, 60.0, 40.0],
         'freeflow_speed': [50.0, 60.0, 50.0, 70.0, 50.0],
+        'sumo_freeflow_speed_kmh': [50.0, 60.0, 50.0, 70.0, 50.0],
         'match_confidence': [0.9, 0.8, 0.7, 0.95, 0.85],
     })
 
@@ -138,7 +140,30 @@ def test_speed_comparison_includes_stats(
     assert csv_path.exists()
     df = pd.read_csv(csv_path)
     assert 'status' in df.columns
-    assert (df['status'] == 'missing_in_sim').sum() == 1  # e4 missing
+    assert (df['status'] == 'freeflow_fallback').sum() == 1  # e4 missing
+
+
+def test_speed_comparison_uses_full_window_mean_when_interval_traces_exist(tmp_path):
+    observed_edges = pd.DataFrame(
+        {
+            "edge_id": ["e1"],
+            "current_speed": [20.0],
+            "sumo_freeflow_speed_kmh": [50.0],
+        }
+    )
+    simulated_speeds = EdgeSpeedSnapshot(
+        mean_speeds={"e1": 5.0},
+        interval_speeds={"e1": {0: 10.0}},
+        measurement_intervals=2,
+    )
+
+    gen = ReportGenerator(tmp_path)
+    gen._create_speed_comparison(observed_edges, simulated_speeds)
+
+    csv_path = tmp_path / "data" / "speed_comparison.csv"
+    df = pd.read_csv(csv_path)
+    assert df.loc[0, "simulated_speed"] == pytest.approx(30.0)
+    assert df.loc[0, "status"] == "matched"
 
 
 def test_loss_plot_with_mean_stddev(tmp_path, generation_stats):

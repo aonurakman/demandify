@@ -301,6 +301,63 @@ class CalibrationPipeline:
         return {str(edge_id): float(speed) for edge_id, speed in aggregated.items()}
 
     @staticmethod
+    def _simulated_edge_speeds_for_visualization(
+        observed_edges: Optional[pd.DataFrame],
+        simulated_speeds: Dict[str, float],
+    ) -> Dict[str, float]:
+        """
+        Build representative simulated speeds for plots/heatmaps.
+
+        When interval traces are available, observed edges use the full-window
+        mean with free-flow fallback for empty bins so visuals align with the
+        intervalwise objective.
+        """
+        edge_speeds: Dict[str, float] = {}
+        for edge_id, speed in (simulated_speeds or {}).items():
+            try:
+                speed_value = float(speed)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(speed_value):
+                edge_speeds[str(edge_id)] = speed_value
+
+        if observed_edges is None or observed_edges.empty:
+            return edge_speeds
+        if "edge_id" not in observed_edges.columns:
+            return edge_speeds
+
+        measurement_intervals = getattr(simulated_speeds, "measurement_intervals", 0) or 0
+        interval_speeds = getattr(simulated_speeds, "interval_speeds", None)
+        if not isinstance(interval_speeds, dict) or int(measurement_intervals) <= 0:
+            return edge_speeds
+
+        measurement_intervals = int(measurement_intervals)
+        for _, row in observed_edges.iterrows():
+            edge_id = str(row.get("edge_id"))
+            if not edge_id:
+                continue
+
+            fallback_speed = row.get("sumo_freeflow_speed_kmh", row.get("freeflow_speed", 50.0))
+            try:
+                fallback_speed = float(fallback_speed)
+            except (TypeError, ValueError):
+                fallback_speed = 50.0
+            if not np.isfinite(fallback_speed):
+                fallback_speed = 50.0
+
+            edge_interval_speeds = interval_speeds.get(edge_id, {})
+            if edge_interval_speeds:
+                filled = [
+                    edge_interval_speeds.get(interval_idx, fallback_speed)
+                    for interval_idx in range(measurement_intervals)
+                ]
+                edge_speeds[edge_id] = float(np.mean(filled))
+            else:
+                edge_speeds[edge_id] = fallback_speed
+
+        return edge_speeds
+
+    @staticmethod
     def _ensure_observed_edges_sumo_freeflow(
         observed_edges: Optional[pd.DataFrame],
         network: SUMONetwork,
@@ -1377,14 +1434,10 @@ class CalibrationPipeline:
     ) -> None:
         """Write observed and simulated edge-speed heatmaps with a shared scale."""
         observed_edge_speeds = self._observed_edge_speeds_from_df(observed_edges)
-        simulated_edge_speeds = {}
-        for edge_id, speed in (simulated_speeds or {}).items():
-            try:
-                speed_value = float(speed)
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(speed_value):
-                simulated_edge_speeds[str(edge_id)] = speed_value
+        simulated_edge_speeds = self._simulated_edge_speeds_for_visualization(
+            observed_edges,
+            simulated_speeds,
+        )
 
         speed_values = [
             *observed_edge_speeds.values(),

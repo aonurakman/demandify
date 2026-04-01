@@ -85,3 +85,38 @@ def test_resolve_routing_failures_falls_back_to_loaded_minus_inserted():
 
     assert failures == 5
     assert total == 80
+
+
+def test_parse_edge_data_keeps_interval_traces_for_objective(tmp_path):
+    edge_xml = tmp_path / "edge_data.xml"
+    edge_xml.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<meandata>
+  <interval begin="0.00" end="60.00">
+    <edge id="e1" speed="10.00" />
+    <edge id="e2" speed="-1.00" />
+  </interval>
+  <interval begin="60.00" end="120.00">
+    <edge id="e1" speed="-1.00" />
+    <edge id="e2" speed="5.00" />
+  </interval>
+</meandata>
+""",
+        encoding="utf-8",
+    )
+
+    sim = SUMOSimulation(
+        network_file=Path("network.net.xml"),
+        vehicle_file=Path("trips.xml"),
+        use_dynamic_routing=False,
+        warmup_time=0,
+        simulation_time=120,
+    )
+
+    stats = sim._parse_edge_data(edge_xml)
+
+    assert stats["e1"] == 36.0
+    assert stats["e2"] == 18.0
+    assert stats.measurement_intervals == 2
+    assert stats.interval_speeds["e1"] == {0: 36.0}
+    assert stats.interval_speeds["e2"] == {1: 18.0}

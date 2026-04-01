@@ -1,7 +1,4 @@
-"""
-Objective function for demand calibration.
-Compares simulated vs observed edge speeds.
-"""
+"""Objective function for demand calibration."""
 
 from typing import Dict, List, Optional, Tuple
 
@@ -27,7 +24,7 @@ def calculate_failure_rate(fail_total: int, expected_vehicles: int) -> float:
 
 
 class EdgeSpeedObjective:
-    """Objective function based on edge speed matching."""
+    """Objective function based on observed-edge speed matching."""
 
     def __init__(self, observed_edges: pd.DataFrame):
         """
@@ -52,10 +49,50 @@ class EdgeSpeedObjective:
             return 50.0
         return value_f if np.isfinite(value_f) else 50.0
 
+    @staticmethod
+    def _measurement_interval_count(simulated_speeds: Dict[str, float]) -> int:
+        """Return the number of parsed measurement intervals, if available."""
+        value = getattr(simulated_speeds, "measurement_intervals", 0)
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _interval_speed_lookup(simulated_speeds: Dict[str, float]) -> Dict[str, Dict[int, float]]:
+        """Return sparse per-edge interval speeds, if available."""
+        value = getattr(simulated_speeds, "interval_speeds", None)
+        return value if isinstance(value, dict) else {}
+
     def _calculate_edge_errors(self, simulated_speeds: Dict[str, float]) -> Tuple[List[float], int]:
-        """Return per-edge speed errors and count of missing observed edges."""
+        """
+        Return objective errors and count of observed edges with no measured traffic.
+
+        When interval traces are available, this computes:
+            mean_{edge,bin} | sim(edge, bin) - obs(edge) |
+        using SUMO free-flow fallback for empty bins.
+        Otherwise it falls back to the legacy edge-mean calculation.
+        """
         errors = []
         missing_count = 0
+        measurement_intervals = self._measurement_interval_count(simulated_speeds)
+        interval_speeds = self._interval_speed_lookup(simulated_speeds)
+
+        if measurement_intervals > 0:
+            for edge_id, obs_row in self.observed_edges.iterrows():
+                obs_speed = obs_row["current_speed"]
+                fallback_speed = self._sumo_freeflow_kmh(obs_row)
+                edge_interval_speeds = interval_speeds.get(edge_id, {})
+
+                if edge_interval_speeds:
+                    for interval_idx in range(measurement_intervals):
+                        sim_speed = edge_interval_speeds.get(interval_idx, fallback_speed)
+                        errors.append(sim_speed - obs_speed)
+                else:
+                    errors.extend([fallback_speed - obs_speed] * measurement_intervals)
+                    missing_count += 1
+
+            return errors, missing_count
 
         for edge_id, obs_row in self.observed_edges.iterrows():
             obs_speed = obs_row["current_speed"]
@@ -119,7 +156,8 @@ class EdgeSpeedObjective:
         Calculate loss (MAE).
 
         Args:
-            simulated_speeds: Dict mapping edge_id -> mean speed (km/h)
+            simulated_speeds: Dict-like edge speeds, optionally with attached
+                per-interval traces from SUMO edgeData output
             trip_stats: Optional dict with routing failures (from valid trips.xml)
             expected_vehicles: Total vehicles that SHOULD have run
 
@@ -146,6 +184,40 @@ class EdgeSpeedObjective:
         errors = []
         matched = 0
         missing = 0
+        measurement_intervals = self._measurement_interval_count(simulated_speeds)
+        interval_speeds = self._interval_speed_lookup(simulated_speeds)
+
+        if measurement_intervals > 0:
+            for edge_id, obs_row in self.observed_edges.iterrows():
+                obs_speed = obs_row["current_speed"]
+                fallback_speed = self._sumo_freeflow_kmh(obs_row)
+                edge_interval_speeds = interval_speeds.get(edge_id, {})
+
+                if edge_interval_speeds:
+                    matched += 1
+                    for interval_idx in range(measurement_intervals):
+                        sim_speed = edge_interval_speeds.get(interval_idx, fallback_speed)
+                        errors.append(sim_speed - obs_speed)
+                else:
+                    missing += 1
+                    errors.extend([fallback_speed - obs_speed] * measurement_intervals)
+
+            if errors:
+                mae = np.mean(np.abs(errors))
+                mse = np.mean(np.square(errors))
+            else:
+                mae = float("inf")
+                mse = float("inf")
+
+            return {
+                "mae": mae,
+                "mse": mse,
+                "matched_edges": matched,
+                "missing_edges": missing,
+                "zero_flow_edges": missing,
+                "total_edges": len(self.observed_edges),
+                "avg_speed_diff": np.mean(errors) if errors else 0.0,
+            }
 
         for edge_id, obs_row in self.observed_edges.iterrows():
             obs_speed = obs_row["current_speed"]

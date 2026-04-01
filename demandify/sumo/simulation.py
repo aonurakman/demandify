@@ -5,12 +5,26 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple, Optional
 import xml.etree.ElementTree as ET
 import logging
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+class EdgeSpeedSnapshot(dict):
+    """Dict-like edge speed result with optional per-interval speed traces."""
+
+    def __init__(
+        self,
+        mean_speeds: Optional[Dict[str, float]] = None,
+        interval_speeds: Optional[Dict[str, Dict[int, float]]] = None,
+        measurement_intervals: int = 0,
+    ):
+        super().__init__(mean_speeds or {})
+        self.interval_speeds = interval_speeds or {}
+        self.measurement_intervals = int(measurement_intervals)
 
 
 class SUMOSimulation:
@@ -78,7 +92,7 @@ class SUMOSimulation:
         output_dir: Path = None,
         edge_data_file: Path = None,
         expected_vehicles: int = None
-    ) -> Tuple[Dict[str, float], int]:
+    ) -> Tuple[EdgeSpeedSnapshot, Dict[str, float]]:
         """
         Run SUMO simulation and extract edge statistics.
         
@@ -89,7 +103,7 @@ class SUMOSimulation:
         
         Returns:
             Tuple of (edge_stats, trip_stats)
-            - edge_stats: Dict mapping edge_id -> mean_speed
+            - edge_stats: dict-like edge speed snapshot with attached interval traces
             - trip_stats: Dict with keys 'routing_failures', 'total_trips', 'avg_duration', 'avg_waiting_time'
         """
         # Create temp directory if needed
@@ -264,16 +278,18 @@ class SUMOSimulation:
         ET.indent(tree, space='  ')
         tree.write(config_file, encoding='utf-8', xml_declaration=True)
     
-    def _parse_edge_data(self, edge_data_file: Path) -> Dict[str, float]:
+    def _parse_edge_data(self, edge_data_file: Path) -> EdgeSpeedSnapshot:
         """
         Parse SUMO edge data output to extract mean speeds.
-        
+
         Returns:
-            Dict mapping edge_id -> mean_speed (km/h)
+            Dict-like snapshot mapping edge_id -> mean measured speed (km/h),
+            with attached per-interval traces for intervalwise scoring.
         """
         logger.debug(f"Parsing edge data: {edge_data_file}")
-        
+
         edge_speeds = {}
+        interval_speeds: Dict[str, Dict[int, float]] = {}
         total_intervals = 0
         warmup_intervals = 0
         measurement_intervals = 0
@@ -286,7 +302,7 @@ class SUMOSimulation:
         except ET.ParseError as e:
             logger.error(f"Failed to parse edge data file {edge_data_file}: {e}")
             logger.warning("Returning empty edge stats due to XML parsing error. This may happen if SUMO crashed or was killed.")
-            return {}
+            return EdgeSpeedSnapshot()
         
         # Edge data is in intervals
         for interval in root.findall('interval'):
@@ -303,22 +319,26 @@ class SUMOSimulation:
                 continue
             
             # Measurement period
+            interval_idx = measurement_intervals
             measurement_intervals += 1
             for edge in interval.findall('edge'):
                 edge_id = edge.get('id')
                 speed = edge.get('speed')
-                
+
                 if speed and speed != '-1.00':  # -1 means no data
                     speed_kmh = float(speed) * 3.6  # Convert m/s to km/h
                     edges_in_measurement.add(edge_id)
-                    
+                    if edge_id not in interval_speeds:
+                        interval_speeds[edge_id] = {}
+                    interval_speeds[edge_id][interval_idx] = speed_kmh
+
                     if edge_id not in edge_speeds:
                         edge_speeds[edge_id] = []
                     
                     edge_speeds[edge_id].append(speed_kmh)
         
         # Calculate mean speeds
-        mean_speeds = {}
+        mean_speeds: Dict[str, float] = {}
         for edge_id, speeds in edge_speeds.items():
             if speeds:
                 mean_speeds[edge_id] = sum(speeds) / len(speeds)
@@ -338,7 +358,11 @@ class SUMOSimulation:
             logger.warning(f"   but 0 edges during measurement (t >= {self.warmup_time}s)")
             logger.warning(f"   → Vehicles likely complete trips before measurement starts!")
         
-        return mean_speeds
+        return EdgeSpeedSnapshot(
+            mean_speeds=mean_speeds,
+            interval_speeds=interval_speeds,
+            measurement_intervals=measurement_intervals,
+        )
 
     def _parse_trip_stats(self, tripinfo_file: Path, expected_vehicles: int = None) -> Dict:
         """

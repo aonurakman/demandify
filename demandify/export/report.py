@@ -87,6 +87,67 @@ class ReportGenerator:
 
         return report_file
 
+    @staticmethod
+    def _fallback_speed_kmh(row: pd.Series) -> float:
+        """Return the best available free-flow fallback speed for report visuals."""
+        value = row.get("sumo_freeflow_speed_kmh", row.get("freeflow_speed", 50.0))
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return 50.0
+        return value_f if np.isfinite(value_f) else 50.0
+
+    @staticmethod
+    def _measurement_interval_count(simulated_speeds: Dict[str, float]) -> int:
+        value = getattr(simulated_speeds, "measurement_intervals", 0)
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _interval_speed_lookup(simulated_speeds: Dict[str, float]) -> Dict[str, Dict[int, float]]:
+        value = getattr(simulated_speeds, "interval_speeds", None)
+        return value if isinstance(value, dict) else {}
+
+    def _representative_sim_speed(
+        self,
+        edge_id: str,
+        row: pd.Series,
+        simulated_speeds: Dict[str, float],
+    ) -> tuple[float, str]:
+        """
+        Return a report-friendly representative simulated speed for one edge.
+
+        When interval traces are available, use the full-window mean with
+        free-flow fallback for empty intervals so the plot aligns with the
+        intervalwise calibration objective.
+        """
+        measurement_intervals = self._measurement_interval_count(simulated_speeds)
+        interval_speeds = self._interval_speed_lookup(simulated_speeds)
+        fallback_speed = self._fallback_speed_kmh(row)
+        edge_interval_speeds = interval_speeds.get(edge_id, {})
+
+        if measurement_intervals > 0:
+            if edge_interval_speeds:
+                filled = [
+                    edge_interval_speeds.get(interval_idx, fallback_speed)
+                    for interval_idx in range(measurement_intervals)
+                ]
+                return float(np.mean(filled)), "matched"
+            return fallback_speed, "freeflow_fallback"
+
+        sim_speed = simulated_speeds.get(edge_id)
+        if sim_speed is not None:
+            try:
+                sim_speed_f = float(sim_speed)
+            except (TypeError, ValueError):
+                return fallback_speed, "freeflow_fallback"
+            if not np.isfinite(sim_speed_f):
+                return fallback_speed, "freeflow_fallback"
+            return sim_speed_f, "matched"
+        return fallback_speed, "freeflow_fallback"
+
     def _create_loss_plot(
         self, loss_history: List[float], generation_stats: Optional[List[dict]] = None
     ) -> str:
@@ -147,31 +208,36 @@ class ReportGenerator:
         self, observed_edges: pd.DataFrame, simulated_speeds: Dict[str, float]
     ) -> str:
         """Create observed vs simulated speed scatter plot with statistics."""
-        # Match speeds
-        obs_speeds = []
-        sim_speeds = []
+        matched_obs_speeds = []
+        matched_sim_speeds = []
+        fallback_obs_speeds = []
+        fallback_sim_speeds = []
+        all_obs_speeds = []
+        all_sim_speeds = []
         plot_data = []
 
         for _, row in observed_edges.iterrows():
             edge_id = row["edge_id"]
             obs_speed = row["current_speed"]
+            sim_speed, status = self._representative_sim_speed(edge_id, row, simulated_speeds)
+            if status == "matched":
+                matched_obs_speeds.append(obs_speed)
+                matched_sim_speeds.append(sim_speed)
+            else:
+                fallback_obs_speeds.append(obs_speed)
+                fallback_sim_speeds.append(sim_speed)
 
-            sim_speed = simulated_speeds.get(edge_id)
+            all_obs_speeds.append(obs_speed)
+            all_sim_speeds.append(sim_speed)
 
-            # Add to CSV data regardless of match (use None for missing)
             plot_data.append(
                 {
                     "edge_id": edge_id,
                     "observed_speed": obs_speed,
-                    "simulated_speed": sim_speed if sim_speed is not None else None,
-                    "status": "matched" if sim_speed is not None else "missing_in_sim",
+                    "simulated_speed": sim_speed,
+                    "status": status,
                 }
             )
-
-            # Add to plot only if matched
-            if sim_speed is not None:
-                obs_speeds.append(obs_speed)
-                sim_speeds.append(sim_speed)
 
         # Save scatter plot data to CSV for user analysis
         if plot_data:
@@ -184,31 +250,44 @@ class ReportGenerator:
         # Plot
         fig, ax = plt.subplots(figsize=(6, 6))
 
-        n_matched = len(obs_speeds)
-        n_missing = len(plot_data) - n_matched
+        n_matched = len(matched_obs_speeds)
+        n_missing = len(fallback_obs_speeds)
 
-        ax.scatter(
-            obs_speeds,
-            sim_speeds,
-            alpha=0.5,
-            s=30,
-            color="#2563eb",
-            edgecolors="white",
-            linewidths=0.3,
-            label=f"Matched edges (n={n_matched})",
-        )
+        if matched_obs_speeds:
+            ax.scatter(
+                matched_obs_speeds,
+                matched_sim_speeds,
+                alpha=0.5,
+                s=30,
+                color="#2563eb",
+                edgecolors="white",
+                linewidths=0.3,
+                label=f"Matched edges (n={n_matched})",
+            )
+
+        if fallback_obs_speeds:
+            ax.scatter(
+                fallback_obs_speeds,
+                fallback_sim_speeds,
+                alpha=0.7,
+                s=34,
+                color="#f59e0b",
+                edgecolors="white",
+                linewidths=0.3,
+                label=f"Free-flow fallback (n={n_missing})",
+            )
 
         # Diagonal line
-        max_speed = max(max(obs_speeds, default=0), max(sim_speeds, default=0))
+        max_speed = max(max(all_obs_speeds, default=0), max(all_sim_speeds, default=0))
         ax.plot([0, max_speed], [0, max_speed], "r--", linewidth=1.5, label="Perfect match (y=x)")
 
         # Compute R² and RMSE for matched edges
         stats_text = f"n = {n_matched} matched"
         if n_missing > 0:
             stats_text += f", {n_missing} missing"
-        if n_matched >= 2:
-            obs_arr = np.array(obs_speeds)
-            sim_arr = np.array(sim_speeds)
+        if len(all_obs_speeds) >= 2:
+            obs_arr = np.array(all_obs_speeds)
+            sim_arr = np.array(all_sim_speeds)
             ss_res = np.sum((sim_arr - obs_arr) ** 2)
             ss_tot = np.sum((obs_arr - np.mean(obs_arr)) ** 2)
             r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
@@ -486,20 +565,11 @@ class ReportGenerator:
             edge_id = row["edge_id"]
             obs_speed = row["current_speed"]
 
-            if edge_id in simulated_speeds:
-                sim_speed = simulated_speeds[edge_id]
+            sim_speed, status = self._representative_sim_speed(edge_id, row, simulated_speeds)
+            if status == "matched":
                 error = abs(sim_speed - obs_speed)
                 note = ""
             else:
-                # Keep report fallback aligned with objective semantics.
-                # Missing simulated edge uses SUMO free-flow speed as uncongested fallback.
-                sumo_freeflow = row.get("sumo_freeflow_speed_kmh", 50.0)
-                try:
-                    sim_speed = float(sumo_freeflow)
-                except (TypeError, ValueError):
-                    sim_speed = 50.0
-                if not np.isfinite(sim_speed):
-                    sim_speed = 50.0
                 error = abs(sim_speed - obs_speed)
                 note = "(No Traffic: Free-Flow Fallback)"
 
