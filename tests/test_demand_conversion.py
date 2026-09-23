@@ -58,10 +58,10 @@ def test_departures_are_evenly_spaced_within_bin(tmp_path):
     trips_xml = tmp_path / "trips.xml"
 
     df = demand_gen.genome_to_demand_csv(genome, od_pairs, departure_bins, demand_csv)
-    assert df["departure timestep"].tolist() == pytest.approx([30.0, 60.0, 90.0, 120.0])
+    assert df["departure timestep"].tolist() == pytest.approx([24.0, 48.0, 72.0, 96.0])
 
     demand_gen.demand_csv_to_trips_xml(demand_csv, trips_xml)
     tree = ET.parse(trips_xml)
     root = tree.getroot()
     departures = [float(t.get("depart")) for t in root.findall("trip")]
-    assert departures == pytest.approx([30.0, 60.0, 90.0, 120.0])
+    assert departures == pytest.approx([24.0, 48.0, 72.0, 96.0])

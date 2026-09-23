@@ -66,8 +66,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Agent/Dev stray files
 .agent/
+
+# Agent/Dev stray files
 pyproject.toml.bak
 test_ready.py
 SPEC.md

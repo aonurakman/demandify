@@ -25,7 +25,7 @@ Pick a spot on the map and demandify will:
 - 📦 **Offline calibration import**: Run from bundled/offline traffic+network snapshots
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
-- 🧬 **Genetic algorithm**: Optimizes demand to match observed speeds, with MAE-elite Pareto selection, teleport filtering, immigrants, assortative mating, and adaptive mutation boost
+- 🧬 **Genetic algorithm**: Calibrates demand against observed congestion with intervalwise MAE scoring, MAE-elite Pareto selection, teleport filtering, immigrants, assortative mating, deterministic crowding, and adaptive mutation boost
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
@@ -217,20 +217,22 @@ demandify follows a multi-stage pipeline:
    - `Create`: fetch traffic + OSM, build network, match edges
    - `Import`: load/copy network + observed traffic files from offline dataset
 3. **Initialize demand** - Select routable OD pairs (lane-permission aware) and time bins
-4. **Calibrate demand** - Run GA to optimize vehicle counts
+4. **Calibrate demand** - Run GA to optimize OD/bin vehicle counts against observed edge-speed error
 5. **Export scenario** - Generate `demand.csv`, `trips.xml`, config, and report
 
 ### Advanced GA Dynamics
 
 The genetic algorithm includes several mechanisms to avoid common pitfalls like local optima stagnation and trip count explosion:
 
-- **MAE-elite Pareto parent selection**: Individuals are first ordered by `mae`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the elite pool. If that pool contains any zero-teleport candidates, teleporting candidates are discarded. The remaining elite is Pareto-ranked on `(failure_rate, magnitude)` when teleports are all zero, or on `(teleports, failure_rate, magnitude)` otherwise.
+- **MAE-elite Pareto parent selection**: Individuals are first ordered by `mae`, and the top slice (`n=max(1, elite_top_pct * population)`) becomes the elite pool. If that pool contains any zero-teleport candidates, teleporting candidates are discarded. The remaining elite is Pareto-ranked on `(failure_rate, missing_edges, magnitude)` when teleports are all zero, or on `(teleports, failure_rate, missing_edges, magnitude)` otherwise.
 - **Random immigrants**: A small fraction of completely random individuals is injected each generation to maintain genetic diversity and escape local optima.
 - **Assortative mating**: Parents are paired by dissimilarity (by genome magnitude) for crossover, promoting exploration of the search space.
 - **Deterministic crowding**: Offspring compete with similar parents for population slots, preserving niche diversity.
 - **Adaptive mutation boost**: If the best fitness stagnates for K generations, mutation sigma and rate are temporarily increased by a configurable multiplier. They reset automatically when improvement resumes.
 
-Parent choice, survival elitism, per-generation representatives, and the final returned solution all follow that same **MAE-elite Pareto rule** across generations, so the returned individual still comes from the strongest MAE frontier while preferring lower teleports, lower failure rate, and lower total demand inside that frontier.
+Parent choice, survival elitism, per-generation representatives, and the final returned solution all follow that same **MAE-elite Pareto rule** across generations, so the returned individual still comes from the strongest MAE frontier while preferring lower teleports, lower failure rate, fewer missing edges, and lower total demand inside that frontier.
+
+The primary loss itself is still MAE, but it is computed interval-by-interval across the post-warmup measurement windows. For each observed edge and measurement interval, demandify compares the simulated speed to the observed speed; if an observed edge has no simulated speed in that interval, it falls back to the matched SUMO edge free-flow speed.
 
 The calibration report includes plots for **genotypic diversity** (mean pairwise L2 distance) and **phenotypic diversity** (σ of fitness values) across generations, along with markers indicating when mutation boost was active.
 
@@ -287,7 +289,7 @@ Each run creates a folder with:
 - **`network.net.xml`** - SUMO network
 - **`scenario.sumocfg`** - SUMO configuration (ready to run; ignores route errors by default)
 - **`observed_edges.csv`** - Observed traffic speeds
-- **`run_meta.json`** - Complete run metadata with MAE-first optimization summary
+- **`run_meta.json`** - Complete run metadata with selected-candidate summary and best-MAE diagnostics
 - **`report.html`** - Calibration report with visualizations
 - **`latest_selected/`** - Lightweight rolling recovery export with `demand.csv`, `trips.xml`, `network.net.xml`, `scenario.sumocfg`, and minimal metadata
 - **`<run_id>/`** - URB/RouteRL-compatible export bundle

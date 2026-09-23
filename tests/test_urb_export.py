@@ -90,7 +90,7 @@ def test_urb_export_writes_sequential_integer_agent_ids(tmp_path, monkeypatch):
     assert [row["id"] for row in rows] == ["0", "1", "2"]
 
 
-def test_urb_export_fails_cleanly_when_min_connection_paths_not_met(tmp_path, monkeypatch, caplog):
+def test_urb_export_fails_cleanly_when_min_connection_paths_not_met(tmp_path, monkeypatch, capsys):
     network_file = _write_network(
         tmp_path,
         """<?xml version="1.0" encoding="UTF-8"?>
@@ -121,9 +121,9 @@ def test_urb_export_fails_cleanly_when_min_connection_paths_not_met(tmp_path, mo
     exporter = URBDataExporter("scenario_bad", tmp_path / "export_root")
     monkeypatch.setattr(exporter, "_generate_plain_xml", lambda *_args, **_kwargs: None)
 
-    with caplog.at_level("ERROR"):
-        exporter.export(network_file, trips_file, min_connection_paths=2)
+    exporter.export(network_file, trips_file, min_connection_paths=2)
 
     target_dir = tmp_path / "export_root" / "scenario_bad"
     assert not (target_dir / "agents.csv").exists()
-    assert "min_connection_paths=2" in caplog.text
+    captured = capsys.readouterr()
+    assert "min_connection_paths=2" in f"{captured.out}\n{captured.err}"

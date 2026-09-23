@@ -281,7 +281,7 @@ async def cmd_run(args):
             print("\n🛑 Run aborted by user")
 
         except Exception as e:
-            if "No traffic sensors matches" in str(e):
+            if "No traffic sensors matched" in str(e):
                 print("\n⚠️  WARNING: No traffic sensors in this area.")
             else:
                 print(f"\n❌ Error: {e}")
