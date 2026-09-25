@@ -206,3 +206,42 @@ def test_adaptive_boundary_bias_lifts_sparse_boundary_roles_without_collapsing_i
     assert adaptive_destination_outgoing > static_destination_outgoing + 0.05
     assert _role_share(adaptive_origin, "internal") > 0.50
     assert _role_share(adaptive_destination, "internal") > 0.50
+
+
+def test_select_od_pairs_with_sensor_coverage(tmp_path):
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+    gen = DemandGenerator(network, seed=42)
+
+    # Observed edges on internal corridor
+    observed_edges = ["inner_in", "hub_w"]
+    pairs = gen.select_od_pairs(
+        max_od_pairs=2,
+        min_connection_paths=1,
+        observed_edge_ids=observed_edges,
+    )
+
+    assert len(pairs) == 2
+    # Verify coverage: at least one selected pair traverses an observed edge
+    covered = set()
+    for o, d in pairs:
+        path = gen.find_shortest_path(o, d)
+        covered.update(set(path) & set(observed_edges))
+
+    assert len(covered) > 0
+
+
+def test_select_od_pairs_coverage_is_deterministic(tmp_path):
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+
+    observed = ["inner_in", "hub_w", "to_e"]
+
+    gen1 = DemandGenerator(network, seed=123)
+    pairs1 = gen1.select_od_pairs(max_od_pairs=3, observed_edge_ids=observed)
+
+    gen2 = DemandGenerator(network, seed=123)
+    pairs2 = gen2.select_od_pairs(max_od_pairs=3, observed_edge_ids=observed)
+
+    assert pairs1 == pairs2
+

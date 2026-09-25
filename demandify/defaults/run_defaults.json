@@ -26,5 +26,6 @@
   "ga_deterministic_crowding": true,
   "effective_capacity_factor": 1.0,
   "mesosim": false,
-  "topology_guidance": true
+  "topology_guidance": true,
+  "sensor_coverage_od": true
 }

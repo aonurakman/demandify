@@ -107,6 +107,7 @@ class CalibrationPipeline:
         effective_capacity_factor: float = 1.0,
         mesosim: bool = False,
         topology_guidance: bool = True,
+        sensor_coverage_od: bool = True,
     ):
         """
         Initialize pipeline.
@@ -199,6 +200,7 @@ class CalibrationPipeline:
         self.effective_capacity_factor = float(effective_capacity_factor)
         self.mesosim = bool(mesosim)
         self.topology_guidance = bool(topology_guidance)
+        self.sensor_coverage_od = bool(sensor_coverage_od)
         self.save_offline_dataset = bool(save_offline_dataset)
         self.save_offline_dataset_name = (
             save_offline_dataset_name.strip() if save_offline_dataset_name else None
@@ -642,7 +644,9 @@ class CalibrationPipeline:
 
         # Stage 5: Initialize demand model
         self._report_progress(5, "Init Demand", "Initializing demand generation...")
-        demand_gen, od_pairs, departure_bins = self._initialize_demand(network_file)
+        demand_gen, od_pairs, departure_bins = self._initialize_demand(
+            network_file, observed_edges=observed_edges
+        )
         try:
             self._write_od_selection_plot(network_file, od_pairs)
         except Exception as e:
@@ -1055,7 +1059,7 @@ class CalibrationPipeline:
         return observed_edges
 
     def _initialize_demand(
-        self, network_file: Path
+        self, network_file: Path, observed_edges: Optional[pd.DataFrame] = None
     ) -> Tuple[DemandGenerator, List[Tuple[str, str]], List[Tuple[int, int]]]:
         """Initialize demand generator and select OD pairs."""
         network = SUMONetwork(network_file)
@@ -1079,12 +1083,22 @@ class CalibrationPipeline:
             f"Network diagonal ~{int(diag)}m. Using min_trip_distance={int(self.min_trip_distance)}m"
         )
 
+        observed_edge_ids = None
+        if (
+            self.sensor_coverage_od
+            and observed_edges is not None
+            and isinstance(observed_edges, pd.DataFrame)
+            and "edge_id" in observed_edges.columns
+        ):
+            observed_edge_ids = set(observed_edges["edge_id"].astype(str))
+
         # Select OD pairs (validates each pair individually; lane-permission aware)
         od_pairs = demand_gen.select_od_pairs(
             max_od_pairs=self.max_od_pairs,
             min_trip_distance=self.min_trip_distance,
             min_connection_paths=self.min_connection_paths,
             num_workers=self.parallel_workers or self.config.default_parallel_workers,
+            observed_edge_ids=observed_edge_ids,
         )
 
         # Create departure bins - cover ENTIRE duration (warmup + window)
@@ -1707,6 +1721,7 @@ class CalibrationPipeline:
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
                 "effective_capacity_factor": self.effective_capacity_factor,
+                "sensor_coverage_od": self.sensor_coverage_od,
             },
             "results": {
                 # Speed-ratio MAE (dimensionless): mean |sim_speed - obs_speed| / freeflow

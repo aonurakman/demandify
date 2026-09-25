@@ -205,6 +205,7 @@ async def cmd_run(args):
                 effective_capacity_factor=args.capacity_factor,
                 mesosim=getattr(args, "mesosim", False),
                 topology_guidance=getattr(args, "topology_guidance", True),
+                sensor_coverage_od=getattr(args, "sensor_coverage_od", True),
                 offline_dataset=(
                     resolved_import_dataset.dataset_id if resolved_import_dataset else None
                 ),
@@ -531,6 +532,16 @@ def cli():
         help=(
             "Use network topology and observed edge speed discrepancies to guide GA mutation "
             "toward congested/empty corridors. (default: enabled)"
+        ),
+    )
+    run_parser.add_argument(
+        "--sensor-coverage-od",
+        dest="sensor_coverage_od",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("sensor_coverage_od", True),
+        help=(
+            "Use greedy marginal set-cover during OD selection to maximize coverage of observed "
+            "sensor edges without creating unnatural micro-trips. (default: enabled)"
         ),
     )
     run_parser.add_argument(

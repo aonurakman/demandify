@@ -41,6 +41,7 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "ga_deterministic_crowding": True,
     "mesosim": False,
     "topology_guidance": True,
+    "sensor_coverage_od": True,
 }
 
 
@@ -171,6 +172,10 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
     merged["topology_guidance"] = _as_bool(
         merged.get("topology_guidance"),
         _RUN_DEFAULTS_FALLBACK["topology_guidance"],
+    )
+    merged["sensor_coverage_od"] = _as_bool(
+        merged.get("sensor_coverage_od"),
+        _RUN_DEFAULTS_FALLBACK["sensor_coverage_od"],
     )
     return merged
 

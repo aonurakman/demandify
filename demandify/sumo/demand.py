@@ -203,6 +203,7 @@ class DemandGenerator:
         min_trip_distance: float = 0.0,
         min_connection_paths: int = 1,
         num_workers: int = 1,
+        observed_edge_ids: Optional[Iterable[Any]] = None,
     ) -> List[Tuple[str, str]]:
         """
         Select origin/destination edges by building validated OD pairs.
@@ -221,6 +222,7 @@ class DemandGenerator:
                 between origin and destination for the pair to be eligible. Use 1
                 for reachability-only behavior.
             num_workers: Number of workers to use when validating sampled OD pairs.
+            observed_edge_ids: Optional set/iterable of observed edge IDs to maximize coverage.
 
         Returns:
             List of (origin_edge, destination_edge) pairs that should be routable in SUMO.
@@ -239,6 +241,11 @@ class DemandGenerator:
         edge_roles = sampling_profiles["edge_roles"]
         has_boundary_bias = sampling_profiles["has_boundary_bias"]
         
+        obs_set = {str(e) for e in observed_edge_ids} if observed_edge_ids else set()
+        target_sample_count = (
+            min(3 * max_od_pairs, max_od_pairs + 80) if obs_set else max_od_pairs
+        )
+
         # Build valid OD pairs one at a time
         valid_pairs: List[Tuple[str, str]] = []
         valid_pairs_set = set()
@@ -254,7 +261,8 @@ class DemandGenerator:
         )
 
         logger.debug(
-            "Building up to %s validated OD pairs (min_dist=%sm, min_connection_paths=%s)...",
+            "Building up to %s validated OD pairs (target_final=%s, min_dist=%sm, min_connection_paths=%s)...",
+            target_sample_count,
             max_od_pairs,
             min_trip_distance,
             min_connection_paths,
@@ -277,7 +285,9 @@ class DemandGenerator:
         )
 
         current_min_dist = min_trip_distance
-        logger.debug(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
+        logger.debug(
+            f"Generating {target_sample_count} OD pairs (target_final={max_od_pairs}, min_dist={int(min_trip_distance)}m)..."
+        )
 
         pool = None
         if num_workers > 1:
@@ -299,9 +309,9 @@ class DemandGenerator:
             )
 
         try:
-            while len(valid_pairs) < max_od_pairs:
+            while len(valid_pairs) < target_sample_count:
                 # Safety break
-                if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                if total_attempts > target_sample_count * 100 and total_attempts > 10000:
                     logger.warning(
                         "Reached maximum attempt limit (%s). Stopping with %s pairs.",
                         total_attempts,
@@ -328,10 +338,10 @@ class DemandGenerator:
 
                 candidate_pairs: List[Tuple[str, str]] = []
                 candidate_set = set()
-                target_batch = min(validation_batch_size, max_od_pairs - len(valid_pairs))
+                target_batch = min(validation_batch_size, target_sample_count - len(valid_pairs))
 
                 while len(candidate_pairs) < target_batch:
-                    if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                    if total_attempts > target_sample_count * 100 and total_attempts > 10000:
                         break
                     if consecutive_failures > max_consecutive_failures:
                         break
@@ -390,7 +400,7 @@ class DemandGenerator:
                 )
 
                 for origin, destination in candidate_pairs:
-                    if len(valid_pairs) >= max_od_pairs:
+                    if len(valid_pairs) >= target_sample_count:
                         break
                     if results.get((origin, destination), False):
                         valid_pairs.append((origin, destination))
@@ -406,7 +416,7 @@ class DemandGenerator:
                     len(valid_pairs) != last_logged_found
                     or (now - last_progress_log_time) >= self.OD_PROGRESS_TIME_SECONDS
                 ):
-                    logger.info("%s", self._format_od_progress(len(valid_pairs), max_od_pairs))
+                    logger.info("%s", self._format_od_progress(len(valid_pairs), target_sample_count))
                     last_progress_log_time = now
                     last_logged_found = len(valid_pairs)
         finally:
@@ -422,7 +432,43 @@ class DemandGenerator:
         
         if consecutive_failures >= max_consecutive_failures:
             logger.warning(f"Stopped after {consecutive_failures} consecutive failures. "
-                          f"Created {len(valid_pairs)} pairs (target was {max_od_pairs})")
+                          f"Created {len(valid_pairs)} pairs (target was {target_sample_count})")
+
+        if obs_set and len(valid_pairs) > max_od_pairs:
+            # Precompute traversed observed edges for each candidate pair
+            cand_traversed: Dict[Tuple[str, str], Set[str]] = {}
+            for pair in valid_pairs:
+                path = self.find_shortest_path(pair[0], pair[1])
+                cand_traversed[pair] = set(path) & obs_set
+
+            selected_pairs: List[Tuple[str, str]] = []
+            covered_edges: Set[str] = set()
+            indexed_remaining = list(enumerate(valid_pairs))
+
+            while len(selected_pairs) < max_od_pairs and indexed_remaining:
+                best_item = max(
+                    indexed_remaining,
+                    key=lambda item: (
+                        len(cand_traversed[item[1]] - covered_edges),
+                        len(cand_traversed[item[1]]),
+                        -item[0],
+                    ),
+                )
+                selected_pairs.append(best_item[1])
+                covered_edges.update(cand_traversed[best_item[1]])
+                indexed_remaining.remove(best_item)
+
+            logger.info(
+                "Coverage-guided OD selection: selected %d pairs covering %d / %d observed edges "
+                "(from candidate pool of %d)",
+                len(selected_pairs),
+                len(covered_edges),
+                len(obs_set),
+                len(valid_pairs),
+            )
+            valid_pairs = selected_pairs
+        elif len(valid_pairs) > max_od_pairs:
+            valid_pairs = valid_pairs[:max_od_pairs]
         
         origins = {o for o, _ in valid_pairs}
         destinations = {d for _, d in valid_pairs}
