@@ -925,8 +925,10 @@ class GeneticAlgorithm:
                             if dist < best_dist:
                                 best_dist = dist
                                 best_idx = idx
-                        # Replace if child is fitter
-                        if child.fitness.values[0] < remaining[best_idx].fitness.values[0]:
+                        # Replace if child is fitter using the same staged key as
+                        # parent selection: (mae, teleports, failure_rate, missing_edges, magnitude).
+                        # Using raw MAE only would let a teleporting child beat a clean parent.
+                        if self._primary_sort_key(child) < self._primary_sort_key(remaining[best_idx]):
                             remaining[best_idx] = child
                     population = elites + remaining
                 else:
@@ -935,8 +937,8 @@ class GeneticAlgorithm:
 
                 # --- Inject immigrants by replacing worst individuals ---
                 if num_immigrants > 0 and immigrants:
-                    # Sort population by fitness (worst last), replace tail
-                    population.sort(key=lambda ind: ind.fitness.values[0])
+                    # Sort population by staged key (worst last), replace tail
+                    population.sort(key=self._primary_sort_key)
                     for i, imm in enumerate(immigrants):
                         if imm.fitness.valid:
                             population[-(i + 1)] = imm

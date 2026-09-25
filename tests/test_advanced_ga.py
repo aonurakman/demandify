@@ -407,6 +407,16 @@ class TestParentSelection:
         assert id(duplicate_non_elite) in remaining_ids
         assert len(remaining) == 3
 
+    def test_deterministic_crowding_prefers_staged_key_on_equal_mae(self):
+        """When MAE is tied, child with fewer teleports/failures replaces closest incumbent."""
+        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=3, elitism=1, deterministic_crowding=True)
+        incumbent = self._make_ind([1, 1, 1], 1.0, 2, teleports=2)
+        child = self._make_ind([1, 1, 2], 1.0, 0, teleports=0)
+
+        # Primary sort key breaks the tie in favor of the clean child
+        assert ga._primary_sort_key(child) < ga._primary_sort_key(incumbent)
+
+
 
 class TestSelectedBestReturn:
     """Test MAE-elite-based final best selection behavior."""
