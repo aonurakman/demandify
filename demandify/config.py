@@ -40,6 +40,7 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "ga_assortative_mating": True,
     "ga_deterministic_crowding": True,
     "mesosim": False,
+    "topology_guidance": True,
 }
 
 
@@ -166,6 +167,10 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
     merged["mesosim"] = _as_bool(
         merged.get("mesosim"),
         _RUN_DEFAULTS_FALLBACK["mesosim"],
+    )
+    merged["topology_guidance"] = _as_bool(
+        merged.get("topology_guidance"),
+        _RUN_DEFAULTS_FALLBACK["topology_guidance"],
     )
     return merged
 

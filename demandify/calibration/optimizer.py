@@ -49,6 +49,9 @@ class GeneticAlgorithm:
         stagnation_boost: float = 1.5,
         assortative_mating: bool = True,
         deterministic_crowding: bool = True,
+        od_edge_incidence: Optional[List[List[str]]] = None,
+        n_bins: Optional[int] = None,
+        topology_guidance: bool = True,
     ):
         """
         Initialize GA.
@@ -72,6 +75,9 @@ class GeneticAlgorithm:
             stagnation_boost: Multiplier for mutation sigma/rate on stagnation
             assortative_mating: Prefer crossover between dissimilar parents
             deterministic_crowding: Offspring replace most similar parents
+            od_edge_incidence: List of observed edge IDs traversed by each OD pair
+            n_bins: Number of departure time bins per OD pair
+            topology_guidance: Biases mutation using network edge speed discrepancies
         """
         self.genome_size = genome_size
         self.seed = seed
@@ -93,6 +99,16 @@ class GeneticAlgorithm:
         self.stagnation_boost = stagnation_boost
         self.assortative_mating = assortative_mating
         self.deterministic_crowding = deterministic_crowding
+
+        # Topology-guided mutation parameters
+        self.od_edge_incidence = od_edge_incidence
+        self.topology_guidance = bool(topology_guidance)
+        if n_bins is not None:
+            self.n_bins = max(1, int(n_bins))
+        elif od_edge_incidence and len(od_edge_incidence) > 0:
+            self.n_bins = max(1, self.genome_size // len(od_edge_incidence))
+        else:
+            self.n_bins = 1
 
         # Track base mutation params for adaptive boost
         self._base_mutation_sigma = mutation_sigma
@@ -669,6 +685,7 @@ class GeneticAlgorithm:
             mu=0,
             sigma=self.mutation_sigma,
             indpb=self.mutation_indpb,
+            mu_per_gene=None,
         )
 
         # Create population
@@ -831,13 +848,24 @@ class GeneticAlgorithm:
                     self._mutation_boosted = False
                     logger.info("✨ Improvement found: resetting mutation to base values")
 
-                # Update mutate operator with current sigma
+                # Update mutate operator with current sigma and topology guidance
+                mu_per_gene = self._compute_topology_guidance_vector(population)
+                if mu_per_gene is not None:
+                    nonzero_guidance = sum(1 for m in mu_per_gene if m != 0)
+                    logger.debug(
+                        "Gen %s: topology guidance active for %s/%s genes (mean |mu|=%.2f)",
+                        gen + 1,
+                        nonzero_guidance,
+                        len(mu_per_gene),
+                        float(np.mean(np.abs(mu_per_gene))),
+                    )
                 self.toolbox.register(
                     "mutate",
                     self._bounded_mutation,
                     mu=0,
                     sigma=self.mutation_sigma,
                     indpb=self.mutation_indpb,
+                    mu_per_gene=mu_per_gene,
                 )
 
                 # Parent selection uses a top-MAE elite slice with teleport-aware Pareto preferences.
@@ -1129,11 +1157,85 @@ class GeneticAlgorithm:
 
         return best_genome, best_loss, loss_history, generation_stats
 
-    def _bounded_mutation(self, individual, mu, sigma, indpb):
+    def _compute_topology_guidance_vector(self, population) -> Optional[List[float]]:
+        """
+        Compute signed mutation offset vector based on consensus edge discrepancies.
+
+        Discrepancy is delta_e = (v_sim - v_obs) / v_free:
+          - delta_e > 0: simulated speed is higher than observed (corridor under-utilized -> need more demand)
+          - delta_e < 0: simulated speed is lower than observed (corridor congested -> need less demand)
+
+        For each OD pair, the route guidance score is the mean discrepancy across
+        its traversed observed edges. If within deadband (|mean| < 0.05), mu = 0.
+        Otherwise mu is proportional to the discrepancy, clamped to [-sigma, +sigma].
+        """
+        if not self.topology_guidance or not self.od_edge_incidence or not population:
+            return None
+
+        # Gather consensus discrepancies from top elite individuals
+        elite_count = max(1, int(self.elite_top_pct * len(population)))
+        top_inds = sorted(population, key=self._primary_sort_key)[:elite_count]
+
+        edge_discrepancy_lists: Dict[str, List[float]] = {}
+        for ind in top_inds:
+            metrics = getattr(ind, "metrics", {}) or {}
+            discrepancies = metrics.get("edge_discrepancies", {})
+            if isinstance(discrepancies, dict):
+                for edge_id, val in discrepancies.items():
+                    try:
+                        edge_discrepancy_lists.setdefault(str(edge_id), []).append(float(val))
+                    except (ValueError, TypeError):
+                        continue
+
+        if not edge_discrepancy_lists:
+            return None
+
+        consensus: Dict[str, float] = {
+            edge_id: float(np.mean(vals))
+            for edge_id, vals in edge_discrepancy_lists.items()
+        }
+
+        od_mus: List[float] = []
+        for traversed_edges in self.od_edge_incidence:
+            valid_deltas = [consensus[e] for e in traversed_edges if e in consensus]
+            if valid_deltas:
+                mean_delta = float(np.mean(valid_deltas))
+                if abs(mean_delta) < 0.05:
+                    od_mu = 0.0
+                else:
+                    od_mu = float(
+                        np.clip(
+                            mean_delta * self.mutation_sigma,
+                            -float(self.mutation_sigma),
+                            float(self.mutation_sigma),
+                        )
+                    )
+            else:
+                od_mu = 0.0
+            od_mus.append(od_mu)
+
+        mu_per_gene: List[float] = []
+        for i in range(self.genome_size):
+            od_idx = i // self.n_bins
+            if od_idx < len(od_mus):
+                mu_per_gene.append(od_mus[od_idx])
+            else:
+                mu_per_gene.append(0.0)
+
+        return mu_per_gene
+
+    def _bounded_mutation(self, individual, mu, sigma, indpb, mu_per_gene=None):
         """Gaussian mutation with lower-bound clipping only (no upper cap)."""
         for i in range(len(individual)):
             if self.rng.random() < indpb:
-                individual[i] += int(self.rng.normal(mu, sigma))
+                gene_mu = mu
+                if mu_per_gene is not None and i < len(mu_per_gene):
+                    target_mu = mu_per_gene[i]
+                    if target_mu != 0:
+                        # 70% guided towards physical gradient, 30% exploratory zero-mean
+                        if self.rng.random() >= 0.3:
+                            gene_mu = target_mu
+                individual[i] += int(self.rng.normal(gene_mu, sigma))
                 # Keep demand non-negative while allowing exploration above init bounds.
                 individual[i] = max(self.bounds[0], individual[i])
         return (individual,)

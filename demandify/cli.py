@@ -204,6 +204,7 @@ async def cmd_run(args):
                 initial_population=args.initial_population,
                 effective_capacity_factor=args.capacity_factor,
                 mesosim=getattr(args, "mesosim", False),
+                topology_guidance=getattr(args, "topology_guidance", True),
                 offline_dataset=(
                     resolved_import_dataset.dataset_id if resolved_import_dataset else None
                 ),
@@ -520,6 +521,16 @@ def cli():
         help=(
             "Use SUMO's fast queue-based mesoscopic simulation (--mesosim) for GA candidate "
             "evaluations. Final simulation remains microscopic. (default: disabled)"
+        ),
+    )
+    run_parser.add_argument(
+        "--topology-guidance",
+        dest="topology_guidance",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("topology_guidance", True),
+        help=(
+            "Use network topology and observed edge speed discrepancies to guide GA mutation "
+            "toward congested/empty corridors. (default: enabled)"
         ),
     )
     run_parser.add_argument(

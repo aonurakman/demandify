@@ -909,3 +909,152 @@ class TestDiversityPlot:
         assert (tmp_path / "plots" / "diversity_plot.png").exists()
         html = report_path.read_text()
         assert "Population Diversity" in html
+
+
+# ---------------------------------------------------------------------------
+# Topology-Guided Mutation tests
+# ---------------------------------------------------------------------------
+
+
+class TestTopologyGuidedMutation:
+    """Test topology-guided mutation and incidence computation."""
+
+    def test_default_topology_guidance_params(self):
+        ga = GeneticAlgorithm(genome_size=10, seed=42)
+        assert ga.topology_guidance is True
+        assert ga.od_edge_incidence is None
+        assert ga.n_bins == 1
+
+    def test_demand_generator_find_shortest_path_and_incidence(self):
+        from unittest.mock import MagicMock
+        from demandify.sumo.demand import DemandGenerator
+
+        mock_net = MagicMock()
+        mock_net.adjacency = {
+            "e1": ["e2"],
+            "e2": ["e3", "e4"],
+            "e3": ["e5"],
+            "e4": ["e5"],
+            "e5": [],
+        }
+
+        gen = DemandGenerator(network=mock_net, seed=42)
+        path = gen.find_shortest_path("e1", "e5")
+        assert path == ["e1", "e2", "e3", "e5"] or path == ["e1", "e2", "e4", "e5"]
+        assert gen.find_shortest_path("e1", "e1") == ["e1"]
+        assert gen.find_shortest_path("e5", "e1") == []
+
+        incidence = gen.compute_od_edge_incidence(
+            od_pairs=[("e1", "e5"), ("e5", "e1")],
+            observed_edge_ids={"e2", "e5", "unrelated"},
+        )
+        assert len(incidence) == 2
+        assert "e2" in incidence[0]
+        assert "e5" in incidence[0]
+        assert incidence[1] == []
+
+    def test_edge_speed_objective_discrepancies(self):
+        from demandify.calibration.objective import EdgeSpeedObjective
+
+        observed = pd.DataFrame(
+            {
+                "edge_id": ["e1", "e2"],
+                "current_speed": [30.0, 50.0],
+                "sumo_freeflow_speed_kmh": [60.0, 50.0],
+            }
+        )
+        objective = EdgeSpeedObjective(observed)
+        # e1 simulated faster (45 > 30 -> +15/60 = +0.25)
+        # e2 simulated slower (25 < 50 -> -25/50 = -0.50)
+        simulated = {"e1": 45.0, "e2": 25.0}
+        metrics = objective.calculate_metrics(simulated)
+
+        assert "edge_discrepancies" in metrics
+        disc = metrics["edge_discrepancies"]
+        assert abs(disc["e1"] - 0.25) < 1e-5
+        assert abs(disc["e2"] - (-0.50)) < 1e-5
+
+    def test_compute_topology_guidance_vector(self):
+        # 2 OD pairs x 2 bins = genome size 4
+        # OD 0 traverses e1 (faster -> positive mu)
+        # OD 1 traverses e2 (slower -> negative mu)
+        od_incidence = [["e1"], ["e2"]]
+        ga = GeneticAlgorithm(
+            genome_size=4,
+            seed=42,
+            mutation_sigma=10,
+            od_edge_incidence=od_incidence,
+            n_bins=2,
+            topology_guidance=True,
+        )
+
+        # Build mock population with edge_discrepancies
+        population = ga.toolbox.population(n=5)
+        for ind in population:
+            ind.fitness.values = (0.2,)
+            ind.metrics = {
+                "mae": 0.2,
+                "teleports": 0,
+                "fail_total": 0,
+                "missing_edges": 0,
+                "total_vehicles": 10,
+                "edge_discrepancies": {"e1": 0.40, "e2": -0.60},
+            }
+
+        mu_vector = ga._compute_topology_guidance_vector(population)
+        assert mu_vector is not None
+        assert len(mu_vector) == 4
+        # OD 0 bins: e1 has delta = +0.40 -> mu = +4.0
+        assert mu_vector[0] == 4.0
+        assert mu_vector[1] == 4.0
+        # OD 1 bins: e2 has delta = -0.60 -> mu = -6.0
+        assert mu_vector[2] == -6.0
+        assert mu_vector[3] == -6.0
+
+    def test_deadband_and_disabled_topology_guidance(self):
+        # Discrepancy inside deadband (< 0.05) should produce mu = 0
+        od_incidence = [["e1"]]
+        ga = GeneticAlgorithm(
+            genome_size=2,
+            seed=42,
+            mutation_sigma=10,
+            od_edge_incidence=od_incidence,
+            n_bins=2,
+            topology_guidance=True,
+        )
+        population = ga.toolbox.population(n=2)
+        for ind in population:
+            ind.fitness.values = (0.1,)
+            ind.metrics = {"edge_discrepancies": {"e1": 0.03}}
+
+        mu_vector = ga._compute_topology_guidance_vector(population)
+        assert mu_vector == [0.0, 0.0]
+
+        # Disabled guidance returns None
+        ga_disabled = GeneticAlgorithm(
+            genome_size=2,
+            seed=42,
+            od_edge_incidence=od_incidence,
+            topology_guidance=False,
+        )
+        assert ga_disabled._compute_topology_guidance_vector(population) is None
+
+    def test_guided_mutation_shifts_offspring(self):
+        ga = GeneticAlgorithm(genome_size=2, seed=123, mutation_sigma=10, bounds=(0, 100))
+        # Gene 0 guided positive (+8.0), Gene 1 guided negative (-8.0)
+        mu_per_gene = [8.0, -8.0]
+        shifts_0 = []
+        shifts_1 = []
+
+        for _ in range(300):
+            ind = creator.Individual([50, 50])
+            ga._bounded_mutation(ind, mu=0, sigma=10, indpb=1.0, mu_per_gene=mu_per_gene)
+            shifts_0.append(ind[0] - 50)
+            shifts_1.append(ind[1] - 50)
+
+        # On average, gene 0 should shift up, gene 1 should shift down
+        mean_shift_0 = np.mean(shifts_0)
+        mean_shift_1 = np.mean(shifts_1)
+        assert mean_shift_0 > 2.0, f"Expected positive shift, got {mean_shift_0}"
+        assert mean_shift_1 < -2.0, f"Expected negative shift, got {mean_shift_1}"
+

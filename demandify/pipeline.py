@@ -106,6 +106,7 @@ class CalibrationPipeline:
         progress_callback: callable = None,
         effective_capacity_factor: float = 1.0,
         mesosim: bool = False,
+        topology_guidance: bool = True,
     ):
         """
         Initialize pipeline.
@@ -197,6 +198,7 @@ class CalibrationPipeline:
             )
         self.effective_capacity_factor = float(effective_capacity_factor)
         self.mesosim = bool(mesosim)
+        self.topology_guidance = bool(topology_guidance)
         self.save_offline_dataset = bool(save_offline_dataset)
         self.save_offline_dataset_name = (
             save_offline_dataset_name.strip() if save_offline_dataset_name else None
@@ -1178,6 +1180,20 @@ class CalibrationPipeline:
             f"GA mutation sigma: using user-configured sigma={self.ga_mutation_sigma}"
         )
 
+        od_edge_incidence = None
+        if (
+            self.topology_guidance
+            and demand_gen is not None
+            and hasattr(demand_gen, "compute_od_edge_incidence")
+        ):
+            observed_edge_ids = set(observed_edges["edge_id"].astype(str))
+            od_edge_incidence = demand_gen.compute_od_edge_incidence(od_pairs, observed_edge_ids)
+            logger.debug(
+                "Computed OD-to-edge incidence for %d OD pairs across %d observed edges",
+                len(od_pairs),
+                len(observed_edge_ids),
+            )
+
         ga = GeneticAlgorithm(
             genome_size=genome_size,
             seed=self.seed,
@@ -1197,6 +1213,9 @@ class CalibrationPipeline:
             stagnation_boost=self.ga_stagnation_boost,
             assortative_mating=self.ga_assortative_mating,
             deterministic_crowding=self.ga_deterministic_crowding,
+            od_edge_incidence=od_edge_incidence,
+            n_bins=len(departure_bins),
+            topology_guidance=self.topology_guidance,
         )
 
         # Start optimization
@@ -1678,6 +1697,7 @@ class CalibrationPipeline:
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
                 "mesosim": self.mesosim,
+                "topology_guidance": self.topology_guidance,
                 "requested_parallel_workers": self.parallel_workers,
                 "num_workers": self.parallel_workers or self.config.default_parallel_workers,
             },

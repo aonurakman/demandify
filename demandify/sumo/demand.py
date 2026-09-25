@@ -4,7 +4,7 @@ Seeded demand generation for SUMO.
 from collections import Counter
 from heapq import heappop, heappush
 from multiprocessing import get_all_start_methods, get_context
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -889,6 +889,69 @@ class DemandGenerator:
         )
         self._k_path_cache[cache_key] = bool(result)
         return bool(result)
+
+    def find_shortest_path(self, from_edge: str, to_edge: str) -> List[str]:
+        """
+        Find shortest directed path of edges from from_edge to to_edge using BFS.
+
+        Returns empty list if no route exists.
+        """
+        if from_edge == to_edge:
+            return [from_edge]
+
+        visited: Dict[str, Optional[str]] = {from_edge: None}
+        queue = [from_edge]
+        idx = 0
+
+        while idx < len(queue):
+            current = queue[idx]
+            idx += 1
+
+            if current == to_edge:
+                break
+
+            neighbors = self._deterministic_adjacency.get(current, ())
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    visited[neighbor] = current
+                    queue.append(neighbor)
+
+        if to_edge not in visited:
+            return []
+
+        path = []
+        curr: Optional[str] = to_edge
+        while curr is not None:
+            path.append(curr)
+            curr = visited[curr]
+        path.reverse()
+        return path
+
+    def compute_od_edge_incidence(
+        self,
+        od_pairs: List[Tuple[str, str]],
+        observed_edge_ids: Iterable[Any],
+    ) -> List[List[str]]:
+        """
+        For each OD pair, compute the list of observed edge IDs traversed by the
+        shortest path between origin and destination.
+
+        Args:
+            od_pairs: List of (origin, destination) edge ID pairs.
+            observed_edge_ids: Iterable/set of observed edge IDs.
+
+        Returns:
+            List of lists of traversed observed edge IDs, aligned with od_pairs.
+        """
+        incidence: List[List[str]] = []
+        observed_set = {str(e) for e in observed_edge_ids}
+
+        for origin, dest in od_pairs:
+            path = self.find_shortest_path(str(origin), str(dest))
+            traversed_observed = [edge for edge in path if edge in observed_set]
+            incidence.append(traversed_observed)
+
+        return incidence
     
     def genome_to_demand_csv(
         self,

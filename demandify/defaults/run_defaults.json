@@ -25,5 +25,6 @@
   "ga_assortative_mating": true,
   "ga_deterministic_crowding": true,
   "effective_capacity_factor": 1.0,
-  "mesosim": false
+  "mesosim": false,
+  "topology_guidance": true
 }

@@ -214,6 +214,7 @@ class EdgeSpeedObjective:
             ``mae`` and ``mse`` are dimensionless speed-ratio values.
         """
         errors: List[float] = []
+        edge_discrepancies: Dict[str, float] = {}
         matched = 0
         missing = 0
         measurement_intervals = self._measurement_interval_count(simulated_speeds)
@@ -227,12 +228,18 @@ class EdgeSpeedObjective:
 
                 if edge_interval_speeds:
                     matched += 1
+                    edge_errs = []
                     for interval_idx in range(measurement_intervals):
                         sim_speed = edge_interval_speeds.get(interval_idx, freeflow)
-                        errors.append((sim_speed - obs_speed) / freeflow)
+                        err = (sim_speed - obs_speed) / freeflow
+                        errors.append(err)
+                        edge_errs.append(err)
+                    edge_discrepancies[str(edge_id)] = float(np.mean(edge_errs))
                 else:
                     missing += 1
-                    errors.extend([(freeflow - obs_speed) / freeflow] * measurement_intervals)
+                    err = (freeflow - obs_speed) / freeflow
+                    errors.extend([err] * measurement_intervals)
+                    edge_discrepancies[str(edge_id)] = float(err)
         else:
             # Legacy edge-mean path
             for edge_id, obs_row in self.observed_edges.iterrows():
@@ -246,7 +253,9 @@ class EdgeSpeedObjective:
                     sim_speed = freeflow
                     missing += 1
 
-                errors.append((sim_speed - obs_speed) / freeflow)
+                err = (sim_speed - obs_speed) / freeflow
+                errors.append(err)
+                edge_discrepancies[str(edge_id)] = float(err)
 
         if errors:
             mae = float(np.mean(np.abs(errors)))
@@ -265,4 +274,5 @@ class EdgeSpeedObjective:
             "zero_flow_edges": missing,
             "total_edges": len(self.observed_edges),
             "avg_speed_diff": avg_diff,
+            "edge_discrepancies": edge_discrepancies,
         }
