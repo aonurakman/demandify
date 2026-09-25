@@ -41,6 +41,7 @@ class SUMOSimulation:
         use_dynamic_routing: bool = True,  # If True, vehicle_file is trips.xml
         debug: bool = False,
         extra_additional_files: Optional[List[Path]] = None,
+        mesosim: bool = False,
     ):
         """
         Initialize SUMO simulation.
@@ -57,6 +58,7 @@ class SUMOSimulation:
             extra_additional_files: Optional list of additional SUMO files (e.g.
                 vehicle_types.xml for capacity derating) appended to the
                 edgeData detector in the generated sumocfg.
+            mesosim: If True, run SUMO in mesoscopic queue-based mode for fast link propagation.
         """
         self.network_file = network_file
         self.vehicle_file = vehicle_file
@@ -67,6 +69,7 @@ class SUMOSimulation:
         self.use_dynamic_routing = use_dynamic_routing
         self.debug = debug
         self.extra_additional_files: List[Path] = list(extra_additional_files or [])
+        self.mesosim = bool(mesosim)
 
         if use_dynamic_routing and seed is None:
             logger.warning("Dynamic routing enabled but no seed provided - results may not be reproducible")
@@ -140,6 +143,8 @@ class SUMOSimulation:
                 "--duration-log.disable",
                 "--ignore-route-errors"  # Skip vehicles with no valid route
             ]
+            if self.mesosim:
+                cmd.extend(["--mesosim", "true", "--meso-junction-control", "true"])
             
             result = subprocess.run(
                 cmd,

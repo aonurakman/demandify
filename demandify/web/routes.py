@@ -190,6 +190,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             bin_minutes=params.get("bin_minutes", 5),
             initial_population=params.get("initial_population", 1000),
             effective_capacity_factor=params.get("effective_capacity_factor", 1.0),
+            mesosim=params.get("mesosim", False),
             offline_dataset=params.get("offline_dataset"),
             save_offline_dataset=params.get("save_offline_dataset", False),
             save_offline_dataset_name=params.get("save_offline_dataset_name"),
@@ -349,6 +350,7 @@ async def start_run(
     initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
     parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
     effective_capacity_factor: float = Form(RUN_DEFAULTS.get("effective_capacity_factor", 1.0)),
+    mesosim: bool = Form(RUN_DEFAULTS.get("mesosim", False)),
     save_offline_dataset: bool = Form(False),
     save_offline_dataset_name: Optional[str] = Form(None),
 ):
@@ -492,6 +494,7 @@ async def start_run(
         "initial_population": initial_population,
         "parallel_workers": parallel_workers,
         "effective_capacity_factor": effective_capacity_factor,
+        "mesosim": mesosim,
         "save_offline_dataset": save_offline_dataset,
         "save_offline_dataset_name": resolved_save_dataset_name,
         "save_offline_dataset_root": (

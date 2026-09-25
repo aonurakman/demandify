@@ -105,6 +105,7 @@ class CalibrationPipeline:
         run_id: str = None,
         progress_callback: callable = None,
         effective_capacity_factor: float = 1.0,
+        mesosim: bool = False,
     ):
         """
         Initialize pipeline.
@@ -195,6 +196,7 @@ class CalibrationPipeline:
                 f"effective_capacity_factor must be in (0, 1]; got {effective_capacity_factor}"
             )
         self.effective_capacity_factor = float(effective_capacity_factor)
+        self.mesosim = bool(mesosim)
         self.save_offline_dataset = bool(save_offline_dataset)
         self.save_offline_dataset_name = (
             save_offline_dataset_name.strip() if save_offline_dataset_name else None
@@ -1153,6 +1155,7 @@ class CalibrationPipeline:
             output_base_dir=self.output_dir / "temp_eval",
             seed=self.seed,
             vehicle_types_file=vehicle_types_file,
+            mesosim=self.mesosim,
         )
 
         # Run GA
@@ -1674,6 +1677,7 @@ class CalibrationPipeline:
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "mesosim": self.mesosim,
                 "requested_parallel_workers": self.parallel_workers,
                 "num_workers": self.parallel_workers or self.config.default_parallel_workers,
             },

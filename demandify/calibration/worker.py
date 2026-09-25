@@ -76,6 +76,9 @@ class SimulationConfig:
     # derating via a modified passenger vType tau value.
     vehicle_types_file: Optional[Path] = None
 
+    # Mesoscopic simulation mode for fast GA candidate evaluations
+    mesosim: bool = False
+
 
 def _create_worker_temp_dir(
     preferred_root: Optional[Path],
@@ -191,7 +194,7 @@ def generate_demand_files(
         t.set('to', trip['to'])
         
     tree = ET.ElementTree(root)
-    ET.indent(tree, space='  ')
+    # Skipping ET.indent saves significant CPU and file size in worker evaluation loops
     tree.write(trips_file, encoding='utf-8', xml_declaration=True)
     
     return trips_file
@@ -264,6 +267,7 @@ def run_simulation_worker(
             simulation_time=config.simulation_time,
             seed=seed, # Deterministic routing inside SUMO
             use_dynamic_routing=True,
+            mesosim=config.mesosim,
             extra_additional_files=(
                 [config.vehicle_types_file] if config.vehicle_types_file else []
             ),

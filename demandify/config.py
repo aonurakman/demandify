@@ -39,6 +39,7 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "ga_checkpoint_interval": 10,
     "ga_assortative_mating": True,
     "ga_deterministic_crowding": True,
+    "mesosim": False,
 }
 
 
@@ -161,6 +162,10 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
     merged["ga_deterministic_crowding"] = _as_bool(
         merged.get("ga_deterministic_crowding"),
         _RUN_DEFAULTS_FALLBACK["ga_deterministic_crowding"],
+    )
+    merged["mesosim"] = _as_bool(
+        merged.get("mesosim"),
+        _RUN_DEFAULTS_FALLBACK["mesosim"],
     )
     return merged
 

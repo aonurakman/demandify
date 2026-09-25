@@ -203,6 +203,7 @@ async def cmd_run(args):
                 bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
                 effective_capacity_factor=args.capacity_factor,
+                mesosim=getattr(args, "mesosim", False),
                 offline_dataset=(
                     resolved_import_dataset.dataset_id if resolved_import_dataset else None
                 ),
@@ -509,6 +510,16 @@ def cli():
             "real-world mixed traffic (trucks, buses) by increasing the required headway "
             "between simulated vehicles.  Typical urban values: 0.85–0.90.  "
             f"(default: {default_capacity_factor})"
+        ),
+    )
+    run_parser.add_argument(
+        "--mesosim",
+        dest="mesosim",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("mesosim", False),
+        help=(
+            "Use SUMO's fast queue-based mesoscopic simulation (--mesosim) for GA candidate "
+            "evaluations. Final simulation remains microscopic. (default: disabled)"
         ),
     )
     run_parser.add_argument(
