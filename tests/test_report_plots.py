@@ -234,7 +234,7 @@ def test_failures_plot_ignores_stale_routing_failure_fallback_keys(tmp_path):
 
 
 def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path, monkeypatch):
-    """final_loss_mae_kmh should reflect final simulation MAE, not GA optimization score."""
+    """final_loss_mae should reflect final simulation MAE, not GA optimization score."""
     from demandify.pipeline import CalibrationPipeline
 
     class _DummyScenarioExporter:
@@ -334,7 +334,7 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     )
 
     results = metadata["results"]
-    assert results["final_loss_mae_kmh"] == 12.34
+    assert results["final_loss_mae"] == pytest.approx(12.3400, abs=1e-3)
     assert results["loss_history"] == [9.99, 8.88]
     assert results["loss_history_label"] == "selected MAE per generation"
     assert results["optimization_result"]["selected_mode"] == "mae_elite_pareto"

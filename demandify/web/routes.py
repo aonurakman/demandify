@@ -6,7 +6,7 @@ import asyncio
 import logging
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -119,7 +119,7 @@ async def index(request: Request):
             "run_defaults": RUN_DEFAULTS,
             "has_api_key": config.tomtom_api_key is not None,
             "offline_datasets": offline_datasets,
-            "asset_version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+            "asset_version": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
         },
     )
 
@@ -189,6 +189,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             min_connection_paths=params.get("min_connection_paths", 1),
             bin_minutes=params.get("bin_minutes", 5),
             initial_population=params.get("initial_population", 1000),
+            effective_capacity_factor=params.get("effective_capacity_factor", 1.0),
             offline_dataset=params.get("offline_dataset"),
             save_offline_dataset=params.get("save_offline_dataset", False),
             save_offline_dataset_name=params.get("save_offline_dataset_name"),
@@ -310,7 +311,7 @@ async def check_feasibility(
         }
     except Exception as e:
         logger.error(f"Check failed: {e}")
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/run")
@@ -347,6 +348,7 @@ async def start_run(
     bin_minutes: int = Form(RUN_DEFAULTS["bin_minutes"]),
     initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
     parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
+    effective_capacity_factor: float = Form(RUN_DEFAULTS.get("effective_capacity_factor", 1.0)),
     save_offline_dataset: bool = Form(False),
     save_offline_dataset_name: Optional[str] = Form(None),
 ):
@@ -489,6 +491,7 @@ async def start_run(
         "bin_minutes": bin_minutes,
         "initial_population": initial_population,
         "parallel_workers": parallel_workers,
+        "effective_capacity_factor": effective_capacity_factor,
         "save_offline_dataset": save_offline_dataset,
         "save_offline_dataset_name": resolved_save_dataset_name,
         "save_offline_dataset_root": (

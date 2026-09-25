@@ -99,7 +99,7 @@ def _prompt_restart():
 
 async def cmd_run(args):
     """Run calibration in headless mode."""
-    from demandify.pipeline import CalibrationPipeline
+    from demandify.pipeline import CalibrationPipeline, NoTrafficDataError
     from demandify.offline_data import resolve_offline_dataset
     import time
 
@@ -202,6 +202,7 @@ async def cmd_run(args):
                 min_connection_paths=args.min_connection_paths,
                 bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
+                effective_capacity_factor=args.capacity_factor,
                 offline_dataset=(
                     resolved_import_dataset.dataset_id if resolved_import_dataset else None
                 ),
@@ -280,11 +281,11 @@ async def cmd_run(args):
         except KeyboardInterrupt:
             print("\n🛑 Run aborted by user")
 
+        except NoTrafficDataError as e:
+            print(f"\n⚠️  WARNING: {e}")
+
         except Exception as e:
-            if "No traffic sensors matched" in str(e):
-                print("\n⚠️  WARNING: No traffic sensors in this area.")
-            else:
-                print(f"\n❌ Error: {e}")
+            print(f"\n❌ Error: {e}")
 
         if non_interactive:
             return
@@ -494,6 +495,21 @@ def cli():
         dest="ga_deterministic_crowding",
         action="store_false",
         help=f"Disable deterministic crowding (default: {'enabled' if default_crowding else 'disabled'})",
+    )
+    default_capacity_factor = float(run_defaults.get("effective_capacity_factor", 1.0))
+    run_parser.add_argument(
+        "--capacity-factor",
+        type=float,
+        default=default_capacity_factor,
+        dest="capacity_factor",
+        metavar="FACTOR",
+        help=(
+            "Effective road-capacity fraction relative to the pure car-only SUMO default "
+            "(1.0 = no derating, the default).  Values below 1.0 simulate the friction of "
+            "real-world mixed traffic (trucks, buses) by increasing the required headway "
+            "between simulated vehicles.  Typical urban values: 0.85–0.90.  "
+            f"(default: {default_capacity_factor})"
+        ),
     )
     run_parser.add_argument(
         "--max-ods",

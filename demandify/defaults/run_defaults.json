@@ -23,5 +23,6 @@
   "ga_stagnation_boost": 1.5,
   "ga_checkpoint_interval": 10,
   "ga_assortative_mating": true,
-  "ga_deterministic_crowding": true
+  "ga_deterministic_crowding": true,
+  "effective_capacity_factor": 1.0
 }

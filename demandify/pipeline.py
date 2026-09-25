@@ -5,7 +5,7 @@ Ties together all components to execute the full workflow.
 
 from pathlib import Path
 from typing import Any, Tuple, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import json
 import shlex
@@ -13,12 +13,17 @@ import pandas as pd
 import numpy as np
 import logging
 
-from demandify.utils.logger import setup_logging
+from demandify.utils.logger import current_run_id, remove_run_logging, setup_logging
 
 from demandify.config import get_config
 from demandify.providers.tomtom import TomTomProvider
 from demandify.providers.osm import OSMFetcher
-from demandify.sumo.network import convert_osm_to_sumo, SUMONetwork
+from demandify.sumo.network import (
+    convert_osm_to_sumo,
+    SUMONetwork,
+    tau_from_capacity_factor,
+    write_vehicle_types_xml,
+)
 from demandify.sumo.matching import EdgeMatcher
 from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.simulation import SUMOSimulation
@@ -52,6 +57,14 @@ from demandify.offline_data import (
 import shutil
 
 logger = logging.getLogger(__name__)
+
+
+class NoTrafficDataError(RuntimeError):
+    """Raised when no traffic sensors could be matched to the SUMO network.
+
+    Separating this from a generic RuntimeError lets callers (CLI, web) handle
+    the "no data in this area" case without fragile string matching.
+    """
 
 
 class CalibrationPipeline:
@@ -91,6 +104,7 @@ class CalibrationPipeline:
         output_dir: Path = None,
         run_id: str = None,
         progress_callback: callable = None,
+        effective_capacity_factor: float = 1.0,
     ):
         """
         Initialize pipeline.
@@ -125,6 +139,12 @@ class CalibrationPipeline:
             output_dir: Output directory for results
             run_id: Optional custom identifier for the run
             progress_callback: Optional callable(stage, name, msg, level) for UI updates
+            effective_capacity_factor: Fraction of the default car-only road capacity to
+                simulate.  Values below 1.0 increase the required headway between
+                vehicles (via SUMO passenger vType tau), representing the friction
+                of mixed traffic (trucks, buses) absent from the car-only network.
+                1.0 (default) means no derating.  Typical values for urban networks
+                with significant HGV/bus share: 0.85–0.90.
         """
         self.offline_dataset_ref = offline_dataset.strip() if offline_dataset else None
         self.offline_dataset: Optional[OfflineDatasetResolved] = None
@@ -169,6 +189,12 @@ class CalibrationPipeline:
             raise ValueError("min_connection_paths must be at least 1")
         self.bin_minutes = bin_minutes
         self.initial_population = initial_population
+
+        if not (0.0 < effective_capacity_factor <= 1.0):
+            raise ValueError(
+                f"effective_capacity_factor must be in (0, 1]; got {effective_capacity_factor}"
+            )
+        self.effective_capacity_factor = float(effective_capacity_factor)
         self.save_offline_dataset = bool(save_offline_dataset)
         self.save_offline_dataset_name = (
             save_offline_dataset_name.strip() if save_offline_dataset_name else None
@@ -252,7 +278,12 @@ class CalibrationPipeline:
     def _setup_run_logging(self):
         """Setup file logging for this specific run."""
         log_file = "pipeline.log"
-        setup_logging(run_dir=self.output_dir / "logs", log_file=log_file, level=logging.INFO)
+        setup_logging(
+            run_dir=self.output_dir / "logs",
+            log_file=log_file,
+            level=logging.INFO,
+            run_id=self.run_id,
+        )
 
         # Copy to latest.log for easy tailing
         try:
@@ -403,7 +434,7 @@ class CalibrationPipeline:
         self, dt: datetime = None, bucket_minutes: int = 5
     ) -> Tuple[datetime, str]:
         """Round timestamp to bucket for caching traffic snapshots."""
-        dt = dt or datetime.utcnow()
+        dt = dt or datetime.now(timezone.utc)
         bucket_size = bucket_minutes * 60
         epoch = int(dt.timestamp())
         bucket_epoch = (epoch // bucket_size) * bucket_size
@@ -418,6 +449,13 @@ class CalibrationPipeline:
         Returns:
             Context dictionary required for calibration
         """
+        token = current_run_id.set(self.run_id)
+        try:
+            return await self._prepare_internal()
+        finally:
+            current_run_id.reset(token)
+
+    async def _prepare_internal(self) -> Dict:
         if self.offline_dataset is not None:
             return await self._prepare_from_offline_dataset()
 
@@ -577,6 +615,13 @@ class CalibrationPipeline:
         Returns:
             Metadata dict with results
         """
+        token = current_run_id.set(self.run_id)
+        try:
+            return self._calibrate_internal(context)
+        finally:
+            current_run_id.reset(token)
+
+    def _calibrate_internal(self, context: Dict) -> Dict:
         self._report_progress(5, "Init Demand", "Starting calibration phase")
 
         # Unpack context
@@ -589,7 +634,7 @@ class CalibrationPipeline:
         if len(observed_edges) == 0:
             error_msg = "No traffic sensors matched in this area. Cannot calibrate demand."
             self._report_progress(5, "No Observed Edges", error_msg, level="error")
-            raise RuntimeError(error_msg)
+            raise NoTrafficDataError(error_msg)
 
         # Stage 5: Initialize demand model
         self._report_progress(5, "Init Demand", "Initializing demand generation...")
@@ -695,36 +740,41 @@ class CalibrationPipeline:
         Returns:
             Metadata dict with results or None if aborted
         """
-        # Phase 1: Prepare
-        context = await self.prepare()
+        token = current_run_id.set(self.run_id)
+        try:
+            # Phase 1: Prepare
+            context = await self.prepare()
 
-        # Confirmation hook
-        if confirm_callback:
-            traffic_count = len(context["traffic_df"])
-            matched_count = len(context["observed_edges"])
-            quality = assess_data_quality(
-                context["traffic_df"],
-                context["observed_edges"],
-                context.get("total_edges", 0),
-                bbox=self.bbox,
-            )
+            # Confirmation hook
+            if confirm_callback:
+                traffic_count = len(context["traffic_df"])
+                matched_count = len(context["observed_edges"])
+                quality = assess_data_quality(
+                    context["traffic_df"],
+                    context["observed_edges"],
+                    context.get("total_edges", 0),
+                    bbox=self.bbox,
+                )
 
-            stats = {
-                "fetched_segments": traffic_count,
-                "matched_edges": matched_count,
-                "total_network_edges": context.get("total_edges", 0),
-                "quality": quality,
-            }
+                stats = {
+                    "fetched_segments": traffic_count,
+                    "matched_edges": matched_count,
+                    "total_network_edges": context.get("total_edges", 0),
+                    "quality": quality,
+                }
 
-            should_proceed = confirm_callback(stats)
-            if not should_proceed:
-                logger.info("🚫 Run aborted by user.")
-                return None
+                should_proceed = confirm_callback(stats)
+                if not should_proceed:
+                    logger.info("🚫 Run aborted by user.")
+                    return None
 
-        await self._maybe_save_offline_dataset(context)
+            await self._maybe_save_offline_dataset(context)
 
-        # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
-        return await asyncio.to_thread(self.calibrate, context)
+            # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
+            return await asyncio.to_thread(self.calibrate, context)
+        finally:
+            current_run_id.reset(token)
+            remove_run_logging(self.output_dir / "logs", "pipeline.log")
 
     async def _maybe_save_offline_dataset(self, context: Dict) -> None:
         """Persist preparation artifacts as an offline dataset bundle when requested."""
@@ -1079,6 +1129,17 @@ class CalibrationPipeline:
             return random_genome, float("inf"), [float("inf")], None
 
         # Create SimulationConfig for the worker
+        vehicle_types_file: Optional[Path] = None
+        if self.effective_capacity_factor < 1.0:
+            vehicle_types_file = self.output_dir / "sumo" / "vehicle_types.xml"
+            tau = tau_from_capacity_factor(self.effective_capacity_factor)
+            write_vehicle_types_xml(tau, vehicle_types_file)
+            logger.info(
+                "Capacity derating active: factor=%.2f → tau=%.4f s (vehicle_types.xml written)",
+                self.effective_capacity_factor,
+                tau,
+            )
+
         sim_config = SimulationConfig(
             run_id=self.run_id,
             network_file=network_file,
@@ -1091,6 +1152,7 @@ class CalibrationPipeline:
             debug=False,  # Can be exposed via config
             output_base_dir=self.output_dir / "temp_eval",
             seed=self.seed,
+            vehicle_types_file=vehicle_types_file,
         )
 
         # Run GA
@@ -1402,6 +1464,10 @@ class CalibrationPipeline:
     ) -> Dict[str, float]:
         """Run final simulation to get edge speeds with dynamic routing."""
         seed_to_use = self.seed if simulation_seed is None else int(simulation_seed)
+
+        vehicle_types_file = self.output_dir / "sumo" / "vehicle_types.xml"
+        extra_additional = [vehicle_types_file] if vehicle_types_file.exists() else []
+
         sim = SUMOSimulation(
             network_file,
             trips_file,  # Pass trips.xml
@@ -1410,6 +1476,7 @@ class CalibrationPipeline:
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
             seed=seed_to_use,
             use_dynamic_routing=True,
+            extra_additional_files=extra_additional,
         )
 
         # Run in 'sumo' dir to generate and keep simulation.sumocfg there
@@ -1615,10 +1682,12 @@ class CalibrationPipeline:
                 "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
+                "effective_capacity_factor": self.effective_capacity_factor,
             },
             "results": {
-                "final_loss_mae_kmh": (
-                    round(quality_metrics["mae"], 2)
+                # Speed-ratio MAE (dimensionless): mean |sim_speed - obs_speed| / freeflow
+                "final_loss_mae": (
+                    round(quality_metrics["mae"], 4)
                     if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
                     else None
                 ),

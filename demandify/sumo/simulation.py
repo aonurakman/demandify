@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 import xml.etree.ElementTree as ET
 import logging
 import pandas as pd
@@ -39,11 +39,12 @@ class SUMOSimulation:
         simulation_time: int = 900,  # 15 minutes
         seed: int = None,  # For deterministic routing
         use_dynamic_routing: bool = True,  # If True, vehicle_file is trips.xml
-        debug: bool = False
+        debug: bool = False,
+        extra_additional_files: Optional[List[Path]] = None,
     ):
         """
         Initialize SUMO simulation.
-        
+
         Args:
             network_file: Path to .net.xml
             vehicle_file: Path to trips.xml (dynamic) or routes.rou.xml (precomputed)
@@ -53,6 +54,9 @@ class SUMOSimulation:
             seed: Random seed for deterministic routing (required for dynamic routing)
             use_dynamic_routing: If True, SUMO will route trips dynamically
             debug: If True, preserve intermediate files (tripinfo, etc.)
+            extra_additional_files: Optional list of additional SUMO files (e.g.
+                vehicle_types.xml for capacity derating) appended to the
+                edgeData detector in the generated sumocfg.
         """
         self.network_file = network_file
         self.vehicle_file = vehicle_file
@@ -62,7 +66,8 @@ class SUMOSimulation:
         self.seed = seed
         self.use_dynamic_routing = use_dynamic_routing
         self.debug = debug
-        
+        self.extra_additional_files: List[Path] = list(extra_additional_files or [])
+
         if use_dynamic_routing and seed is None:
             logger.warning("Dynamic routing enabled but no seed provided - results may not be reproducible")
 
@@ -243,7 +248,15 @@ class SUMOSimulation:
         input_elem = ET.SubElement(root, 'input')
         ET.SubElement(input_elem, 'net-file').set('value', make_relative(network_path))
         ET.SubElement(input_elem, 'route-files').set('value', make_relative(vehicle_path))
-        ET.SubElement(input_elem, 'additional-files').set('value', make_relative(additional_file))
+        # Combine the edgeData detector file with any extra additional files
+        # (e.g. vehicle_types.xml for capacity derating).  SUMO accepts a
+        # comma-separated list of additional files.
+        additional_paths = [additional_file] + [
+            p.resolve() for p in self.extra_additional_files if p is not None
+        ]
+        ET.SubElement(input_elem, 'additional-files').set(
+            'value', ','.join(make_relative(p) for p in additional_paths)
+        )
         
         # Time
         time_elem = ET.SubElement(root, 'time')

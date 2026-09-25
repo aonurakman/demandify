@@ -67,9 +67,14 @@ class SimulationConfig:
     step_length: float = 1.0
     debug: bool = False
     seed: int = 42
-    
+
     # Paths
     output_base_dir: Path = Path("temp_sims")
+
+    # Optional additional SUMO files loaded by every worker simulation.
+    # Primarily used to supply a vehicle_types.xml override for capacity
+    # derating via a modified passenger vType tau value.
+    vehicle_types_file: Optional[Path] = None
 
 
 def _create_worker_temp_dir(
@@ -258,7 +263,10 @@ def run_simulation_worker(
             warmup_time=config.warmup_time,
             simulation_time=config.simulation_time,
             seed=seed, # Deterministic routing inside SUMO
-            use_dynamic_routing=True
+            use_dynamic_routing=True,
+            extra_additional_files=(
+                [config.vehicle_types_file] if config.vehicle_types_file else []
+            ),
         )
         
         expected_vehicles = int(np.sum(genome))

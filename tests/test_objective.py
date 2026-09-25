@@ -23,7 +23,8 @@ def test_missing_edge_uses_sumo_freeflow_speed_kmh():
     objective = EdgeSpeedObjective(observed_edges)
     components = objective.calculate_loss_components(simulated_speeds={})
 
-    assert components["mae"] == 30.0
+    # Missing edge: sim falls back to freeflow (50). Error = (50 - 20) / 50 = 0.60
+    assert components["mae"] == pytest.approx(0.60)
     assert components["missing_edges"] == 1
 
 
@@ -40,7 +41,8 @@ def test_present_edge_keeps_measured_simulated_speed():
     objective = EdgeSpeedObjective(observed_edges)
     components = objective.calculate_loss_components(simulated_speeds={"e1": 18.0})
 
-    assert components["mae"] == 2.0
+    # Error = |18 - 20| / 50 = 0.04
+    assert components["mae"] == pytest.approx(0.04)
     assert components["missing_edges"] == 0
 
 
@@ -63,7 +65,9 @@ def test_intervalwise_mae_does_not_allow_temporal_cancellation():
 
     components = objective.calculate_loss_components(simulated_speeds=snapshot)
 
-    assert components["mae"] == 15.0
+    # Interval 0: |35 - 20| / 50 = 0.30; interval 1: |5 - 20| / 50 = 0.30; mean = 0.30
+    # (Errors do not cancel because we take absolute values per interval.)
+    assert components["mae"] == pytest.approx(0.30)
     assert components["missing_edges"] == 0
 
 

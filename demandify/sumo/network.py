@@ -283,3 +283,75 @@ def convert_osm_to_sumo(
     except subprocess.CalledProcessError as e:
         logger.error(f"netconvert failed: {e.stderr}")
         raise RuntimeError(f"Failed to convert OSM to SUMO: {e.stderr}")
+
+
+# ---------------------------------------------------------------------------
+# Effective-capacity derating helpers
+# ---------------------------------------------------------------------------
+
+_VTYPE_REF_SPEED_MS = 13.89  # 50 km/h — reference speed for tau derivation
+_VTYPE_EFFECTIVE_LENGTH = 7.5  # vehicle length + min gap (m), Krauss defaults
+
+
+def tau_from_capacity_factor(factor: float) -> float:
+    """Convert an effective-capacity factor to a SUMO Krauss car-following tau.
+
+    In the Krauss model, road throughput capacity at speed *v* is approximately:
+
+        C(tau) = v / (L + tau * v)
+
+    where *L* is the effective vehicle length (length + minGap).  Setting a
+    higher *tau* increases the required headway between vehicles, which reduces
+    the number of cars a lane can carry — equivalent to the friction introduced
+    by trucks, buses, and other mixed-traffic modes absent from the simulation.
+
+    The factor is defined relative to the default SUMO tau of 1.0 s:
+
+        factor = C(tau_new) / C(tau_default=1.0)
+
+    Solved for tau_new at the reference speed (50 km/h):
+
+        tau_new = (L + v_ref) / (factor * v_ref) - L / v_ref
+
+    Args:
+        factor: Target capacity fraction relative to the default car-only
+            capacity.  Must be in (0, 1].  1.0 returns the SUMO default tau
+            (1.0 s) and means no derating.  0.85 gives roughly 15 % capacity
+            reduction, matching typical urban mixed-traffic conditions.
+
+    Returns:
+        tau in seconds (≥ 1.0 s).
+    """
+    if not (0.0 < factor <= 1.0):
+        raise ValueError(f"effective_capacity_factor must be in (0, 1]; got {factor}")
+    v = _VTYPE_REF_SPEED_MS
+    L = _VTYPE_EFFECTIVE_LENGTH
+    tau = (L + v) / (factor * v) - L / v
+    return max(1.0, tau)
+
+
+def write_vehicle_types_xml(tau: float, output_path: Path) -> None:
+    """Write a SUMO additional-file that overrides the passenger vType tau.
+
+    Only *tau* is overridden; all other default parameters (length, minGap,
+    accelration, sigma, …) remain at their SUMO defaults.  This file should be
+    loaded via ``--additional-files`` in every simulation that uses the derated
+    capacity model.
+
+    Args:
+        tau: The car-following reaction-time in seconds (≥ 1.0).
+        output_path: Destination path for the XML file.
+    """
+    root = ET.Element("additional")
+    ET.SubElement(root, "vType", {"id": "passenger", "tau": f"{tau:.4f}"})
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    logger.debug(
+        "Written vehicle_types.xml with tau=%.4f (capacity factor ≈ %.2f): %s",
+        tau,
+        _VTYPE_REF_SPEED_MS / (_VTYPE_EFFECTIVE_LENGTH + tau * _VTYPE_REF_SPEED_MS)
+        / (_VTYPE_REF_SPEED_MS / (_VTYPE_EFFECTIVE_LENGTH + 1.0 * _VTYPE_REF_SPEED_MS)),
+        output_path,
+    )

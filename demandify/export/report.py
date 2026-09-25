@@ -190,7 +190,7 @@ class ReportGenerator:
             )
 
         ax.set_xlabel("Generation")
-        ax.set_ylabel("MAE (km/h)")
+        ax.set_ylabel("MAE (speed ratio)")
         ax.set_title("Calibration Convergence")
         ax.legend(loc="upper right", fontsize=9)
         ax.grid(True, alpha=0.3)
@@ -293,7 +293,7 @@ class ReportGenerator:
             r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
             rmse = np.sqrt(np.mean((sim_arr - obs_arr) ** 2))
             mae = np.mean(np.abs(sim_arr - obs_arr))
-            stats_text += f"\nR² = {r_squared:.3f}, RMSE = {rmse:.1f} km/h\nMAE = {mae:.1f} km/h"
+            stats_text += f"\nR² = {r_squared:.3f}, RMSE = {rmse:.1f} km/h\nMAE = {mae:.1f} km/h  (absolute)"
 
         # Statistics box (bottom-right area, above the region label)
         ax.text(
@@ -602,8 +602,9 @@ class ReportGenerator:
 
         # Safely extract metrics
         results = metadata.get("results", {})
-        final_loss = results.get("final_loss_mae_kmh")
-        final_loss_str = f"{final_loss:.2f}" if final_loss is not None else "N/A"
+        # Prefer the ratio-MAE value; fall back to the legacy km/h key for old runs.
+        final_loss = results.get("final_loss_mae") or results.get("final_loss_mae_kmh")
+        final_loss_str = f"{final_loss:.4f}" if final_loss is not None else "N/A"
 
         quality = results.get("quality_metrics", {})
         matched_edges = quality.get("matched_edges", 0)
@@ -690,7 +691,7 @@ class ReportGenerator:
     <div class="section">
         <h2>📊 Results Summary</h2>
         <div class="metrics">
-            <p>Final MAE: <span class="metric">{final_loss_str} km/h</span></p>
+            <p>Final MAE: <span class="metric">{final_loss_str} <small style="font-size:0.6em;color:#666">(speed ratio)</small></span></p>
             <p>Observed Segments: <span class="metric">{total_edges}</span></p>
             <p>Covered in Simulation: <span class="metric">{matched_edges}</span></p>
         </div>
