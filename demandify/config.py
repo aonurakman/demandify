@@ -9,8 +9,8 @@ import json
 from copy import deepcopy
 from importlib.resources import files
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic import Field, AliasChoices
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
@@ -186,37 +186,42 @@ def get_run_defaults() -> Dict[str, Any]:
 
 class DemandifyConfig(BaseSettings):
     """Main configuration for demandify."""
-    
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     # API Keys
-    tomtom_api_key: Optional[str] = Field(default=None, env="TOMTOM_API_KEY")
-    
+    tomtom_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("TOMTOM_API_KEY", "tomtom_api_key"),
+    )
+
     # Paths
     cache_dir: Path = Field(
         default_factory=lambda: Path.home() / ".demandify" / "cache"
     )
-    
+
     # Server settings
     host: str = "127.0.0.1"
     port: int = 8000
-    
+
     # Simulation defaults
     default_window_minutes: int = _RUN_DEFAULTS["window_minutes"]
     default_warmup_minutes: int = _RUN_DEFAULTS["warmup_minutes"]
     default_step_length: float = _RUN_DEFAULTS["step_length"]
     default_traffic_tile_zoom: int = _RUN_DEFAULTS["traffic_tile_zoom"]
-    
+
     # Calibration defaults
     default_ga_population: int = _RUN_DEFAULTS["ga_population"]
     default_ga_generations: int = _RUN_DEFAULTS["ga_generations"]
     default_parallel_workers: int = _RUN_DEFAULTS["parallel_workers"]
-    
+
     # Limits
     max_bbox_area_km2: float = 25.0  # Warn above this
     max_observed_edges: int = 2000
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 _config_instance: Optional[DemandifyConfig] = None
