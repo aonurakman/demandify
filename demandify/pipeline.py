@@ -699,15 +699,22 @@ class CalibrationPipeline:
             objective = EdgeSpeedObjective(observed_edges)
             quality_metrics = objective.calculate_metrics(simulated_speeds)
 
-            # Log observed edge coverage
+            # Log observed edge coverage and active-edge accuracy
             observed_edge_ids = set(observed_edges["edge_id"])
-            simulated_edge_ids = set(simulated_speeds.keys())
-            matched = observed_edge_ids & simulated_edge_ids
-            missing = observed_edge_ids - simulated_edge_ids
+            total_obs = len(observed_edge_ids)
+            matched_count = quality_metrics.get("matched_edges", 0)
+            cov_pct = (matched_count / total_obs * 100.0) if total_obs > 0 else 0.0
+            act_mae = quality_metrics.get("active_mae")
+            act_mae_str = f"{act_mae:.4f}" if act_mae is not None and np.isfinite(act_mae) else "N/A"
+            tot_mae = quality_metrics.get("mae")
+            tot_mae_str = f"{tot_mae:.4f}" if tot_mae is not None and np.isfinite(tot_mae) else "N/A"
 
-            logger.debug(
-                f"📊 Edge coverage: {len(matched)}/{len(observed_edge_ids)} observed edges have traffic"
+            logger.info(
+                f"📊 Edge coverage: {matched_count}/{total_obs} ({cov_pct:.1f}%) observed edges have traffic | "
+                f"Active Speed MAE: {act_mae_str} | Total MAE: {tot_mae_str}"
             )
+            simulated_edge_ids = set(simulated_speeds.keys())
+            missing = observed_edge_ids - simulated_edge_ids
             if missing:
                 logger.warning(f"⚠️  Missing traffic on observed edges: {sorted(missing)}")
 
@@ -715,6 +722,8 @@ class CalibrationPipeline:
             quality_metrics = {
                 "mae": None,
                 "mse": None,
+                "active_mae": None,
+                "sensor_coverage": 0.0,
                 "matched_edges": 0,
                 "missing_edges": 0,
                 "total_edges": 0,
@@ -1734,6 +1743,16 @@ class CalibrationPipeline:
                 "final_loss_mae": (
                     round(quality_metrics["mae"], 4)
                     if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
+                    else None
+                ),
+                "final_active_mae": (
+                    round(quality_metrics["active_mae"], 4)
+                    if quality_metrics.get("active_mae") is not None and np.isfinite(quality_metrics["active_mae"])
+                    else None
+                ),
+                "sensor_coverage": (
+                    round(quality_metrics["sensor_coverage"], 4)
+                    if quality_metrics.get("sensor_coverage") is not None and np.isfinite(quality_metrics["sensor_coverage"])
                     else None
                 ),
                 "loss_history": loss_history_export,

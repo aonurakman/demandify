@@ -185,3 +185,39 @@ def test_objective_prefers_empirical_freeflow():
     # Missing edge fallback: uses empirical freeflow (40.0). Error = (40 - 20) / 40 = 0.50
     assert components["mae"] == pytest.approx(0.50)
 
+
+def test_objective_decouples_active_mae_and_coverage():
+    # e1 is matched and observed at 20 km/h, simulated at 24 km/h (freeflow 40 km/h)
+    # active error = |24 - 20| / 40 = 0.10
+    # e2 is missing (no simulated traffic), observed at 20 km/h, freeflow 50 km/h
+    # missing fallback error = |50 - 20| / 50 = 0.60
+    # total MAE = (0.10 + 0.60) / 2 = 0.35
+    # active MAE = 0.10
+    # sensor coverage = 1 / 2 = 0.50
+    observed_edges = pd.DataFrame(
+        {
+            "edge_id": ["e1", "e2"],
+            "current_speed": [20.0, 20.0],
+            "freeflow_speed": [40.0, 50.0],
+            "sumo_freeflow_speed_kmh": [40.0, 50.0],
+            "match_confidence": [1.0, 1.0],
+        }
+    )
+
+    objective = EdgeSpeedObjective(observed_edges)
+
+    # 1. Loss components (interval-less fallback)
+    components = objective.calculate_loss_components(simulated_speeds={"e1": 24.0})
+    assert components["mae"] == pytest.approx(0.35)
+    assert components["active_mae"] == pytest.approx(0.10)
+    assert components["sensor_coverage"] == pytest.approx(0.50)
+    assert components["missing_edges"] == 1
+
+    # 2. Detailed metrics
+    metrics = objective.calculate_metrics(simulated_speeds={"e1": 24.0})
+    assert metrics["mae"] == pytest.approx(0.35)
+    assert metrics["active_mae"] == pytest.approx(0.10)
+    assert metrics["sensor_coverage"] == pytest.approx(0.50)
+    assert metrics["matched_edges"] == 1
+    assert metrics["missing_edges"] == 1
+

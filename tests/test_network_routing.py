@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 import demandify.sumo.demand as demand_module
 from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.network import SUMONetwork
@@ -290,3 +292,44 @@ def test_select_od_pairs_rejects_pairs_without_enough_connection_paths(tmp_path)
         assert "min_connection_paths=2" in str(exc)
     else:
         raise AssertionError("Expected select_od_pairs to reject OD sampling when no pair has 2 paths")
+
+
+def test_demand_generator_hierarchy_weights(tmp_path):
+    # Hierarchy factors:
+    assert DemandGenerator._get_road_hierarchy_factor("highway.motorway") == 1.0
+    assert DemandGenerator._get_road_hierarchy_factor("highway.primary") == 1.0
+    assert DemandGenerator._get_road_hierarchy_factor("highway.secondary") == 1.0
+    assert DemandGenerator._get_road_hierarchy_factor("highway.tertiary") == 0.6
+    assert DemandGenerator._get_road_hierarchy_factor("highway.unclassified") == 0.5
+    assert DemandGenerator._get_road_hierarchy_factor("highway.residential") == 0.2
+    assert DemandGenerator._get_road_hierarchy_factor("highway.living_street") == 0.05
+    assert DemandGenerator._get_road_hierarchy_factor("highway.service") == 0.05
+    assert DemandGenerator._get_road_hierarchy_factor(None) == 1.0
+    assert DemandGenerator._get_road_hierarchy_factor("unknown_road") == 1.0
+
+    # Build small network with 1 primary and 1 residential edge
+    net = _write_net(
+        tmp_path,
+        """<?xml version="1.0" encoding="UTF-8"?>
+<net>
+  <edge id="pri" from="n0" to="n1" priority="10" type="highway.primary">
+    <lane id="pri_0" index="0" speed="13.89" length="100" shape="0,0 100,0" />
+  </edge>
+  <edge id="res" from="n1" to="n2" priority="10" type="highway.residential">
+    <lane id="res_0" index="0" speed="13.89" length="100" shape="100,0 200,0" />
+  </edge>
+  <connection from="pri" to="res" fromLane="0" toLane="0" />
+</net>
+""",
+    )
+    network = SUMONetwork(net)
+    demand_gen = DemandGenerator(network, seed=1)
+
+    weights = demand_gen._calculate_edge_weights(["pri", "res"])
+    # pri: 10 * 13.89 * 1 * 1.0 = 138.9
+    # res: 10 * 13.89 * 1 * 0.2 = 27.78
+    assert len(weights) == 2
+    assert weights[0] == pytest.approx(138.9)
+    assert weights[1] == pytest.approx(27.78)
+    assert weights[0] / weights[1] == pytest.approx(5.0)
+

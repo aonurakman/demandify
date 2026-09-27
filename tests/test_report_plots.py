@@ -296,6 +296,8 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     quality_metrics = {
         "mae": 12.34,
         "mse": 200.0,
+        "active_mae": 10.5,
+        "sensor_coverage": 1.0,
         "matched_edges": 1,
         "missing_edges": 0,
         "total_edges": 1,
@@ -335,6 +337,8 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
 
     results = metadata["results"]
     assert results["final_loss_mae"] == pytest.approx(12.3400, abs=1e-3)
+    assert results["final_active_mae"] == pytest.approx(10.5000, abs=1e-3)
+    assert results["sensor_coverage"] == pytest.approx(1.0000, abs=1e-3)
     assert results["loss_history"] == [9.99, 8.88]
     assert results["loss_history_label"] == "selected MAE per generation"
     assert results["optimization_result"]["selected_mode"] == "mae_elite_pareto"

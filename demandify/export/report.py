@@ -605,6 +605,8 @@ class ReportGenerator:
         # Prefer the ratio-MAE value; fall back to the legacy km/h key for old runs.
         final_loss = results.get("final_loss_mae") or results.get("final_loss_mae_kmh")
         final_loss_str = f"{final_loss:.4f}" if final_loss is not None else "N/A"
+        active_loss = results.get("final_active_mae")
+        active_loss_str = f"{active_loss:.4f}" if active_loss is not None else "N/A"
 
         quality = results.get("quality_metrics", {})
         matched_edges = quality.get("matched_edges", 0)
@@ -692,6 +694,7 @@ class ReportGenerator:
         <h2>📊 Results Summary</h2>
         <div class="metrics">
             <p>Final MAE: <span class="metric">{final_loss_str} <small style="font-size:0.6em;color:#666">(speed ratio)</small></span></p>
+            <p>Active Speed MAE: <span class="metric">{active_loss_str} <small style="font-size:0.6em;color:#666">(matched)</small></span></p>
             <p>Observed Segments: <span class="metric">{total_edges}</span></p>
             <p>Covered in Simulation: <span class="metric">{matched_edges}</span></p>
         </div>

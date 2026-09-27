@@ -106,8 +106,10 @@ class EdgeSpeedObjective:
         value = getattr(simulated_speeds, "interval_speeds", None)
         return value if isinstance(value, dict) else {}
 
-    def _calculate_edge_errors(self, simulated_speeds: Dict[str, float]) -> Tuple[List[float], int]:
-        """Compute per-(edge, interval) normalised speed errors and the missing-edge count.
+    def _calculate_edge_errors(
+        self, simulated_speeds: Dict[str, float]
+    ) -> Tuple[List[float], List[float], int]:
+        """Compute per-(edge, interval) normalised speed errors, active errors, and missing-edge count.
 
         Each error is expressed as a speed ratio relative to the SUMO edge
         free-flow speed, making the loss dimensionless and road-class agnostic:
@@ -118,11 +120,17 @@ class EdgeSpeedObjective:
         speed is used as the "no traffic → uncongested" fallback, consistent
         with the assumption that an unobserved road is flowing freely.
 
+        Returns:
+            Tuple of (all_errors, active_errors, missing_count).
+            ``active_errors`` contains only the errors for edges that had
+            simulated traffic.
+
         Two evaluation paths:
           • Interval-aware (primary): per-edge × per-post-warmup-interval errors
           • Edge-mean fallback (legacy): used when interval traces are absent
         """
         errors: List[float] = []
+        active_errors: List[float] = []
         missing_count = 0
         measurement_intervals = self._measurement_interval_count(simulated_speeds)
         interval_speeds = self._interval_speed_lookup(simulated_speeds)
@@ -137,13 +145,15 @@ class EdgeSpeedObjective:
                 if edge_interval_speeds:
                     for interval_idx in range(measurement_intervals):
                         sim_speed = edge_interval_speeds.get(interval_idx, freeflow)
-                        errors.append((sim_speed - obs_speed) / freeflow)
+                        err = (sim_speed - obs_speed) / freeflow
+                        errors.append(err)
+                        active_errors.append(err)
                 else:
                     # No simulated traffic on this edge; assume free-flow for all intervals.
                     errors.extend([(freeflow - obs_speed) / freeflow] * measurement_intervals)
                     missing_count += 1
 
-            return errors, missing_count
+            return errors, active_errors, missing_count
 
         # --- Edge-mean fallback (legacy) ---
         for edge_id, obs_row in self.observed_edges.iterrows():
@@ -152,13 +162,15 @@ class EdgeSpeedObjective:
 
             if edge_id in simulated_speeds:
                 sim_speed = simulated_speeds[edge_id]
+                err = (sim_speed - obs_speed) / freeflow
+                errors.append(err)
+                active_errors.append(err)
             else:
                 sim_speed = freeflow
                 missing_count += 1
+                errors.append((sim_speed - obs_speed) / freeflow)
 
-            errors.append((sim_speed - obs_speed) / freeflow)
-
-        return errors, missing_count
+        return errors, active_errors, missing_count
 
     def calculate_loss_components(
         self,
@@ -169,14 +181,18 @@ class EdgeSpeedObjective:
         """Calculate objective components.
 
         Returns:
-            Dict with keys: mae, fail_total, failure_rate, loss, missing_edges.
+            Dict with keys: mae, active_mae, sensor_coverage, fail_total, failure_rate, loss, missing_edges.
             ``mae`` is a dimensionless speed-ratio value (not km/h).
         """
-        errors, missing_count = self._calculate_edge_errors(simulated_speeds)
+        errors, active_errors, missing_count = self._calculate_edge_errors(simulated_speeds)
+        total_edges = len(self.observed_edges)
+        sensor_coverage = float((total_edges - missing_count) / total_edges) if total_edges > 0 else 0.0
 
         if not errors:
             return {
                 "mae": float("inf"),
+                "active_mae": None,
+                "sensor_coverage": 0.0,
                 "fail_total": compute_fail_total(trip_stats),
                 "failure_rate": float("inf"),
                 "loss": float("inf"),
@@ -184,11 +200,14 @@ class EdgeSpeedObjective:
             }
 
         mae = float(np.mean(np.abs(errors)))
+        active_mae = float(np.mean(np.abs(active_errors))) if active_errors else None
         fail_total = compute_fail_total(trip_stats)
         failure_rate = calculate_failure_rate(fail_total, expected_vehicles)
 
         return {
             "mae": mae,
+            "active_mae": active_mae,
+            "sensor_coverage": sensor_coverage,
             "fail_total": int(fail_total),
             "failure_rate": float(failure_rate),
             "loss": float(mae),
@@ -230,6 +249,7 @@ class EdgeSpeedObjective:
             ``mae`` and ``mse`` are dimensionless speed-ratio values.
         """
         errors: List[float] = []
+        active_errors: List[float] = []
         edge_discrepancies: Dict[str, float] = {}
         matched = 0
         missing = 0
@@ -249,6 +269,7 @@ class EdgeSpeedObjective:
                         sim_speed = edge_interval_speeds.get(interval_idx, freeflow)
                         err = (sim_speed - obs_speed) / freeflow
                         errors.append(err)
+                        active_errors.append(err)
                         edge_errs.append(err)
                     edge_discrepancies[str(edge_id)] = float(np.mean(edge_errs))
                 else:
@@ -265,12 +286,15 @@ class EdgeSpeedObjective:
                 if edge_id in simulated_speeds:
                     sim_speed = simulated_speeds[edge_id]
                     matched += 1
+                    err = (sim_speed - obs_speed) / freeflow
+                    errors.append(err)
+                    active_errors.append(err)
                 else:
                     sim_speed = freeflow
                     missing += 1
+                    err = (sim_speed - obs_speed) / freeflow
+                    errors.append(err)
 
-                err = (sim_speed - obs_speed) / freeflow
-                errors.append(err)
                 edge_discrepancies[str(edge_id)] = float(err)
 
         if errors:
@@ -282,13 +306,19 @@ class EdgeSpeedObjective:
             mse = float("inf")
             avg_diff = 0.0
 
+        total_edges = len(self.observed_edges)
+        active_mae = float(np.mean(np.abs(active_errors))) if active_errors else None
+        sensor_coverage = float(matched / total_edges) if total_edges > 0 else 0.0
+
         return {
             "mae": mae,
             "mse": mse,
+            "active_mae": active_mae,
+            "sensor_coverage": sensor_coverage,
             "matched_edges": matched,
             "missing_edges": missing,
             "zero_flow_edges": missing,
-            "total_edges": len(self.observed_edges),
+            "total_edges": total_edges,
             "avg_speed_diff": avg_diff,
             "edge_discrepancies": edge_discrepancies,
         }

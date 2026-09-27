@@ -164,6 +164,17 @@ class DemandGenerator:
     OD_VALIDATION_BATCH_MAX = 64
     K_PATH_SEARCH_STATE_LIMIT = 15000
     K_PATH_SEARCH_TIMEOUT_SECONDS = 0.20
+    ROAD_HIERARCHY_WEIGHTS = {
+        "motorway": 1.0,
+        "trunk": 1.0,
+        "primary": 1.0,
+        "secondary": 1.0,
+        "tertiary": 0.6,
+        "unclassified": 0.5,
+        "residential": 0.2,
+        "living_street": 0.05,
+        "service": 0.05,
+    }
     
     def __init__(self, network: SUMONetwork, seed: int = 42):
         """
@@ -844,8 +855,24 @@ class DemandGenerator:
             return "spawn"
         return None
     
+    @classmethod
+    def _get_road_hierarchy_factor(cls, road_type: Any) -> float:
+        """Return selection probability multiplier based on OSM road hierarchy.
+
+        Arterials and primary/secondary corridors retain full weight (1.0).
+        Tertiary/unclassified collectors are moderately derated (0.6 / 0.5).
+        Local residential streets are derated (0.2) to prevent unrealistic
+        funneling of metropolitan volumes into quiet neighborhood roads.
+        Living streets and service ways receive minimal weight (0.05).
+        """
+        t = str(road_type or "").lower()
+        for key, factor in cls.ROAD_HIERARCHY_WEIGHTS.items():
+            if key in t:
+                return factor
+        return 1.0
+
     def _calculate_edge_weights(self, edges: List[str]) -> List[float]:
-        """Calculate selection weights for edges based on road importance."""
+        """Calculate selection weights for edges based on road importance and hierarchy."""
         weights = []
         for edge in edges:
             attrs = self.network.get_edge_attributes(edge)
@@ -853,9 +880,11 @@ class DemandGenerator:
             p = max(1, attrs.get('priority', 1))
             s = max(5.0, attrs.get('speed', 13.89))
             l = max(1, attrs.get('numLanes', 1))
+            road_type = attrs.get('type', '')
+            hierarchy_factor = self._get_road_hierarchy_factor(road_type)
             
-            # Boost highways significantly
-            weight = p * s * l
+            # Boost highways/arterials while derating local residential and service alleys
+            weight = p * s * l * hierarchy_factor
             weights.append(weight)
         return weights
     
