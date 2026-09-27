@@ -621,6 +621,14 @@ class ReportGenerator:
         calib_config = metadata.get("calibration_config", {})
         ga_pop = calib_config.get("ga_population", "N/A")
         ga_gen = calib_config.get("ga_generations", "N/A")
+        opt_res = results.get("optimization_result", {})
+        early_stopped = opt_res.get("early_stopped", False)
+        early_stop_gen = opt_res.get("early_stop_generation")
+        early_stop_str = (
+            f"Stopped early at gen {early_stop_gen}"
+            if early_stopped and early_stop_gen is not None
+            else ("Enabled" if calib_config.get("ga_early_stopping") else "Disabled")
+        )
 
         bbox = run_info.get("bbox_coordinates", {})
         seed = run_info.get("seed", "N/A")
@@ -709,6 +717,7 @@ class ReportGenerator:
             <tr><td>Seed</td><td>{seed}</td></tr>
             <tr><td>GA Population</td><td>{ga_pop}</td></tr>
             <tr><td>GA Generations</td><td>{ga_gen}</td></tr>
+            <tr><td>Early Stopping</td><td>{early_stop_str}</td></tr>
         </table>
     </div>
     

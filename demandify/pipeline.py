@@ -94,6 +94,7 @@ class CalibrationPipeline:
         ga_checkpoint_interval: int = 10,
         ga_assortative_mating: bool = True,
         ga_deterministic_crowding: bool = True,
+        ga_early_stopping: bool = False,
         max_od_pairs: int = 1000,
         min_connection_paths: int = 1,
         bin_minutes: float = 1.0,
@@ -187,6 +188,7 @@ class CalibrationPipeline:
         self.ga_checkpoint_interval = max(1, int(ga_checkpoint_interval))
         self.ga_assortative_mating = ga_assortative_mating
         self.ga_deterministic_crowding = ga_deterministic_crowding
+        self.ga_early_stopping = bool(ga_early_stopping)
         self.max_od_pairs = max_od_pairs
         self.min_connection_paths = int(min_connection_paths)
         if self.min_connection_paths < 1:
@@ -1242,6 +1244,7 @@ class CalibrationPipeline:
             stagnation_boost=self.ga_stagnation_boost,
             assortative_mating=self.ga_assortative_mating,
             deterministic_crowding=self.ga_deterministic_crowding,
+            early_stopping=self.ga_early_stopping,
             od_edge_incidence=od_edge_incidence,
             n_bins=len(departure_bins),
             topology_guidance=self.topology_guidance,
@@ -1343,6 +1346,12 @@ class CalibrationPipeline:
             ),
             "best_mae_candidate_magnitude": _normalize_float(best_mae_candidate_magnitude),
             "loss_history_metric": "selected MAE per generation",
+            "early_stopped": bool(getattr(ga, "early_stopped", False)),
+            "early_stop_generation": (
+                int(getattr(ga, "early_stop_generation", 0))
+                if getattr(ga, "early_stop_generation", None) is not None
+                else None
+            ),
         }
 
         logger.info(
@@ -1662,6 +1671,8 @@ class CalibrationPipeline:
             cmd_parts.append("--no-assortative-mating")
         if not self.ga_deterministic_crowding:
             cmd_parts.append("--no-deterministic-crowding")
+        if self.ga_early_stopping:
+            cmd_parts.append("--early-stopping")
         if self.run_id:
             cmd_parts.extend(["--name", str(self.run_id)])
 
@@ -1725,6 +1736,7 @@ class CalibrationPipeline:
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "ga_early_stopping": self.ga_early_stopping,
                 "mesosim": self.mesosim,
                 "topology_guidance": self.topology_guidance,
                 "requested_parallel_workers": self.parallel_workers,
@@ -1824,6 +1836,8 @@ class CalibrationPipeline:
                         "loss_history_metric",
                         "selected MAE per generation",
                     ),
+                    "early_stopped": self._last_optimization_result.get("early_stopped", False),
+                    "early_stop_generation": self._last_optimization_result.get("early_stop_generation"),
                 },
                 "quality_metrics": {
                     "mae_kmh": (
@@ -1888,6 +1902,7 @@ class CalibrationPipeline:
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "ga_early_stopping": self.ga_early_stopping,
                 "max_od_pairs": self.max_od_pairs,
                 "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,

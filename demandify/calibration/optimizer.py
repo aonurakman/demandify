@@ -49,6 +49,7 @@ class GeneticAlgorithm:
         stagnation_boost: float = 1.5,
         assortative_mating: bool = True,
         deterministic_crowding: bool = True,
+        early_stopping: bool = False,
         od_edge_incidence: Optional[List[List[str]]] = None,
         n_bins: Optional[int] = None,
         topology_guidance: bool = True,
@@ -75,6 +76,7 @@ class GeneticAlgorithm:
             stagnation_boost: Multiplier for mutation sigma/rate on stagnation
             assortative_mating: Prefer crossover between dissimilar parents
             deterministic_crowding: Offspring replace most similar parents
+            early_stopping: If True, stop early when stagnation persists after mutation boost
             od_edge_incidence: List of observed edge IDs traversed by each OD pair
             n_bins: Number of departure time bins per OD pair
             topology_guidance: Biases mutation using network edge speed discrepancies
@@ -99,6 +101,9 @@ class GeneticAlgorithm:
         self.stagnation_boost = stagnation_boost
         self.assortative_mating = assortative_mating
         self.deterministic_crowding = deterministic_crowding
+        self.early_stopping = bool(early_stopping)
+        self.early_stopped = False
+        self.early_stop_generation: Optional[int] = None
 
         # Topology-guided mutation parameters
         self.od_edge_incidence = od_edge_incidence
@@ -692,6 +697,8 @@ class GeneticAlgorithm:
         population = self.toolbox.population(n=self.population_size)
 
         # Track stats
+        self.early_stopped = False
+        self.early_stop_generation = None
         loss_history = []
         generation_stats = []
         best_loss_for_stagnation = float("inf")
@@ -1106,6 +1113,20 @@ class GeneticAlgorithm:
                     generations_without_improvement = 0
                 else:
                     generations_without_improvement += 1
+
+                # Early stopping: stop if stagnation persists even after mutation boost
+                if (
+                    self.early_stopping
+                    and self._mutation_boosted
+                    and generations_without_improvement >= 2 * self.stagnation_patience
+                ):
+                    self.early_stopped = True
+                    self.early_stop_generation = gen + 1
+                    logger.info(
+                        f"🛑 Early stopping triggered at gen {gen + 1}: "
+                        f"stagnation persisted for {self.stagnation_patience} generations after mutation boost."
+                    )
+                    break
 
         best_individual, best_selection = self._resolve_return_best(
             population,

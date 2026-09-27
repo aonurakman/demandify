@@ -24,6 +24,7 @@
   "ga_checkpoint_interval": 10,
   "ga_assortative_mating": true,
   "ga_deterministic_crowding": true,
+  "ga_early_stopping": false,
   "effective_capacity_factor": 1.0,
   "mesosim": false,
   "topology_guidance": true,

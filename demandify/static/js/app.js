@@ -666,7 +666,7 @@ function initEventListeners() {
 
         const formData = new FormData(runForm);
         // Handle boolean checkboxes: set to true/false explicitly
-        ['ga_assortative_mating', 'ga_deterministic_crowding'].forEach(function(name) {
+        ['ga_assortative_mating', 'ga_deterministic_crowding', 'ga_early_stopping'].forEach(function(name) {
             var cb = document.getElementById(name);
             if (cb) formData.set(name, cb.checked ? 'true' : 'false');
         });

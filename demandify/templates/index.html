@@ -520,6 +520,19 @@
                                                             </label>
                                                         </div>
                                                     </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="ga_early_stopping"
+                                                                name="ga_early_stopping" {% if run_defaults.ga_early_stopping %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="ga_early_stopping">
+                                                                Early Stopping
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Stop calibration early if stagnation persists after mutation boost.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>

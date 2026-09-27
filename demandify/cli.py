@@ -198,6 +198,7 @@ async def cmd_run(args):
                 ga_checkpoint_interval=args.checkpoint_interval,
                 ga_assortative_mating=args.ga_assortative_mating,
                 ga_deterministic_crowding=args.ga_deterministic_crowding,
+                ga_early_stopping=getattr(args, "ga_early_stopping", False),
                 max_od_pairs=args.max_ods,
                 min_connection_paths=args.min_connection_paths,
                 bin_minutes=args.bin_size,
@@ -317,8 +318,8 @@ def cmd_serve(args):
     )
 
 
-def cli():
-    """Main CLI entry point."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the demandify CLI argument parser."""
     run_defaults = get_run_defaults()
 
     parser = argparse.ArgumentParser(
@@ -499,6 +500,16 @@ def cli():
         action="store_false",
         help=f"Disable deterministic crowding (default: {'enabled' if default_crowding else 'disabled'})",
     )
+    run_parser.add_argument(
+        "--early-stopping",
+        dest="ga_early_stopping",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("ga_early_stopping", False),
+        help=(
+            "Stop calibration early if stagnation persists after mutation boost. "
+            "(default: disabled)"
+        ),
+    )
     default_capacity_factor = float(run_defaults.get("effective_capacity_factor", 1.0))
     run_parser.add_argument(
         "--capacity-factor",
@@ -581,34 +592,46 @@ def cli():
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
     serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(args=None) -> argparse.Namespace:
+    """Parse CLI arguments."""
+    parser = build_parser()
+    return parser.parse_args(args)
+
+
+def cli(args=None):
+    """Main CLI entry point."""
+    parser = build_parser()
+    parsed_args = parser.parse_args(args)
 
     # Default to serve if no command specified
-    if args.command is None:
-        args.command = "serve"
-        args.host = "127.0.0.1"
-        args.port = 8000
-        args.reload = False
+    if parsed_args.command is None:
+        parsed_args.command = "serve"
+        parsed_args.host = "127.0.0.1"
+        parsed_args.port = 8000
+        parsed_args.reload = False
 
     # Route to appropriate handler
-    if args.command == "cache":
-        if args.cache_command == "clear":
-            cmd_cache_clear(args)
+    if parsed_args.command == "cache":
+        if parsed_args.cache_command == "clear":
+            cmd_cache_clear(parsed_args)
         else:
-            cache_parser.print_help()
-    elif args.command == "doctor":
-        cmd_doctor(args)
-    elif args.command == "set-key":
-        cmd_set_key(args)
-    elif args.command == "run":
+            parser.print_help()
+    elif parsed_args.command == "doctor":
+        cmd_doctor(parsed_args)
+    elif parsed_args.command == "set-key":
+        cmd_set_key(parsed_args)
+    elif parsed_args.command == "run":
         try:
             import asyncio
 
-            asyncio.run(cmd_run(args))
+            asyncio.run(cmd_run(parsed_args))
         except KeyboardInterrupt:
             print("\n🛑 Run aborted by user")
-    elif args.command == "serve":
-        cmd_serve(args)
+    elif parsed_args.command == "serve":
+        cmd_serve(parsed_args)
     else:
         parser.print_help()
 
