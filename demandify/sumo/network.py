@@ -238,6 +238,10 @@ def convert_osm_to_sumo(
         "--junctions.join",  # Join junctions
         "--tls.guess-signals",  # Guess traffic lights
         "--tls.discard-simple",  # Discard simple TLS
+        "--tls.join",  # Cluster multi-node traffic light junctions
+        "--tls.default-type", "actuated",  # Demand-responsive actuated traffic lights
+        "--crossings.guess",  # Guess pedestrian crossings at junctions
+        "--crossings.guess.roundabout-priority",  # Prioritize roundabout flow over crossings
         "--remove-edges.isolated",  # Remove isolated edges
         "--keep-edges.components", "1",  # Keep only largest connected component
         "--seed", str(seed)
