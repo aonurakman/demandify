@@ -3,8 +3,9 @@ SUMO network conversion from OSM data.
 """
 import subprocess
 import logging
+import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 from shapely.geometry import LineString, Point
 import json
@@ -287,6 +288,60 @@ def convert_osm_to_sumo(
     except subprocess.CalledProcessError as e:
         logger.error(f"netconvert failed: {e.stderr}")
         raise RuntimeError(f"Failed to convert OSM to SUMO: {e.stderr}")
+
+
+def compute_effective_freeflow_kmh(
+    edge_attrs: Dict[str, Any],
+    obs_speed: float = 0.0,
+    empirical_freeflow: Optional[float] = None,
+) -> float:
+    """
+    Resolve a physically grounded effective free-flow speed (km/h) for an edge.
+
+    Resolution hierarchy:
+    1. Empirical Ground Truth: If empirical_freeflow is provided and positive (>= 1.0),
+       use it directly, bounded below by the observed speed.
+    2. Road Hierarchy Derating: If empirical freeflow is unavailable (e.g. vector tiles),
+       derate raw OSM speed limits using road classification to reflect real-world urban
+       friction (parked cars, driveways, intersections):
+         - living_street: min(raw_speed, 20 km/h)
+         - residential, service: min(raw_speed, 35 km/h)
+         - tertiary, unclassified: min(raw_speed, 45 km/h)
+         - other (primary, secondary, trunk, motorway): raw_speed
+    3. Physical Lower Bound: Effective freeflow is never lower than the observed speed,
+       and never lower than 1.0 km/h to prevent division by zero.
+    """
+    if empirical_freeflow is not None:
+        try:
+            ff_f = float(empirical_freeflow)
+            if math.isfinite(ff_f) and ff_f >= 1.0:
+                obs_f = (
+                    float(obs_speed)
+                    if (obs_speed is not None and math.isfinite(float(obs_speed)))
+                    else 0.0
+                )
+                return max(ff_f, obs_f)
+        except (TypeError, ValueError):
+            pass
+
+    raw_speed = float(edge_attrs.get("speed", 13.89)) * 3.6
+    road_type = str(edge_attrs.get("type", "")).lower()
+    obs_f = (
+        float(obs_speed)
+        if (obs_speed is not None and math.isfinite(float(obs_speed)))
+        else 0.0
+    )
+
+    if "living_street" in road_type:
+        eff_speed = min(raw_speed, 20.0)
+    elif "residential" in road_type or "service" in road_type:
+        eff_speed = min(raw_speed, 35.0)
+    elif "tertiary" in road_type or "unclassified" in road_type:
+        eff_speed = min(raw_speed, 45.0)
+    else:
+        eff_speed = raw_speed
+
+    return max(eff_speed, obs_f, 1.0)
 
 
 # ---------------------------------------------------------------------------

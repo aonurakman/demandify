@@ -62,10 +62,26 @@ class EdgeSpeedObjective:
 
     @staticmethod
     def _sumo_freeflow_kmh(obs_row: pd.Series) -> float:
-        """Return a finite, positive SUMO free-flow speed in km/h.
+        """Return a finite, positive free-flow speed in km/h.
 
-        Guaranteed to be ≥ 1.0 so it is always safe to use as a divisor.
+        Guaranteed to be >= 1.0 so it is always safe to use as a divisor.
+        Prefers empirical freeflow_speed if > 0, otherwise sumo_freeflow_speed_kmh.
         """
+        raw_ff = obs_row.get("freeflow_speed")
+        try:
+            raw_ff_f = float(raw_ff)
+            if np.isfinite(raw_ff_f) and raw_ff_f >= 1.0:
+                obs_speed = obs_row.get("current_speed", 0.0)
+                try:
+                    obs_f = float(obs_speed)
+                    if np.isfinite(obs_f):
+                        return max(raw_ff_f, obs_f)
+                except (TypeError, ValueError):
+                    pass
+                return raw_ff_f
+        except (TypeError, ValueError):
+            pass
+
         value = obs_row.get("sumo_freeflow_speed_kmh", 50.0)
         try:
             value_f = float(value)

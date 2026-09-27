@@ -19,6 +19,7 @@ from demandify.config import get_config
 from demandify.providers.tomtom import TomTomProvider
 from demandify.providers.osm import OSMFetcher
 from demandify.sumo.network import (
+    compute_effective_freeflow_kmh,
     convert_osm_to_sumo,
     SUMONetwork,
     tau_from_capacity_factor,
@@ -413,11 +414,16 @@ class CalibrationPipeline:
             enriched["sumo_freeflow_speed_kmh"] = pd.Series([50.0] * len(enriched), dtype=float)
             return enriched
 
-        def _lookup_sumo_freeflow(edge_id: Any) -> float:
-            attrs = network.get_edge_attributes(str(edge_id))
-            return float(attrs.get("speed", 13.89)) * 3.6
+        def _lookup_sumo_freeflow(row: pd.Series) -> float:
+            edge_id = str(row.get("edge_id", ""))
+            attrs = network.get_edge_attributes(edge_id)
+            return compute_effective_freeflow_kmh(
+                edge_attrs=attrs,
+                obs_speed=float(row.get("current_speed", 0.0) or 0.0),
+                empirical_freeflow=row.get("freeflow_speed"),
+            )
 
-        freeflow_series = enriched["edge_id"].map(_lookup_sumo_freeflow)
+        freeflow_series = enriched.apply(_lookup_sumo_freeflow, axis=1)
         freeflow_series = pd.to_numeric(freeflow_series, errors="coerce").fillna(50.0)
         enriched["sumo_freeflow_speed_kmh"] = freeflow_series.astype(float)
         return enriched
