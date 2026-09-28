@@ -528,10 +528,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--mesosim",
         dest="mesosim",
         action=argparse.BooleanOptionalAction,
-        default=run_defaults.get("mesosim", False),
+        default=run_defaults.get("mesosim", True),
         help=(
             "Use SUMO's fast queue-based mesoscopic simulation (--mesosim) for GA candidate "
-            "evaluations. Final simulation remains microscopic. (default: disabled)"
+            "evaluations. Final simulation remains microscopic. (default: enabled)"
         ),
     )
     run_parser.add_argument(

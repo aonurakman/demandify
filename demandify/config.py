@@ -39,7 +39,7 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "ga_assortative_mating": True,
     "ga_deterministic_crowding": True,
     "ga_early_stopping": False,
-    "mesosim": False,
+    "mesosim": True,
     "topology_guidance": True,
     "sensor_coverage_od": True,
 }

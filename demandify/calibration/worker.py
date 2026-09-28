@@ -78,7 +78,7 @@ class SimulationConfig:
     vehicle_types_file: Optional[Path] = None
 
     # Mesoscopic simulation mode for fast GA candidate evaluations
-    mesosim: bool = False
+    mesosim: bool = True
 
 
 def _create_worker_temp_dir(

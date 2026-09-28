@@ -108,7 +108,7 @@ class CalibrationPipeline:
         run_id: str = None,
         progress_callback: callable = None,
         effective_capacity_factor: float = 1.0,
-        mesosim: bool = False,
+        mesosim: bool = True,
         topology_guidance: bool = True,
         sensor_coverage_od: bool = True,
     ):
