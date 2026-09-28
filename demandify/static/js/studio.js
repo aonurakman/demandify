@@ -12,6 +12,9 @@ const Studio = {
     selectedOrigin: null,
     selectedDestination: null,
     selectedOD: null,
+    pendingNewOD: null,
+    suppressPopupClose: false,
+    durationMinutes: 60,
     activeViewMode: 'flow', // 'flow' | 'congestion'
     multiplier: 1.0,
     preserveMinOne: true,
@@ -23,7 +26,6 @@ const Studio = {
     originMarker: null,
     destinationMarker: null,
     spotlightMask: null,
-    networkBoundaryRect: null,
     spotlightEnabled: true,
 };
 
@@ -171,10 +173,6 @@ function renderBoundarySpotlight() {
         Studio.map.removeLayer(Studio.spotlightMask);
         Studio.spotlightMask = null;
     }
-    if (Studio.networkBoundaryRect) {
-        Studio.map.removeLayer(Studio.networkBoundaryRect);
-        Studio.networkBoundaryRect = null;
-    }
 
     if (!Studio.networkData || !Studio.networkData.bounds || !Studio.spotlightEnabled) return;
 
@@ -202,15 +200,6 @@ function renderBoundarySpotlight() {
         stroke: false,
         fillColor: '#0f172a',
         fillOpacity: 0.28,
-        interactive: false,
-    }).addTo(Studio.map);
-
-    // Subtle dashed orange boundary rectangle around the simulation area
-    Studio.networkBoundaryRect = L.rectangle(bounds, {
-        color: '#c2410c',
-        weight: 2,
-        dashArray: '8, 6',
-        fill: false,
         interactive: false,
     }).addTo(Studio.map);
 }
@@ -292,6 +281,7 @@ async function selectOrigin(edgeId, latlng) {
     Studio.selectedOrigin = edgeId;
     Studio.selectedDestination = null;
     Studio.selectedOD = null;
+    Studio.pendingNewOD = null;
 
     // Place Green Origin Marker
     if (Studio.originMarker) Studio.map.removeLayer(Studio.originMarker);
@@ -301,7 +291,21 @@ async function selectOrigin(edgeId, latlng) {
         fillColor: '#10b981',
         fillOpacity: 1,
         weight: 3,
-    }).addTo(Studio.map).bindPopup(`<strong>Origin:</strong> ${edgeId}`).openPopup();
+    }).addTo(Studio.map);
+
+    const originPopup = L.popup({
+        autoClose: false,
+        closeOnClick: false,
+    }).setContent(`<strong>Origin:</strong> ${edgeId}`);
+
+    Studio.originMarker.bindPopup(originPopup).openPopup();
+
+    // When the user explicitly closes the origin indicator popup, cancel selection and remove green dot
+    originPopup.on('remove', () => {
+        if (Studio.selectedOrigin === edgeId && !Studio.suppressPopupClose) {
+            clearSelection();
+        }
+    });
 
     updateFloatingHelper(`Origin set to <code>${edgeId}</code>. Click an existing destination to view/edit, or click any other road to create a new OD.`);
 
@@ -362,35 +366,81 @@ async function selectDestination(destEdgeId, latlng) {
         fillColor: '#ef4444',
         fillOpacity: 1,
         weight: 3
-    }).addTo(Studio.map).bindPopup(`<strong>Destination:</strong> ${destEdgeId}`).openPopup();
+    }).addTo(Studio.map);
+
+    const destPopup = L.popup({
+        autoClose: false,
+        closeOnClick: false,
+    }).setContent(`<strong>Destination:</strong> ${destEdgeId}`);
+    Studio.destinationMarker.bindPopup(destPopup).openPopup();
 
     // Check if OD pair already exists
     let existing = Studio.odPairs.find(od => od.origin === Studio.selectedOrigin && od.destination === destEdgeId);
 
     if (existing) {
+        Studio.pendingNewOD = null;
         Studio.selectedOD = existing;
         highlightODRoute(existing.origin, existing.destination);
         showODDetailCard(existing, false);
         scrollSidebarToOD(existing.id);
         updateFloatingHelper(`Selected existing OD: <code>${existing.origin} &rarr; ${existing.destination}</code> (${existing.vehs_per_hour} veh/h)`);
     } else {
-        // Create new OD Pair!
-        const newOD = {
-            id: `od_custom_${Date.now()}`,
+        // Pending New OD: determine vehicle volume on right sidebar first before confirming
+        const defaultVehs = 60; // 1 veh/min default
+        Studio.selectedOD = null;
+        Studio.pendingNewOD = {
             origin: Studio.selectedOrigin,
             destination: destEdgeId,
-            vehs_per_hour: 20, // default 20 veh/h = 0.33 veh/min
-            vehs_per_min: 0.33,
-            base_vehs_per_hour: 20,
-            trips_in_window: 5,
+            vehs_per_hour: defaultVehs,
+            vehs_per_min: 1.0,
+            base_vehs_per_hour: defaultVehs,
         };
-        Studio.odPairs.unshift(newOD); // place at top
-        Studio.selectedOD = newOD;
-        recalculateFlows();
-        renderODList();
-        highlightODRoute(newOD.origin, newOD.destination);
-        showODDetailCard(newOD, true);
-        updateFloatingHelper(`Created new OD pair: <code>${newOD.origin} &rarr; ${newOD.destination}</code>! Adjust flow in sidebar.`);
+        highlightODRoute(Studio.selectedOrigin, destEdgeId);
+        showODDetailCard(Studio.pendingNewOD, true);
+        updateFloatingHelper(`New OD route: <code>${Studio.selectedOrigin} &rarr; ${destEdgeId}</code>. Set flow volume and click <strong>"Add OD Pair"</strong> to create.`);
+    }
+}
+
+function saveNewOD() {
+    if (!Studio.pendingNewOD) return;
+    const flowInput = Math.max(0, parseInt(document.getElementById('detail-flow-h').value) || 0);
+    const newOD = {
+        id: `od_custom_${Date.now()}`,
+        origin: Studio.pendingNewOD.origin,
+        destination: Studio.pendingNewOD.destination,
+        vehs_per_hour: flowInput,
+        vehs_per_min: parseFloat((flowInput / 60.0).toFixed(2)),
+        base_vehs_per_hour: flowInput,
+        trips_in_window: Math.max(1, Math.round(flowInput * ((Studio.durationMinutes || 60) / 60.0))),
+    };
+
+    Studio.odPairs.unshift(newOD); // Add to top
+    Studio.selectedOD = newOD;
+    Studio.pendingNewOD = null;
+
+    recalculateFlows();
+    renderODList();
+    renderNetworkEdges();
+    showODDetailCard(newOD, false);
+    scrollSidebarToOD(newOD.id);
+    updateFloatingHelper(`Created new OD pair: <code>${newOD.origin} &rarr; ${newOD.destination}</code> (${newOD.vehs_per_hour} veh/h).`);
+}
+
+function discardNewOD() {
+    Studio.pendingNewOD = null;
+    if (Studio.destinationMarker) {
+        Studio.map.removeLayer(Studio.destinationMarker);
+        Studio.destinationMarker = null;
+    }
+    if (Studio.selectedRouteLayer) {
+        Studio.map.removeLayer(Studio.selectedRouteLayer);
+        Studio.selectedRouteLayer = null;
+    }
+    document.getElementById('od-detail-panel').classList.add('d-none');
+    if (Studio.selectedOrigin) {
+        updateFloatingHelper(`Discarded new OD. Origin still set to <code>${Studio.selectedOrigin}</code>. Click an existing destination or pick another road.`);
+    } else {
+        updateFloatingHelper('Click any road to select an Origin link.');
     }
 }
 
@@ -429,15 +479,27 @@ async function highlightODRoute(origin, destination) {
 }
 
 function clearSelection() {
+    Studio.suppressPopupClose = true;
     Studio.selectedOrigin = null;
     Studio.selectedDestination = null;
     Studio.selectedOD = null;
-    if (Studio.originMarker) Studio.map.removeLayer(Studio.originMarker);
-    if (Studio.destinationMarker) Studio.map.removeLayer(Studio.destinationMarker);
-    if (Studio.selectedRouteLayer) Studio.map.removeLayer(Studio.selectedRouteLayer);
+    Studio.pendingNewOD = null;
+    if (Studio.originMarker) {
+        Studio.map.removeLayer(Studio.originMarker);
+        Studio.originMarker = null;
+    }
+    if (Studio.destinationMarker) {
+        Studio.map.removeLayer(Studio.destinationMarker);
+        Studio.destinationMarker = null;
+    }
+    if (Studio.selectedRouteLayer) {
+        Studio.map.removeLayer(Studio.selectedRouteLayer);
+        Studio.selectedRouteLayer = null;
+    }
     Studio.destinationsGroup.clearLayers();
     document.getElementById('od-detail-panel').classList.add('d-none');
     updateFloatingHelper('Click any road to select an Origin link.');
+    Studio.suppressPopupClose = false;
 }
 
 function updateFloatingHelper(text) {
@@ -537,6 +599,7 @@ async function loadSelectedSource() {
 
         Studio.networkData = data.network;
         Studio.odPairs = data.od_pairs || [];
+        Studio.durationMinutes = (data.summary && data.summary.duration_minutes) || 60;
         Studio.multiplier = 1.0;
         document.getElementById('multiplier-slider').value = 1.0;
         document.getElementById('multiplier-val-display').textContent = '1.00×';
@@ -548,6 +611,12 @@ async function loadSelectedSource() {
         updateTopMetrics();
 
         showLoading(false);
+
+        // Immediately run SUMO simulation in background so the heatmap and telemetry
+        // stats are populated right away from the beginning!
+        if (Studio.odPairs && Studio.odPairs.length > 0) {
+            testSimulation();
+        }
     } catch (err) {
         showLoading(false);
         alert('Error loading source: ' + err.message);
@@ -592,6 +661,10 @@ function updateTopMetrics() {
     document.getElementById('stat-total-demand-min').textContent = `(${vehsMin} veh/min)`;
     document.getElementById('stat-active-ods').textContent = `${activeCount} / ${Studio.odPairs.length}`;
     document.getElementById('stat-network-edges').textContent = Studio.networkData ? Studio.networkData.edge_count : 0;
+    const durEl = document.getElementById('stat-scenario-duration');
+    if (durEl) {
+        durEl.textContent = `${Studio.durationMinutes || 60} min`;
+    }
 }
 
 /* ==========================================================================
@@ -621,7 +694,10 @@ function setMultiplier(val) {
 
     const deltaPct = origTotal > 0 ? (((scaledTotal - origTotal) / origTotal) * 100).toFixed(1) : 0;
     const deltaSign = deltaPct >= 0 ? '+' : '';
-    document.getElementById('multiplier-delta-preview').textContent = `Orig: ${Math.round(origTotal)} &rarr; Scaled: ${Math.round(scaledTotal)} (${deltaSign}${deltaPct}%)`;
+    const origFmt = Math.round(origTotal).toLocaleString();
+    const scaledFmt = Math.round(scaledTotal).toLocaleString();
+    document.getElementById('multiplier-delta-preview').innerHTML =
+        `Orig: <strong>${origFmt}</strong> &rarr; Scaled: <strong>${scaledFmt}</strong> (${deltaSign}${deltaPct}%)`;
 
     recalculateFlows();
     renderODList();
@@ -737,12 +813,21 @@ function showODDetailCard(od, isNew = false) {
     const panel = document.getElementById('od-detail-panel');
     panel.classList.remove('d-none');
     document.getElementById('detail-od-title').innerHTML = isNew ?
-        '<span class="badge bg-success me-1">NEW</span> Custom OD Pair' :
-        `OD Pair: ${od.id}`;
+        '<span class="badge bg-success me-1">NEW</span> Pending OD Pair' :
+        `<i class="bi bi-geo-alt-fill text-primary me-1"></i> OD Pair: ${od.id || 'Selected'}`;
     document.getElementById('detail-orig-id').textContent = od.origin;
     document.getElementById('detail-dest-id').textContent = od.destination;
     document.getElementById('detail-flow-h').value = od.vehs_per_hour;
-    document.getElementById('detail-flow-min').textContent = (od.vehs_per_hour / 60).toFixed(2);
+    document.getElementById('detail-flow-min').textContent = (od.vehs_per_hour / 60.0).toFixed(2);
+
+    const newActions = document.getElementById('detail-new-od-actions');
+    if (newActions) {
+        if (isNew) {
+            newActions.classList.remove('d-none');
+        } else {
+            newActions.classList.add('d-none');
+        }
+    }
 }
 
 function focusOD(odId, e) {
@@ -1029,13 +1114,32 @@ function setupEventListeners() {
         updateFloatingHelper('<strong>Pick Mode:</strong> Click any road to select an Origin link.');
     });
 
-    // Clear selection button in detail panel
-    document.getElementById('btn-close-od-detail').addEventListener('click', clearSelection);
+    // Save or Discard new OD
+    const btnSaveNewOD = document.getElementById('btn-save-new-od');
+    if (btnSaveNewOD) btnSaveNewOD.addEventListener('click', saveNewOD);
 
-    // Flow change inside detail panel
-    document.getElementById('detail-flow-h').addEventListener('change', (e) => {
-        if (Studio.selectedOD) {
-            setODFlowDirect(Studio.selectedOD.id, e.target.value);
+    const btnCancelNewOD = document.getElementById('btn-cancel-new-od');
+    if (btnCancelNewOD) btnCancelNewOD.addEventListener('click', discardNewOD);
+
+    // Clear selection button in detail panel
+    document.getElementById('btn-close-od-detail').addEventListener('click', () => {
+        if (Studio.pendingNewOD) {
+            discardNewOD();
+        } else {
+            clearSelection();
+        }
+    });
+
+    // Flow change inside detail panel (reacts live while typing or changing)
+    const detailFlowInput = document.getElementById('detail-flow-h');
+    detailFlowInput.addEventListener('input', (e) => {
+        const val = Math.max(0, parseInt(e.target.value) || 0);
+        document.getElementById('detail-flow-min').textContent = (val / 60.0).toFixed(2);
+        if (Studio.pendingNewOD) {
+            Studio.pendingNewOD.vehs_per_hour = val;
+            Studio.pendingNewOD.vehs_per_min = parseFloat((val / 60.0).toFixed(2));
+        } else if (Studio.selectedOD) {
+            setODFlowDirect(Studio.selectedOD.id, val);
         }
     });
 

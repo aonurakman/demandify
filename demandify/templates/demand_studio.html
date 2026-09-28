@@ -55,6 +55,11 @@
                     <span class="stat-value" id="stat-active-ods">0 / 0</span>
                 </div>
 
+                <div class="studio-stat-badge d-none d-sm-inline-flex">
+                    <span class="stat-label">Duration</span>
+                    <span class="stat-value" id="stat-scenario-duration">60 min</span>
+                </div>
+
                 <div class="studio-stat-badge d-none d-lg-inline-flex">
                     <span class="stat-label">Network Edges</span>
                     <span class="stat-value" id="stat-network-edges">0</span>
@@ -63,9 +68,9 @@
 
             <!-- Right: Simulation Controls & Actions -->
             <div class="d-flex align-items-center gap-2">
-                <div class="input-group input-group-sm" style="width: 140px;">
+                <div class="input-group input-group-sm" style="width: 140px;" title="Simulation test window duration">
                     <span class="input-group-text bg-light"><i class="bi bi-clock"></i></span>
-                    <select class="form-select form-select-sm" id="sim-window-select">
+                    <select class="form-select form-select-sm" id="sim-window-select" title="Simulation duration">
                         <option value="15" selected>15 min</option>
                         <option value="30">30 min</option>
                         <option value="60">60 min</option>
@@ -245,6 +250,16 @@
                             </div>
                             <div class="text-end mt-1">
                                 <small class="text-muted">Rate: <span id="detail-flow-min" class="fw-bold text-dark">0</span> veh/min</small>
+                            </div>
+
+                            <!-- Action buttons for New OD confirmation vs Existing OD editing -->
+                            <div class="d-flex gap-2 mt-3 pt-2 border-top d-none" id="detail-new-od-actions">
+                                <button type="button" class="btn btn-sm btn-primary flex-grow-1 shadow-sm" id="btn-save-new-od">
+                                    <i class="bi bi-plus-circle me-1"></i> Add OD Pair
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-cancel-new-od">
+                                    Discard
+                                </button>
                             </div>
                         </div>
                     </div>

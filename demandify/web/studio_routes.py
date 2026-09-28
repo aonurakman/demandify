@@ -151,6 +151,7 @@ async def load_studio_network(
             "total_vehs_h": total_vehs_h,
             "total_vehs_min": round(total_vehs_h / 60.0, 2),
             "total_network_edges": network_geojson["edge_count"],
+            "duration_minutes": 60,
         },
     }
 
