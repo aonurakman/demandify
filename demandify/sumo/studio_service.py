@@ -97,6 +97,10 @@ def list_studio_sources() -> Dict[str, List[Dict[str, Any]]]:
             if not net_path.exists():
                 continue
             demand_path = run_path / "data" / "demand.csv"
+            if not demand_path.exists():
+                latest_demand = run_path / "latest_selected" / "data" / "demand.csv"
+                if latest_demand.exists():
+                    demand_path = latest_demand
             meta_path = run_path / "metadata.json"
             meta = {}
             if meta_path.exists():
@@ -344,6 +348,7 @@ class StudioNetworkManager:
                     "speed_limit_kmh": round(float(attrs.get("speed", 13.89)) * 3.6, 1),
                     "lanes": int(attrs.get("numLanes", 1)),
                     "type": str(attrs.get("type", "")),
+                    "flow": round(flow, 1),
                     "flow_vehs_h": round(flow, 1),
                     "flow_vehs_min": round(flow / 60.0, 2),
                     "sim_speed_kmh": round(cong.get("sim_speed", 0.0), 1) if cong else None,
@@ -434,10 +439,11 @@ def compute_edge_flows(manager: StudioNetworkManager, od_pairs: List[Dict[str, A
     """Compute aggregate flow (vehs/h) across edges from all active OD pairs."""
     flows: Dict[str, float] = {}
     for od in od_pairs:
+        path = manager.find_shortest_path(od["origin"], od["destination"])
+        od["path"] = path
         vol = float(od.get("vehs_per_hour", 0.0))
         if vol <= 0:
             continue
-        path = manager.find_shortest_path(od["origin"], od["destination"])
         for edge in path:
             flows[edge] = flows.get(edge, 0.0) + vol
     return flows

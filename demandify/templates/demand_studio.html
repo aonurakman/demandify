@@ -121,21 +121,29 @@
                 <!-- Map Legend -->
                 <div class="map-legend-panel">
                     <div id="legend-flow">
-                        <div class="fw-bold mb-1 text-muted" style="font-size: 0.72rem; text-transform: uppercase;">Edge Demand Flow</div>
+                        <div class="fw-bold mb-1 text-muted d-flex justify-content-between align-items-center" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                            <span>Edge Traffic Flow</span>
+                            <span class="badge bg-light text-dark fw-normal border" style="font-size: 0.65rem;">veh / hour</span>
+                        </div>
                         <div class="legend-bar flow"></div>
-                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem;">
-                            <span>0 veh/h</span>
+                        <div class="d-flex justify-content-between text-muted fw-semibold" style="font-size: 0.72rem;">
+                            <span>0</span>
+                            <span>50</span>
                             <span>150</span>
-                            <span>&gt; 600+ veh/h</span>
+                            <span>300</span>
+                            <span>&ge; 600</span>
                         </div>
                     </div>
                     <div id="legend-congestion" class="d-none">
-                        <div class="fw-bold mb-1 text-muted" style="font-size: 0.72rem; text-transform: uppercase;">Simulated Speed / Free-flow</div>
+                        <div class="fw-bold mb-1 text-muted d-flex justify-content-between align-items-center" style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                            <span>Simulated Speed / Free-flow</span>
+                            <span class="badge bg-light text-dark fw-normal border" style="font-size: 0.65rem;">ratio</span>
+                        </div>
                         <div class="legend-bar congestion"></div>
-                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem;">
-                            <span class="text-danger fw-bold">Gridlock (&lt;40%)</span>
-                            <span class="text-warning">Slow</span>
-                            <span class="text-success fw-bold">Free-flow (&gt;85%)</span>
+                        <div class="d-flex justify-content-between text-muted fw-semibold" style="font-size: 0.72rem;">
+                            <span class="text-danger fw-bold"><i class="bi bi-x-circle-fill me-1"></i>&lt;40% (Gridlock)</span>
+                            <span class="text-warning fw-semibold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Slow</span>
+                            <span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>&gt;85% (Free)</span>
                         </div>
                     </div>
                 </div>

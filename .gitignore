@@ -51,6 +51,7 @@ ENV/
 pipeline.log
 demandify_runs/
 demandify_datasets/
+demandify_scenarios/
 checkpoints/
 
 .gemini/

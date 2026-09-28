@@ -66,6 +66,11 @@ def test_studio_load_dataset(client):
     assert len(data["network"]["features"]) > 500
     assert "bounds" in data["network"]
     assert len(data["routable_edges"]) > 500
+    assert "edge_flows" in data
+    assert isinstance(data["edge_flows"], dict)
+    first_feat = data["network"]["features"][0]
+    assert "flow" in first_feat["properties"]
+    assert "flow_vehs_h" in first_feat["properties"]
 
 
 def test_studio_route_computation(client):

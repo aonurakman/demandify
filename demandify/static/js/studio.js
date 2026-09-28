@@ -63,7 +63,7 @@ function initMap() {
 }
 
 function getFlowColor(flow) {
-    if (!flow || flow <= 0) return '#475569'; // Neutral slate for inactive network edges
+    if (!flow || flow <= 0) return '#64748b'; // Slate gray for inactive network edges
     if (flow < 50) return '#fde047';         // Light golden yellow
     if (flow < 150) return '#fbbf24';        // Warm golden amber
     if (flow < 300) return '#ea580c';        // Medium orange
@@ -160,11 +160,11 @@ function getEdgeStyle(feature) {
     }
 
     const flow = Studio.edgeFlows[edgeId] || 0;
-    const weight = flow > 0 ? Math.min(8.5, Math.max(3.2, Math.log10(flow + 1) * 2.5)) : 2.8;
+    const weight = flow > 0 ? Math.min(8.5, Math.max(3.2, Math.log10(flow + 1) * 2.5)) : 2.0;
     return {
         color: getFlowColor(flow),
         weight: weight,
-        opacity: flow > 0 ? 0.90 : 0.70,
+        opacity: flow > 0 ? 0.90 : 0.40,
     };
 }
 
@@ -204,7 +204,7 @@ function renderBoundarySpotlight() {
     }).addTo(Studio.map);
 }
 
-function renderNetworkEdges() {
+function renderNetworkEdges(fitBounds = false) {
     if (!Studio.networkData) return;
 
     if (Studio.edgesLayer) {
@@ -256,7 +256,7 @@ function renderNetworkEdges() {
 
     renderBoundarySpotlight();
 
-    if (Studio.networkData.bounds) {
+    if (fitBounds && Studio.networkData.bounds) {
         Studio.map.fitBounds(Studio.networkData.bounds, { padding: [35, 35] });
     }
 }
@@ -412,6 +412,7 @@ function saveNewOD() {
         vehs_per_min: parseFloat((flowInput / 60.0).toFixed(2)),
         base_vehs_per_hour: flowInput,
         trips_in_window: Math.max(1, Math.round(flowInput * ((Studio.durationMinutes || 60) / 60.0))),
+        path: Studio.pendingNewOD.path || [Studio.pendingNewOD.origin, Studio.pendingNewOD.destination],
     };
 
     Studio.odPairs.unshift(newOD); // Add to top
@@ -420,7 +421,7 @@ function saveNewOD() {
 
     recalculateFlows();
     renderODList();
-    renderNetworkEdges();
+    renderNetworkEdges(false);
     showODDetailCard(newOD, false);
     scrollSidebarToOD(newOD.id);
     updateFloatingHelper(`Created new OD pair: <code>${newOD.origin} &rarr; ${newOD.destination}</code> (${newOD.vehs_per_hour} veh/h).`);
@@ -462,6 +463,12 @@ async function highlightODRoute(origin, destination) {
         });
         const data = await res.json();
         if (data.routable && data.coordinates && data.coordinates.length > 0) {
+            if (Studio.pendingNewOD) {
+                Studio.pendingNewOD.path = data.path_edges;
+            }
+            if (Studio.selectedOD) {
+                Studio.selectedOD.path = data.path_edges;
+            }
             const latlngs = data.coordinates.map(c => [c[1], c[0]]);
             Studio.selectedRouteLayer = L.polyline(latlngs, {
                 color: '#facc15',
@@ -599,6 +606,14 @@ async function loadSelectedSource() {
 
         Studio.networkData = data.network;
         Studio.odPairs = data.od_pairs || [];
+        Studio.edgeFlows = data.edge_flows || {};
+        if (Object.keys(Studio.edgeFlows).length === 0 && Studio.networkData && Studio.networkData.features) {
+            Studio.networkData.features.forEach(f => {
+                const fl = f.properties.flow || f.properties.flow_vehs_h || 0;
+                Studio.edgeFlows[f.properties.id] = fl;
+            });
+        }
+        Studio.initialEdgeFlows = Object.assign({}, Studio.edgeFlows);
         Studio.durationMinutes = (data.summary && data.summary.duration_minutes) || 60;
         Studio.multiplier = 1.0;
         document.getElementById('multiplier-slider').value = 1.0;
@@ -606,7 +621,7 @@ async function loadSelectedSource() {
 
         clearSelection();
         recalculateFlows();
-        renderNetworkEdges();
+        renderNetworkEdges(true);
         renderODList();
         updateTopMetrics();
 
@@ -624,8 +639,7 @@ async function loadSelectedSource() {
 }
 
 function recalculateFlows() {
-    // Client-side quick recalculation of flows from active ODs
-    // (For full precision, the server compute_edge_flows is used, but we keep an edge map)
+    // Dynamic recalculation of edge flows from active OD paths
     Studio.edgeFlows = {};
     if (Studio.networkData && Studio.networkData.features) {
         Studio.networkData.features.forEach(f => {
@@ -633,13 +647,33 @@ function recalculateFlows() {
         });
     }
 
-    let totalVehsH = 0;
-    Studio.odPairs.forEach(od => {
-        const vol = parseFloat(od.vehs_per_hour) || 0;
-        if (vol > 0) {
-            totalVehsH += vol;
+    let hasPathData = false;
+    if (Studio.odPairs && Studio.odPairs.length > 0) {
+        Studio.odPairs.forEach(od => {
+            const vol = parseFloat(od.vehs_per_hour) || 0;
+            if (vol > 0 && Array.isArray(od.path) && od.path.length > 0) {
+                hasPathData = true;
+                od.path.forEach(edgeId => {
+                    Studio.edgeFlows[edgeId] = (Studio.edgeFlows[edgeId] || 0) + vol;
+                });
+            }
+        });
+    }
+
+    // Fallback if OD paths are not available (scale initial flows by multiplier)
+    if (!hasPathData) {
+        const mult = Studio.multiplier || 1.0;
+        if (Studio.initialEdgeFlows && Object.keys(Studio.initialEdgeFlows).length > 0) {
+            for (const [edgeId, baseFl] of Object.entries(Studio.initialEdgeFlows)) {
+                Studio.edgeFlows[edgeId] = Math.round(baseFl * mult);
+            }
+        } else if (Studio.networkData && Studio.networkData.features) {
+            Studio.networkData.features.forEach(f => {
+                const baseFl = f.properties.flow || f.properties.flow_vehs_h || 0;
+                Studio.edgeFlows[f.properties.id] = Math.round(baseFl * mult);
+            });
         }
-    });
+    }
 
     updateTopMetrics();
 }
@@ -701,7 +735,7 @@ function setMultiplier(val) {
 
     recalculateFlows();
     renderODList();
-    renderNetworkEdges();
+    renderNetworkEdges(false);
 }
 
 function resetMultiplier() {
@@ -719,7 +753,7 @@ function resetMultiplier() {
 
     recalculateFlows();
     renderODList();
-    renderNetworkEdges();
+    renderNetworkEdges(false);
 }
 
 /* ==========================================================================
@@ -845,7 +879,7 @@ function adjustODFlow(odId, delta, e) {
     od.vehs_per_min = parseFloat((newVol / 60.0).toFixed(2));
     recalculateFlows();
     renderODList();
-    renderNetworkEdges();
+    renderNetworkEdges(false);
     if (Studio.selectedOD && Studio.selectedOD.id === odId) {
         showODDetailCard(od);
     }
@@ -859,7 +893,7 @@ function setODFlowDirect(odId, value) {
     od.vehs_per_min = parseFloat((newVol / 60.0).toFixed(2));
     recalculateFlows();
     renderODList();
-    renderNetworkEdges();
+    renderNetworkEdges(false);
     if (Studio.selectedOD && Studio.selectedOD.id === odId) {
         showODDetailCard(od);
     }
@@ -874,7 +908,7 @@ function deleteOD(odId, e) {
     }
     recalculateFlows();
     renderODList();
-    renderNetworkEdges();
+    renderNetworkEdges(false);
 }
 
 function scrollSidebarToOD(odId) {
@@ -962,7 +996,7 @@ function setViewMode(mode) {
         legendCong.classList.add('d-none');
     }
 
-    renderNetworkEdges();
+    renderNetworkEdges(false);
 }
 
 /* ==========================================================================

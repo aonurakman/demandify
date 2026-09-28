@@ -143,6 +143,7 @@ async def load_studio_network(
         "network_file": str(net_file),
         "demand_file": str(demand_file) if demand_file else None,
         "network": network_geojson,
+        "edge_flows": edge_flows,
         "od_pairs": od_pairs,
         "routable_edges": mgr.get_routable_edges(),
         "summary": {
