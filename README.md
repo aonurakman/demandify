@@ -40,6 +40,7 @@ Three integrated web tools are accessible via the top navigation bar:
 - ✅ **Data quality labeling**: Feasibility check reports data quality scores and potential risk flags before running
 
 ![GUI Screenshot](https://github.com/aonurakman/demandify/blob/main/static/gui.png?raw=true)
+![GUI Screenshot](static/gui.png)
 
 ## Quickstart
 
@@ -199,7 +200,7 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 
 All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable features via the corresponding `--no-*` flags or explicitly force-enable them with `--assortative-mating` / `--deterministic-crowding`.
 
-### 7. Build Offline Dataset (Optional) 💾
+### 7. Build Offline Dataset 💾
 
 If you want a reusable prep bundle (for future no-key workflows), open:
 
@@ -225,8 +226,6 @@ Want to inspect your trips, try "what-if" traffic experiments, or design a custo
 
 - [http://127.0.0.1:8000/demand-studio](http://127.0.0.1:8000/demand-studio) (or click **Studio** in the top navigation bar).
 
-<!-- PLACEHOLDER: Demand Studio Screenshot -->
-<!-- To user: Replace static/demand_studio.png with your screenshot from Demand Studio -->
 ![Demand Studio Screenshot](https://github.com/aonurakman/demandify/blob/main/static/demand_studio.png?raw=true)
 
 #### What you can do:
