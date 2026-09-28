@@ -6,7 +6,7 @@ import asyncio
 import logging
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -119,7 +119,7 @@ async def index(request: Request):
             "run_defaults": RUN_DEFAULTS,
             "has_api_key": config.tomtom_api_key is not None,
             "offline_datasets": offline_datasets,
-            "asset_version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+            "asset_version": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
         },
     )
 
@@ -185,10 +185,14 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             ga_checkpoint_interval=params.get("ga_checkpoint_interval", 10),
             ga_assortative_mating=params.get("ga_assortative_mating", True),
             ga_deterministic_crowding=params.get("ga_deterministic_crowding", True),
+            ga_early_stopping=params.get("ga_early_stopping", False),
             max_od_pairs=params.get("max_od_pairs", 50),
             min_connection_paths=params.get("min_connection_paths", 1),
-            bin_minutes=params.get("bin_minutes", 5),
             initial_population=params.get("initial_population", 1000),
+            effective_capacity_factor=params.get("effective_capacity_factor", 1.0),
+            mesosim=params.get("mesosim", True),
+            topology_guidance=params.get("topology_guidance", True),
+            sensor_coverage_od=params.get("sensor_coverage_od", True),
             offline_dataset=params.get("offline_dataset"),
             save_offline_dataset=params.get("save_offline_dataset", False),
             save_offline_dataset_name=params.get("save_offline_dataset_name"),
@@ -310,7 +314,7 @@ async def check_feasibility(
         }
     except Exception as e:
         logger.error(f"Check failed: {e}")
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/run")
@@ -342,11 +346,16 @@ async def start_run(
     ga_checkpoint_interval: int = Form(RUN_DEFAULTS["ga_checkpoint_interval"]),
     ga_assortative_mating: bool = Form(RUN_DEFAULTS["ga_assortative_mating"]),
     ga_deterministic_crowding: bool = Form(RUN_DEFAULTS["ga_deterministic_crowding"]),
+    ga_early_stopping: bool = Form(RUN_DEFAULTS["ga_early_stopping"]),
     max_od_pairs: int = Form(RUN_DEFAULTS["max_od_pairs"]),
     min_connection_paths: int = Form(RUN_DEFAULTS["min_connection_paths"]),
-    bin_minutes: int = Form(RUN_DEFAULTS["bin_minutes"]),
+    bin_minutes: Optional[int] = Form(None),
     initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
     parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
+    effective_capacity_factor: float = Form(RUN_DEFAULTS.get("effective_capacity_factor", 1.0)),
+    mesosim: bool = Form(RUN_DEFAULTS.get("mesosim", True)),
+    topology_guidance: bool = Form(RUN_DEFAULTS.get("topology_guidance", True)),
+    sensor_coverage_od: bool = Form(RUN_DEFAULTS.get("sensor_coverage_od", True)),
     save_offline_dataset: bool = Form(False),
     save_offline_dataset_name: Optional[str] = Form(None),
 ):
@@ -484,11 +493,15 @@ async def start_run(
         "ga_checkpoint_interval": ga_checkpoint_interval,
         "ga_assortative_mating": ga_assortative_mating,
         "ga_deterministic_crowding": ga_deterministic_crowding,
+        "ga_early_stopping": ga_early_stopping,
         "max_od_pairs": max_od_pairs,
         "min_connection_paths": min_connection_paths,
-        "bin_minutes": bin_minutes,
         "initial_population": initial_population,
         "parallel_workers": parallel_workers,
+        "effective_capacity_factor": effective_capacity_factor,
+        "mesosim": mesosim,
+        "topology_guidance": topology_guidance,
+        "sensor_coverage_od": sensor_coverage_od,
         "save_offline_dataset": save_offline_dataset,
         "save_offline_dataset_name": resolved_save_dataset_name,
         "save_offline_dataset_root": (

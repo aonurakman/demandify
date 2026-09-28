@@ -41,7 +41,7 @@ function initMap() {
             polygon: false,
             circle: {
                 shapeOptions: {
-                    color: '#2563eb',
+                    color: '#c2410c',
                     weight: 2
                 }
             },
@@ -49,7 +49,7 @@ function initMap() {
             circlemarker: false,
             rectangle: {
                 shapeOptions: {
-                    color: '#2563eb',
+                    color: '#c2410c',
                     weight: 2
                 }
             }
@@ -203,7 +203,7 @@ function applyBboxToMap(bbox, fitMap) {
 
     const bounds = [[south, west], [north, east]];
     drawnItems.clearLayers();
-    drawnItems.addLayer(L.rectangle(bounds, { color: '#2563eb', weight: 2 }));
+    drawnItems.addLayer(L.rectangle(bounds, { color: '#c2410c', weight: 2 }));
     if (fitMap) {
         map.fitBounds(bounds);
     }
@@ -428,19 +428,6 @@ function initEventListeners() {
 
     // Window duration change handler
     const windowSelect = document.getElementById('window_minutes');
-    if (windowSelect) {
-        windowSelect.addEventListener('change', function () {
-            const maxVal = parseInt(this.value);
-            const binInput = document.getElementById('bin_minutes');
-            if (binInput) {
-                binInput.max = maxVal;
-                if (parseInt(binInput.value) > maxVal) {
-                    binInput.value = maxVal;
-                    document.getElementById('bin-val').textContent = maxVal;
-                }
-            }
-        });
-    }
 
     const advancedParams = document.getElementById('advanced-params');
     const advancedToggle = document.getElementById('advanced-toggle');
@@ -666,7 +653,7 @@ function initEventListeners() {
 
         const formData = new FormData(runForm);
         // Handle boolean checkboxes: set to true/false explicitly
-        ['ga_assortative_mating', 'ga_deterministic_crowding'].forEach(function(name) {
+        ['ga_assortative_mating', 'ga_deterministic_crowding', 'ga_early_stopping'].forEach(function(name) {
             var cb = document.getElementById(name);
             if (cb) formData.set(name, cb.checked ? 'true' : 'false');
         });

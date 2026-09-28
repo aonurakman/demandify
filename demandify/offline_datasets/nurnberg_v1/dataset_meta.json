@@ -1,6 +1,6 @@
 {
   "dataset_name": "nurnberg_v1",
-  "created_at": "2026-03-12T13:49:34.147363",
+  "created_at": "2026-09-28T16:12:56.627910",
   "bbox": {
     "west": 11.0662,
     "south": 49.4577,
@@ -16,15 +16,15 @@
     "tile_zoom": 15
   },
   "stats": {
-    "fetched_segments": 109,
-    "matched_edges": 107,
-    "total_network_edges": 623
+    "fetched_segments": 125,
+    "matched_edges": 123,
+    "total_network_edges": 622
   },
   "quality": {
     "score": 95,
     "label": "excellent",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (95/100): 107 traffic segments map-matched to graph edges from 109 fetched segments (map-match rate 98.2%).",
+    "summary": "EXCELLENT quality (95/100): 123 traffic segments map-matched to graph edges from 125 fetched segments (map-match rate 98.4%).",
     "warnings": [],
     "components": {
       "availability": 35,
@@ -34,15 +34,15 @@
       "network_coverage": 10
     },
     "metrics": {
-      "fetched_segments": 109,
-      "matched_edges": 107,
-      "total_network_edges": 623,
-      "match_rate": 0.981651376146789,
-      "observed_to_total_ratio": 0.17174959871589085,
+      "fetched_segments": 125,
+      "matched_edges": 123,
+      "total_network_edges": 622,
+      "match_rate": 0.984,
+      "observed_to_total_ratio": 0.1977491961414791,
       "area_km2": 2.244931819450802,
-      "edges_per_km2": 47.66291745384783,
+      "edges_per_km2": 54.79008268059143,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.19626168224299065
+      "low_confidence_share": 0.17073170731707318
     }
   },
   "files": {

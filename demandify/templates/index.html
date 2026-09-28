@@ -8,7 +8,7 @@
 
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -19,13 +19,10 @@
 </head>
 
 <body>
-    <div class="container-fluid">
-        <!-- Header with Banner -->
-        <div class="row py-2 bg-white shadow-sm">
-            <div class="col-12 text-center">
-                <img src="/static/banner.png" alt="demandify" class="header-logo">
-            </div>
-        </div>
+    {% set active_tab = 'calibration' %}
+    {% include 'navbar.html' %}
+
+    <div class="container-fluid px-3 px-lg-4">
 
         <div class="row mt-4 g-4">
             <!-- Left Column: Map and Configuration -->
@@ -82,11 +79,6 @@
                                             {% if offline_datasets|length == 0 %}
                                             <div class="form-text">No offline datasets found.</div>
                                             {% endif %}
-                                            <div class="mt-1 text-end">
-                                                <a href="/dataset-builder" class="small text-muted text-decoration-none">
-                                                    <i class="bi bi-box-arrow-up-right"></i> offline dataset builder
-                                                </a>
-                                            </div>
                                         </div>
 
                                         <div id="import-dataset-group" class="col-12 d-none" hidden>
@@ -265,18 +257,6 @@
                                             </label>
                                             <input type="number" class="form-control" id="min_connection_paths"
                                                 name="min_connection_paths" value="{{ run_defaults.min_connection_paths }}" min="1" step="1">
-                                        </div>
-                                        <div class="col-12">
-                                            <label for="bin_minutes" class="form-label">
-                                                Bin Duration: <span id="bin-val">{{ run_defaults.bin_minutes }}</span> min
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Duration of each demand time slot. Smaller means finer detail but harder calibration. Larger is coarser but usually easier to stabilize.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="range" class="form-range emphasized-range" id="bin_minutes" name="bin_minutes"
-                                                min="1" max="{{ run_defaults.window_minutes }}" value="{{ run_defaults.bin_minutes }}" step="1"
-                                                oninput="document.getElementById('bin-val').textContent = this.value">
                                         </div>
                                     </div>
                                 </div>
@@ -519,6 +499,69 @@
                                                                 </span>
                                                             </label>
                                                         </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="ga_early_stopping"
+                                                                name="ga_early_stopping" {% if run_defaults.ga_early_stopping %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="ga_early_stopping">
+                                                                Early Stopping
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Stop calibration early if stagnation persists after mutation boost.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="mesosim"
+                                                                name="mesosim" {% if run_defaults.mesosim %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="mesosim">
+                                                                Mesoscopic Simulation
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Use SUMO's fast queue-based mesoscopic simulation for GA evaluations (5-10x faster). Final run is always microscopic.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="topology_guidance"
+                                                                name="topology_guidance" {% if run_defaults.topology_guidance %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="topology_guidance">
+                                                                Topology Guidance
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Use network topology and speed discrepancies to guide GA mutation toward congested/empty corridors.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <div class="form-check checkbox-xl-wrap mt-3">
+                                                            <input class="form-check-input checkbox-xl" type="checkbox" id="sensor_coverage_od"
+                                                                name="sensor_coverage_od" {% if run_defaults.sensor_coverage_od %}checked{% endif %}>
+                                                            <label class="form-check-label small" for="sensor_coverage_od">
+                                                                Sensor Coverage OD
+                                                                <span class="info-icon" data-bs-toggle="tooltip"
+                                                                    title="Use greedy set-cover during OD selection to maximize coverage of observed sensor edges.">
+                                                                    <i class="bi bi-info-circle"></i>
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-md-6 mt-3">
+                                                        <label for="effective_capacity_factor" class="form-label small">
+                                                            Capacity Factor
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Effective road-capacity factor (1.0 = standard car-only, 0.85-0.90 simulates mixed-traffic friction).">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <input type="number" class="form-control" id="effective_capacity_factor"
+                                                            name="effective_capacity_factor" value="{{ run_defaults.effective_capacity_factor }}" min="0.1" max="1.0" step="0.05">
                                                     </div>
                                                 </div>
                                             </div>

@@ -5,20 +5,27 @@ Ties together all components to execute the full workflow.
 
 from pathlib import Path
 from typing import Any, Tuple, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import json
 import shlex
 import pandas as pd
 import numpy as np
 import logging
+import math
 
-from demandify.utils.logger import setup_logging
+from demandify.utils.logger import current_run_id, remove_run_logging, setup_logging
 
 from demandify.config import get_config
 from demandify.providers.tomtom import TomTomProvider
 from demandify.providers.osm import OSMFetcher
-from demandify.sumo.network import convert_osm_to_sumo, SUMONetwork
+from demandify.sumo.network import (
+    compute_effective_freeflow_kmh,
+    convert_osm_to_sumo,
+    SUMONetwork,
+    tau_from_capacity_factor,
+    write_vehicle_types_xml,
+)
 from demandify.sumo.matching import EdgeMatcher
 from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.simulation import SUMOSimulation
@@ -54,6 +61,14 @@ import shutil
 logger = logging.getLogger(__name__)
 
 
+class NoTrafficDataError(RuntimeError):
+    """Raised when no traffic sensors could be matched to the SUMO network.
+
+    Separating this from a generic RuntimeError lets callers (CLI, web) handle
+    the "no data in this area" case without fragile string matching.
+    """
+
+
 class CalibrationPipeline:
     """Main calibration pipeline."""
 
@@ -80,9 +95,10 @@ class CalibrationPipeline:
         ga_checkpoint_interval: int = 10,
         ga_assortative_mating: bool = True,
         ga_deterministic_crowding: bool = True,
+        ga_early_stopping: bool = False,
         max_od_pairs: int = 1000,
         min_connection_paths: int = 1,
-        bin_minutes: float = 1.0,
+        bin_minutes: Optional[float] = None,
         initial_population: int = 1000,
         offline_dataset: Optional[str] = None,
         save_offline_dataset: bool = False,
@@ -91,6 +107,10 @@ class CalibrationPipeline:
         output_dir: Path = None,
         run_id: str = None,
         progress_callback: callable = None,
+        effective_capacity_factor: float = 1.0,
+        mesosim: bool = True,
+        topology_guidance: bool = True,
+        sensor_coverage_od: bool = True,
     ):
         """
         Initialize pipeline.
@@ -125,6 +145,12 @@ class CalibrationPipeline:
             output_dir: Output directory for results
             run_id: Optional custom identifier for the run
             progress_callback: Optional callable(stage, name, msg, level) for UI updates
+            effective_capacity_factor: Fraction of the default car-only road capacity to
+                simulate.  Values below 1.0 increase the required headway between
+                vehicles (via SUMO passenger vType tau), representing the friction
+                of mixed traffic (trucks, buses) absent from the car-only network.
+                1.0 (default) means no derating.  Typical values for urban networks
+                with significant HGV/bus share: 0.85–0.90.
         """
         self.offline_dataset_ref = offline_dataset.strip() if offline_dataset else None
         self.offline_dataset: Optional[OfflineDatasetResolved] = None
@@ -163,12 +189,26 @@ class CalibrationPipeline:
         self.ga_checkpoint_interval = max(1, int(ga_checkpoint_interval))
         self.ga_assortative_mating = ga_assortative_mating
         self.ga_deterministic_crowding = ga_deterministic_crowding
+        self.ga_early_stopping = bool(ga_early_stopping)
         self.max_od_pairs = max_od_pairs
         self.min_connection_paths = int(min_connection_paths)
         if self.min_connection_paths < 1:
             raise ValueError("min_connection_paths must be at least 1")
-        self.bin_minutes = bin_minutes
+        self.bin_minutes = (
+            float(bin_minutes)
+            if bin_minutes is not None
+            else float(self.warmup_minutes + self.window_minutes)
+        )
         self.initial_population = initial_population
+
+        if not (0.0 < effective_capacity_factor <= 1.0):
+            raise ValueError(
+                f"effective_capacity_factor must be in (0, 1]; got {effective_capacity_factor}"
+            )
+        self.effective_capacity_factor = float(effective_capacity_factor)
+        self.mesosim = bool(mesosim)
+        self.topology_guidance = bool(topology_guidance)
+        self.sensor_coverage_od = bool(sensor_coverage_od)
         self.save_offline_dataset = bool(save_offline_dataset)
         self.save_offline_dataset_name = (
             save_offline_dataset_name.strip() if save_offline_dataset_name else None
@@ -252,7 +292,12 @@ class CalibrationPipeline:
     def _setup_run_logging(self):
         """Setup file logging for this specific run."""
         log_file = "pipeline.log"
-        setup_logging(run_dir=self.output_dir / "logs", log_file=log_file, level=logging.INFO)
+        setup_logging(
+            run_dir=self.output_dir / "logs",
+            log_file=log_file,
+            level=logging.INFO,
+            run_id=self.run_id,
+        )
 
         # Copy to latest.log for easy tailing
         try:
@@ -301,6 +346,63 @@ class CalibrationPipeline:
         return {str(edge_id): float(speed) for edge_id, speed in aggregated.items()}
 
     @staticmethod
+    def _simulated_edge_speeds_for_visualization(
+        observed_edges: Optional[pd.DataFrame],
+        simulated_speeds: Dict[str, float],
+    ) -> Dict[str, float]:
+        """
+        Build representative simulated speeds for plots/heatmaps.
+
+        When interval traces are available, observed edges use the full-window
+        mean with free-flow fallback for empty bins so visuals align with the
+        intervalwise objective.
+        """
+        edge_speeds: Dict[str, float] = {}
+        for edge_id, speed in (simulated_speeds or {}).items():
+            try:
+                speed_value = float(speed)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(speed_value):
+                edge_speeds[str(edge_id)] = speed_value
+
+        if observed_edges is None or observed_edges.empty:
+            return edge_speeds
+        if "edge_id" not in observed_edges.columns:
+            return edge_speeds
+
+        measurement_intervals = getattr(simulated_speeds, "measurement_intervals", 0) or 0
+        interval_speeds = getattr(simulated_speeds, "interval_speeds", None)
+        if not isinstance(interval_speeds, dict) or int(measurement_intervals) <= 0:
+            return edge_speeds
+
+        measurement_intervals = int(measurement_intervals)
+        for _, row in observed_edges.iterrows():
+            edge_id = str(row.get("edge_id"))
+            if not edge_id:
+                continue
+
+            fallback_speed = row.get("sumo_freeflow_speed_kmh", row.get("freeflow_speed", 50.0))
+            try:
+                fallback_speed = float(fallback_speed)
+            except (TypeError, ValueError):
+                fallback_speed = 50.0
+            if not np.isfinite(fallback_speed):
+                fallback_speed = 50.0
+
+            edge_interval_speeds = interval_speeds.get(edge_id, {})
+            if edge_interval_speeds:
+                filled = [
+                    edge_interval_speeds.get(interval_idx, fallback_speed)
+                    for interval_idx in range(measurement_intervals)
+                ]
+                edge_speeds[edge_id] = float(np.mean(filled))
+            else:
+                edge_speeds[edge_id] = fallback_speed
+
+        return edge_speeds
+
+    @staticmethod
     def _ensure_observed_edges_sumo_freeflow(
         observed_edges: Optional[pd.DataFrame],
         network: SUMONetwork,
@@ -319,11 +421,16 @@ class CalibrationPipeline:
             enriched["sumo_freeflow_speed_kmh"] = pd.Series([50.0] * len(enriched), dtype=float)
             return enriched
 
-        def _lookup_sumo_freeflow(edge_id: Any) -> float:
-            attrs = network.get_edge_attributes(str(edge_id))
-            return float(attrs.get("speed", 13.89)) * 3.6
+        def _lookup_sumo_freeflow(row: pd.Series) -> float:
+            edge_id = str(row.get("edge_id", ""))
+            attrs = network.get_edge_attributes(edge_id)
+            return compute_effective_freeflow_kmh(
+                edge_attrs=attrs,
+                obs_speed=float(row.get("current_speed", 0.0) or 0.0),
+                empirical_freeflow=row.get("freeflow_speed"),
+            )
 
-        freeflow_series = enriched["edge_id"].map(_lookup_sumo_freeflow)
+        freeflow_series = enriched.apply(_lookup_sumo_freeflow, axis=1)
         freeflow_series = pd.to_numeric(freeflow_series, errors="coerce").fillna(50.0)
         enriched["sumo_freeflow_speed_kmh"] = freeflow_series.astype(float)
         return enriched
@@ -346,7 +453,7 @@ class CalibrationPipeline:
         self, dt: datetime = None, bucket_minutes: int = 5
     ) -> Tuple[datetime, str]:
         """Round timestamp to bucket for caching traffic snapshots."""
-        dt = dt or datetime.utcnow()
+        dt = dt or datetime.now(timezone.utc)
         bucket_size = bucket_minutes * 60
         epoch = int(dt.timestamp())
         bucket_epoch = (epoch // bucket_size) * bucket_size
@@ -361,6 +468,13 @@ class CalibrationPipeline:
         Returns:
             Context dictionary required for calibration
         """
+        token = current_run_id.set(self.run_id)
+        try:
+            return await self._prepare_internal()
+        finally:
+            current_run_id.reset(token)
+
+    async def _prepare_internal(self) -> Dict:
         if self.offline_dataset is not None:
             return await self._prepare_from_offline_dataset()
 
@@ -520,6 +634,13 @@ class CalibrationPipeline:
         Returns:
             Metadata dict with results
         """
+        token = current_run_id.set(self.run_id)
+        try:
+            return self._calibrate_internal(context)
+        finally:
+            current_run_id.reset(token)
+
+    def _calibrate_internal(self, context: Dict) -> Dict:
         self._report_progress(5, "Init Demand", "Starting calibration phase")
 
         # Unpack context
@@ -532,11 +653,13 @@ class CalibrationPipeline:
         if len(observed_edges) == 0:
             error_msg = "No traffic sensors matched in this area. Cannot calibrate demand."
             self._report_progress(5, "No Observed Edges", error_msg, level="error")
-            raise RuntimeError(error_msg)
+            raise NoTrafficDataError(error_msg)
 
         # Stage 5: Initialize demand model
         self._report_progress(5, "Init Demand", "Initializing demand generation...")
-        demand_gen, od_pairs, departure_bins = self._initialize_demand(network_file)
+        demand_gen, od_pairs, departure_bins = self._initialize_demand(
+            network_file, observed_edges=observed_edges
+        )
         try:
             self._write_od_selection_plot(network_file, od_pairs)
         except Exception as e:
@@ -583,15 +706,22 @@ class CalibrationPipeline:
             objective = EdgeSpeedObjective(observed_edges)
             quality_metrics = objective.calculate_metrics(simulated_speeds)
 
-            # Log observed edge coverage
+            # Log observed edge coverage and active-edge accuracy
             observed_edge_ids = set(observed_edges["edge_id"])
-            simulated_edge_ids = set(simulated_speeds.keys())
-            matched = observed_edge_ids & simulated_edge_ids
-            missing = observed_edge_ids - simulated_edge_ids
+            total_obs = len(observed_edge_ids)
+            matched_count = quality_metrics.get("matched_edges", 0)
+            cov_pct = (matched_count / total_obs * 100.0) if total_obs > 0 else 0.0
+            act_mae = quality_metrics.get("active_mae")
+            act_mae_str = f"{act_mae:.4f}" if act_mae is not None and np.isfinite(act_mae) else "N/A"
+            tot_mae = quality_metrics.get("mae")
+            tot_mae_str = f"{tot_mae:.4f}" if tot_mae is not None and np.isfinite(tot_mae) else "N/A"
 
-            logger.debug(
-                f"📊 Edge coverage: {len(matched)}/{len(observed_edge_ids)} observed edges have traffic"
+            logger.info(
+                f"📊 Edge coverage: {matched_count}/{total_obs} ({cov_pct:.1f}%) observed edges have traffic | "
+                f"Active Speed MAE: {act_mae_str} | Total MAE: {tot_mae_str}"
             )
+            simulated_edge_ids = set(simulated_speeds.keys())
+            missing = observed_edge_ids - simulated_edge_ids
             if missing:
                 logger.warning(f"⚠️  Missing traffic on observed edges: {sorted(missing)}")
 
@@ -599,6 +729,8 @@ class CalibrationPipeline:
             quality_metrics = {
                 "mae": None,
                 "mse": None,
+                "active_mae": None,
+                "sensor_coverage": 0.0,
                 "matched_edges": 0,
                 "missing_edges": 0,
                 "total_edges": 0,
@@ -638,36 +770,41 @@ class CalibrationPipeline:
         Returns:
             Metadata dict with results or None if aborted
         """
-        # Phase 1: Prepare
-        context = await self.prepare()
+        token = current_run_id.set(self.run_id)
+        try:
+            # Phase 1: Prepare
+            context = await self.prepare()
 
-        # Confirmation hook
-        if confirm_callback:
-            traffic_count = len(context["traffic_df"])
-            matched_count = len(context["observed_edges"])
-            quality = assess_data_quality(
-                context["traffic_df"],
-                context["observed_edges"],
-                context.get("total_edges", 0),
-                bbox=self.bbox,
-            )
+            # Confirmation hook
+            if confirm_callback:
+                traffic_count = len(context["traffic_df"])
+                matched_count = len(context["observed_edges"])
+                quality = assess_data_quality(
+                    context["traffic_df"],
+                    context["observed_edges"],
+                    context.get("total_edges", 0),
+                    bbox=self.bbox,
+                )
 
-            stats = {
-                "fetched_segments": traffic_count,
-                "matched_edges": matched_count,
-                "total_network_edges": context.get("total_edges", 0),
-                "quality": quality,
-            }
+                stats = {
+                    "fetched_segments": traffic_count,
+                    "matched_edges": matched_count,
+                    "total_network_edges": context.get("total_edges", 0),
+                    "quality": quality,
+                }
 
-            should_proceed = confirm_callback(stats)
-            if not should_proceed:
-                logger.info("🚫 Run aborted by user.")
-                return None
+                should_proceed = confirm_callback(stats)
+                if not should_proceed:
+                    logger.info("🚫 Run aborted by user.")
+                    return None
 
-        await self._maybe_save_offline_dataset(context)
+            await self._maybe_save_offline_dataset(context)
 
-        # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
-        return await asyncio.to_thread(self.calibrate, context)
+            # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
+            return await asyncio.to_thread(self.calibrate, context)
+        finally:
+            current_run_id.reset(token)
+            remove_run_logging(self.output_dir / "logs", "pipeline.log")
 
     async def _maybe_save_offline_dataset(self, context: Dict) -> None:
         """Persist preparation artifacts as an offline dataset bundle when requested."""
@@ -944,29 +1081,41 @@ class CalibrationPipeline:
         return observed_edges
 
     def _initialize_demand(
-        self, network_file: Path
+        self, network_file: Path, observed_edges: Optional[pd.DataFrame] = None
     ) -> Tuple[DemandGenerator, List[Tuple[str, str]], List[Tuple[int, int]]]:
         """Initialize demand generator and select OD pairs."""
         network = SUMONetwork(network_file)
         demand_gen = DemandGenerator(network, seed=self.seed)
 
-        # Calculate adaptive minimum trip distance
-        # Heuristic: 10% of the bounding box diagonal -
-        # To prevent picking origin/dest that are practically neighbors
-        w, s, e, n = self.bbox
-        # Very rough approximation of meters (lat/lon degrees to meters)
-        # Using 111km per degree lat, and ~75km per degree lon at 48N
-        dx = (e - w) * 75000.0
-        dy = (n - s) * 111000.0
-        diag = (dx * dx + dy * dy) ** 0.5
+        # Calculate scale-adaptive minimum trip distance based on network extent
+        boundary = (
+            network.get_network_boundary()
+            if hasattr(network, "get_network_boundary")
+            else None
+        )
+        if boundary is not None:
+            diag = math.hypot(boundary[2] - boundary[0], boundary[3] - boundary[1])
+        else:
+            w, s, e, n = self.bbox
+            dx = (e - w) * 75000.0
+            dy = (n - s) * 111000.0
+            diag = math.hypot(dx, dy)
 
-        # Adaptive min distance: max(200m, 10% of diagonal)
-        # But cap it at 1km for very large maps to avoid filtering too much
-        self.min_trip_distance = min(1000.0, max(200.0, diag * 0.10))
+        # Scale-adaptive: 20% of network diagonal (at least 50m to prevent zero-distance identical edges)
+        self.min_trip_distance = max(50.0, diag * 0.20)
 
         logger.debug(
-            f"Network diagonal ~{int(diag)}m. Using min_trip_distance={int(self.min_trip_distance)}m"
+            f"Network diagonal ~{int(diag)}m. Using scale-adaptive min_trip_distance={int(self.min_trip_distance)}m (20% of extent)"
         )
+
+        observed_edge_ids = None
+        if (
+            self.sensor_coverage_od
+            and observed_edges is not None
+            and isinstance(observed_edges, pd.DataFrame)
+            and "edge_id" in observed_edges.columns
+        ):
+            observed_edge_ids = set(observed_edges["edge_id"].astype(str))
 
         # Select OD pairs (validates each pair individually; lane-permission aware)
         od_pairs = demand_gen.select_od_pairs(
@@ -974,32 +1123,20 @@ class CalibrationPipeline:
             min_trip_distance=self.min_trip_distance,
             min_connection_paths=self.min_connection_paths,
             num_workers=self.parallel_workers or self.config.default_parallel_workers,
+            observed_edge_ids=observed_edge_ids,
         )
 
-        # Create departure bins - cover ENTIRE duration (warmup + window)
-        # We start from t=0 to populate the network during warmup
+        # Single departure bin covering the ENTIRE duration (warmup + window)
+        # Vehicles depart from t=0 across the full simulation window.
         warmup_sec = self.warmup_minutes * 60
         window_sec = self.window_minutes * 60
         total_duration = warmup_sec + window_sec
+        self.bin_minutes = total_duration / 60.0
 
-        # Calculate bins based on bin_minutes (supporting floats)
-        target_bin_duration = int(self.bin_minutes * 60)
-        if target_bin_duration < 1:
-            target_bin_duration = 1
-
-        num_bins = max(1, int(round(total_duration / target_bin_duration)))
-
-        departure_bins = []
-        for i in range(num_bins):
-            start = i * target_bin_duration
-            end = i * target_bin_duration + target_bin_duration
-            # Adjust last bin to match exactly
-            if i == num_bins - 1:
-                end = total_duration
-            departure_bins.append((start, end))
+        departure_bins = [(0, total_duration)]
 
         logger.debug(
-            f"Created {len(od_pairs)} OD pairs and {len(departure_bins)} departure bins (duration={target_bin_duration}s)"
+            f"Created {len(od_pairs)} OD pairs with single departure bin (duration={total_duration}s)"
         )
 
         return demand_gen, od_pairs, departure_bins
@@ -1022,6 +1159,17 @@ class CalibrationPipeline:
             return random_genome, float("inf"), [float("inf")], None
 
         # Create SimulationConfig for the worker
+        vehicle_types_file: Optional[Path] = None
+        if self.effective_capacity_factor < 1.0:
+            vehicle_types_file = self.output_dir / "sumo" / "vehicle_types.xml"
+            tau = tau_from_capacity_factor(self.effective_capacity_factor)
+            write_vehicle_types_xml(tau, vehicle_types_file)
+            logger.info(
+                "Capacity derating active: factor=%.2f → tau=%.4f s (vehicle_types.xml written)",
+                self.effective_capacity_factor,
+                tau,
+            )
+
         sim_config = SimulationConfig(
             run_id=self.run_id,
             network_file=network_file,
@@ -1034,6 +1182,8 @@ class CalibrationPipeline:
             debug=False,  # Can be exposed via config
             output_base_dir=self.output_dir / "temp_eval",
             seed=self.seed,
+            vehicle_types_file=vehicle_types_file,
+            mesosim=self.mesosim,
         )
 
         # Run GA
@@ -1056,6 +1206,20 @@ class CalibrationPipeline:
             f"GA mutation sigma: using user-configured sigma={self.ga_mutation_sigma}"
         )
 
+        od_edge_incidence = None
+        if (
+            self.topology_guidance
+            and demand_gen is not None
+            and hasattr(demand_gen, "compute_od_edge_incidence")
+        ):
+            observed_edge_ids = set(observed_edges["edge_id"].astype(str))
+            od_edge_incidence = demand_gen.compute_od_edge_incidence(od_pairs, observed_edge_ids)
+            logger.debug(
+                "Computed OD-to-edge incidence for %d OD pairs across %d observed edges",
+                len(od_pairs),
+                len(observed_edge_ids),
+            )
+
         ga = GeneticAlgorithm(
             genome_size=genome_size,
             seed=self.seed,
@@ -1075,6 +1239,10 @@ class CalibrationPipeline:
             stagnation_boost=self.ga_stagnation_boost,
             assortative_mating=self.ga_assortative_mating,
             deterministic_crowding=self.ga_deterministic_crowding,
+            early_stopping=self.ga_early_stopping,
+            od_edge_incidence=od_edge_incidence,
+            n_bins=len(departure_bins),
+            topology_guidance=self.topology_guidance,
         )
 
         # Start optimization
@@ -1173,6 +1341,12 @@ class CalibrationPipeline:
             ),
             "best_mae_candidate_magnitude": _normalize_float(best_mae_candidate_magnitude),
             "loss_history_metric": "selected MAE per generation",
+            "early_stopped": bool(getattr(ga, "early_stopped", False)),
+            "early_stop_generation": (
+                int(getattr(ga, "early_stop_generation", 0))
+                if getattr(ga, "early_stop_generation", None) is not None
+                else None
+            ),
         }
 
         logger.info(
@@ -1345,6 +1519,10 @@ class CalibrationPipeline:
     ) -> Dict[str, float]:
         """Run final simulation to get edge speeds with dynamic routing."""
         seed_to_use = self.seed if simulation_seed is None else int(simulation_seed)
+
+        vehicle_types_file = self.output_dir / "sumo" / "vehicle_types.xml"
+        extra_additional = [vehicle_types_file] if vehicle_types_file.exists() else []
+
         sim = SUMOSimulation(
             network_file,
             trips_file,  # Pass trips.xml
@@ -1353,6 +1531,7 @@ class CalibrationPipeline:
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
             seed=seed_to_use,
             use_dynamic_routing=True,
+            extra_additional_files=extra_additional,
         )
 
         # Run in 'sumo' dir to generate and keep simulation.sumocfg there
@@ -1377,14 +1556,10 @@ class CalibrationPipeline:
     ) -> None:
         """Write observed and simulated edge-speed heatmaps with a shared scale."""
         observed_edge_speeds = self._observed_edge_speeds_from_df(observed_edges)
-        simulated_edge_speeds = {}
-        for edge_id, speed in (simulated_speeds or {}).items():
-            try:
-                speed_value = float(speed)
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(speed_value):
-                simulated_edge_speeds[str(edge_id)] = speed_value
+        simulated_edge_speeds = self._simulated_edge_speeds_for_visualization(
+            observed_edges,
+            simulated_speeds,
+        )
 
         speed_values = [
             *observed_edge_speeds.values(),
@@ -1476,8 +1651,6 @@ class CalibrationPipeline:
             str(self.max_od_pairs),
             "--min-connection-paths",
             str(self.min_connection_paths),
-            "--bin-size",
-            self._format_cli_value(self.bin_minutes),
             "--initial-population",
             str(self.initial_population),
             ]
@@ -1491,6 +1664,8 @@ class CalibrationPipeline:
             cmd_parts.append("--no-assortative-mating")
         if not self.ga_deterministic_crowding:
             cmd_parts.append("--no-deterministic-crowding")
+        if self.ga_early_stopping:
+            cmd_parts.append("--early-stopping")
         if self.run_id:
             cmd_parts.extend(["--name", str(self.run_id)])
 
@@ -1554,6 +1729,9 @@ class CalibrationPipeline:
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "ga_early_stopping": self.ga_early_stopping,
+                "mesosim": self.mesosim,
+                "topology_guidance": self.topology_guidance,
                 "requested_parallel_workers": self.parallel_workers,
                 "num_workers": self.parallel_workers or self.config.default_parallel_workers,
             },
@@ -1562,11 +1740,24 @@ class CalibrationPipeline:
                 "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
+                "effective_capacity_factor": self.effective_capacity_factor,
+                "sensor_coverage_od": self.sensor_coverage_od,
             },
             "results": {
-                "final_loss_mae_kmh": (
-                    round(quality_metrics["mae"], 2)
+                # Speed-ratio MAE (dimensionless): mean |sim_speed - obs_speed| / freeflow
+                "final_loss_mae": (
+                    round(quality_metrics["mae"], 4)
                     if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
+                    else None
+                ),
+                "final_active_mae": (
+                    round(quality_metrics["active_mae"], 4)
+                    if quality_metrics.get("active_mae") is not None and np.isfinite(quality_metrics["active_mae"])
+                    else None
+                ),
+                "sensor_coverage": (
+                    round(quality_metrics["sensor_coverage"], 4)
+                    if quality_metrics.get("sensor_coverage") is not None and np.isfinite(quality_metrics["sensor_coverage"])
                     else None
                 ),
                 "loss_history": loss_history_export,
@@ -1638,6 +1829,8 @@ class CalibrationPipeline:
                         "loss_history_metric",
                         "selected MAE per generation",
                     ),
+                    "early_stopped": self._last_optimization_result.get("early_stopped", False),
+                    "early_stop_generation": self._last_optimization_result.get("early_stop_generation"),
                 },
                 "quality_metrics": {
                     "mae_kmh": (
@@ -1702,6 +1895,7 @@ class CalibrationPipeline:
                 "ga_checkpoint_interval": self.ga_checkpoint_interval,
                 "ga_assortative_mating": self.ga_assortative_mating,
                 "ga_deterministic_crowding": self.ga_deterministic_crowding,
+                "ga_early_stopping": self.ga_early_stopping,
                 "max_od_pairs": self.max_od_pairs,
                 "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,

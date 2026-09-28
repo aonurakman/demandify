@@ -20,6 +20,7 @@ from demandify.sumo.simulation import SUMOSimulation
 from demandify.sumo.departure_schedule import (
     sequential_departure_times,
     format_departure_time,
+    GOLDEN_RATIO_CONJUGATE,
 )
 from demandify.calibration.objective import EdgeSpeedObjective
 
@@ -67,9 +68,17 @@ class SimulationConfig:
     step_length: float = 1.0
     debug: bool = False
     seed: int = 42
-    
+
     # Paths
     output_base_dir: Path = Path("temp_sims")
+
+    # Optional additional SUMO files loaded by every worker simulation.
+    # Primarily used to supply a vehicle_types.xml override for capacity
+    # derating via a modified passenger vType tau value.
+    vehicle_types_file: Optional[Path] = None
+
+    # Mesoscopic simulation mode for fast GA candidate evaluations
+    mesosim: bool = True
 
 
 def _create_worker_temp_dir(
@@ -148,13 +157,17 @@ def generate_demand_files(
     _ = seed
     
     # Generate trips
+    stagger = num_od > 1
     for od_idx, (origin, dest) in enumerate(od_pairs):
+        phase_offset = (((od_idx + 1) * GOLDEN_RATIO_CONJUGATE) % 1.0) if stagger else None
         for bin_idx, (start_time, end_time) in enumerate(departure_bins):
             # Ensure non-negative integer count
             count = int(max(0, round(counts[od_idx, bin_idx])))
             
             if count > 0:
-                departure_times = sequential_departure_times(start_time, end_time, count)
+                departure_times = sequential_departure_times(
+                    start_time, end_time, count, phase_offset=phase_offset
+                )
 
                 for dep_time in departure_times:
                     trips.append({
@@ -186,7 +199,7 @@ def generate_demand_files(
         t.set('to', trip['to'])
         
     tree = ET.ElementTree(root)
-    ET.indent(tree, space='  ')
+    # Skipping ET.indent saves significant CPU and file size in worker evaluation loops
     tree.write(trips_file, encoding='utf-8', xml_declaration=True)
     
     return trips_file
@@ -258,7 +271,11 @@ def run_simulation_worker(
             warmup_time=config.warmup_time,
             simulation_time=config.simulation_time,
             seed=seed, # Deterministic routing inside SUMO
-            use_dynamic_routing=True
+            use_dynamic_routing=True,
+            mesosim=config.mesosim,
+            extra_additional_files=(
+                [config.vehicle_types_file] if config.vehicle_types_file else []
+            ),
         )
         
         expected_vehicles = int(np.sum(genome))

@@ -29,7 +29,6 @@ def test_run_defaults_have_required_keys():
         "initial_population",
         "max_od_pairs",
         "min_connection_paths",
-        "bin_minutes",
         "ga_mutation_sigma",
         "ga_mutation_indpb",
         "ga_immigrant_rate",
@@ -39,6 +38,7 @@ def test_run_defaults_have_required_keys():
         "ga_checkpoint_interval",
         "ga_assortative_mating",
         "ga_deterministic_crowding",
+        "ga_early_stopping",
     }
     assert required_keys.issubset(defaults.keys())
     assert defaults["window_minutes"] in defaults["window_options_minutes"]
@@ -67,8 +67,12 @@ def test_api_form_defaults_match_run_defaults():
     assert _form_default(start_sig, "parallel_workers") == defaults["parallel_workers"]
     assert _form_default(start_sig, "max_od_pairs") == defaults["max_od_pairs"]
     assert _form_default(start_sig, "min_connection_paths") == defaults["min_connection_paths"]
-    assert _form_default(start_sig, "bin_minutes") == defaults["bin_minutes"]
     assert _form_default(start_sig, "ga_checkpoint_interval") == defaults["ga_checkpoint_interval"]
+    assert _form_default(start_sig, "ga_early_stopping") == defaults["ga_early_stopping"]
+    assert _form_default(start_sig, "effective_capacity_factor") == defaults["effective_capacity_factor"]
+    assert _form_default(start_sig, "mesosim") == defaults["mesosim"]
+    assert _form_default(start_sig, "topology_guidance") == defaults["topology_guidance"]
+    assert _form_default(start_sig, "sensor_coverage_od") == defaults["sensor_coverage_od"]
 
 
 def test_index_template_uses_shared_defaults():

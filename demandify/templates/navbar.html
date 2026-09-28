@@ -1,0 +1,50 @@
+<!-- Sleek, snappy, unified navigation bar -->
+<header class="app-navbar-wrapper sticky-top">
+    <nav class="navbar navbar-expand-lg app-navbar">
+        <div class="container-fluid px-3 px-lg-4">
+            <!-- Brand -->
+            <a class="navbar-brand d-flex align-items-center" href="/">
+                <img src="/static/banner.png" alt="demandify" class="navbar-logo me-3">
+            </a>
+
+            <!-- Mobile toggler -->
+            <button class="navbar-toggler border-0 shadow-none" type="button" data-bs-toggle="collapse"
+                data-bs-target="#appNavbarContent" aria-controls="appNavbarContent" aria-expanded="false"
+                aria-label="Toggle navigation">
+                <i class="bi bi-list fs-3"></i>
+            </button>
+
+            <!-- Nav Links -->
+            <div class="collapse navbar-collapse" id="appNavbarContent">
+                <ul class="navbar-nav mx-auto mb-2 mb-lg-0 nav-pills-demandify">
+                    <li class="nav-item">
+                        <a class="nav-link {% if active_tab == 'calibration' %}active{% endif %}" href="/">
+                            <i class="bi bi-cpu me-1"></i> Calibration
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if active_tab == 'dataset_builder' %}active{% endif %}" href="/dataset-builder">
+                            <i class="bi bi-database-add me-1"></i> Dataset Builder
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if active_tab == 'studio' %}active{% endif %}" href="/demand-studio">
+                            <i class="bi bi-sliders2-vertical me-1"></i> Demand Studio
+                        </a>
+                    </li>
+                </ul>
+
+                <!-- Right Utility Badges / Links -->
+                <div class="d-flex align-items-center gap-3 mt-2 mt-lg-0">
+                    <span class="badge bg-light text-muted border px-2 py-1 small d-none d-md-inline-block">
+                        <i class="bi bi-tag me-1"></i>v{{ version or '0.0.6' }}
+                    </span>
+                    <a href="https://github.com/aonurakman/demandify" target="_blank" rel="noopener noreferrer"
+                        class="github-nav-link text-decoration-none" title="Demandify on GitHub" aria-label="GitHub Repository">
+                        <i class="bi bi-github fs-3"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+</header>

@@ -99,7 +99,7 @@ def _prompt_restart():
 
 async def cmd_run(args):
     """Run calibration in headless mode."""
-    from demandify.pipeline import CalibrationPipeline
+    from demandify.pipeline import CalibrationPipeline, NoTrafficDataError
     from demandify.offline_data import resolve_offline_dataset
     import time
 
@@ -198,10 +198,14 @@ async def cmd_run(args):
                 ga_checkpoint_interval=args.checkpoint_interval,
                 ga_assortative_mating=args.ga_assortative_mating,
                 ga_deterministic_crowding=args.ga_deterministic_crowding,
+                ga_early_stopping=getattr(args, "ga_early_stopping", False),
                 max_od_pairs=args.max_ods,
                 min_connection_paths=args.min_connection_paths,
-                bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
+                effective_capacity_factor=args.capacity_factor,
+                mesosim=getattr(args, "mesosim", False),
+                topology_guidance=getattr(args, "topology_guidance", True),
+                sensor_coverage_od=getattr(args, "sensor_coverage_od", True),
                 offline_dataset=(
                     resolved_import_dataset.dataset_id if resolved_import_dataset else None
                 ),
@@ -280,11 +284,11 @@ async def cmd_run(args):
         except KeyboardInterrupt:
             print("\n🛑 Run aborted by user")
 
+        except NoTrafficDataError as e:
+            print(f"\n⚠️  WARNING: {e}")
+
         except Exception as e:
-            if "No traffic sensors matches" in str(e):
-                print("\n⚠️  WARNING: No traffic sensors in this area.")
-            else:
-                print(f"\n❌ Error: {e}")
+            print(f"\n❌ Error: {e}")
 
         if non_interactive:
             return
@@ -313,8 +317,8 @@ def cmd_serve(args):
     )
 
 
-def cli():
-    """Main CLI entry point."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the demandify CLI argument parser."""
     run_defaults = get_run_defaults()
 
     parser = argparse.ArgumentParser(
@@ -496,6 +500,61 @@ def cli():
         help=f"Disable deterministic crowding (default: {'enabled' if default_crowding else 'disabled'})",
     )
     run_parser.add_argument(
+        "--early-stopping",
+        dest="ga_early_stopping",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("ga_early_stopping", False),
+        help=(
+            "Stop calibration early if stagnation persists after mutation boost. "
+            "(default: disabled)"
+        ),
+    )
+    default_capacity_factor = float(run_defaults.get("effective_capacity_factor", 1.0))
+    run_parser.add_argument(
+        "--capacity-factor",
+        type=float,
+        default=default_capacity_factor,
+        dest="capacity_factor",
+        metavar="FACTOR",
+        help=(
+            "Effective road-capacity fraction relative to the pure car-only SUMO default "
+            "(1.0 = no derating, the default).  Values below 1.0 simulate the friction of "
+            "real-world mixed traffic (trucks, buses) by increasing the required headway "
+            "between simulated vehicles.  Typical urban values: 0.85–0.90.  "
+            f"(default: {default_capacity_factor})"
+        ),
+    )
+    run_parser.add_argument(
+        "--mesosim",
+        dest="mesosim",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("mesosim", True),
+        help=(
+            "Use SUMO's fast queue-based mesoscopic simulation (--mesosim) for GA candidate "
+            "evaluations. Final simulation remains microscopic. (default: enabled)"
+        ),
+    )
+    run_parser.add_argument(
+        "--topology-guidance",
+        dest="topology_guidance",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("topology_guidance", True),
+        help=(
+            "Use network topology and observed edge speed discrepancies to guide GA mutation "
+            "toward congested/empty corridors. (default: enabled)"
+        ),
+    )
+    run_parser.add_argument(
+        "--sensor-coverage-od",
+        dest="sensor_coverage_od",
+        action=argparse.BooleanOptionalAction,
+        default=run_defaults.get("sensor_coverage_od", True),
+        help=(
+            "Use greedy marginal set-cover during OD selection to maximize coverage of observed "
+            "sensor edges without creating unnatural micro-trips. (default: enabled)"
+        ),
+    )
+    run_parser.add_argument(
         "--max-ods",
         type=int,
         default=run_defaults["max_od_pairs"],
@@ -514,12 +573,6 @@ def cli():
         ),
     )
     run_parser.add_argument(
-        "--bin-size",
-        type=float,
-        default=run_defaults["bin_minutes"],
-        help=f"Time bin size in minutes (default: {run_defaults['bin_minutes']})",
-    )
-    run_parser.add_argument(
         "--initial-population",
         type=int,
         default=run_defaults["initial_population"],
@@ -532,34 +585,46 @@ def cli():
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
     serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(args=None) -> argparse.Namespace:
+    """Parse CLI arguments."""
+    parser = build_parser()
+    return parser.parse_args(args)
+
+
+def cli(args=None):
+    """Main CLI entry point."""
+    parser = build_parser()
+    parsed_args = parser.parse_args(args)
 
     # Default to serve if no command specified
-    if args.command is None:
-        args.command = "serve"
-        args.host = "127.0.0.1"
-        args.port = 8000
-        args.reload = False
+    if parsed_args.command is None:
+        parsed_args.command = "serve"
+        parsed_args.host = "127.0.0.1"
+        parsed_args.port = 8000
+        parsed_args.reload = False
 
     # Route to appropriate handler
-    if args.command == "cache":
-        if args.cache_command == "clear":
-            cmd_cache_clear(args)
+    if parsed_args.command == "cache":
+        if parsed_args.cache_command == "clear":
+            cmd_cache_clear(parsed_args)
         else:
-            cache_parser.print_help()
-    elif args.command == "doctor":
-        cmd_doctor(args)
-    elif args.command == "set-key":
-        cmd_set_key(args)
-    elif args.command == "run":
+            parser.print_help()
+    elif parsed_args.command == "doctor":
+        cmd_doctor(parsed_args)
+    elif parsed_args.command == "set-key":
+        cmd_set_key(parsed_args)
+    elif parsed_args.command == "run":
         try:
             import asyncio
 
-            asyncio.run(cmd_run(args))
+            asyncio.run(cmd_run(parsed_args))
         except KeyboardInterrupt:
             print("\n🛑 Run aborted by user")
-    elif args.command == "serve":
-        cmd_serve(args)
+    elif parsed_args.command == "serve":
+        cmd_serve(parsed_args)
     else:
         parser.print_help()
 

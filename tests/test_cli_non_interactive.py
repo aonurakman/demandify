@@ -36,8 +36,11 @@ def _build_run_args(**overrides):
         "ga_deterministic_crowding": True,
         "max_ods": 50,
         "min_connection_paths": 1,
-        "bin_size": 5,
         "initial_population": 1000,
+        "capacity_factor": 1.0,
+        "mesosim": False,
+        "topology_guidance": True,
+        "sensor_coverage_od": True,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -148,3 +151,53 @@ def test_cmd_run_rejects_zero_generations(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "--gen must be at least 1" in out
+
+
+def test_cmd_run_forwards_topology_guidance(monkeypatch):
+    class FakePipeline:
+        received_kwargs = None
+
+        def __init__(self, **kwargs):
+            FakePipeline.received_kwargs = kwargs
+            self.output_dir = Path("/tmp/demandify_test")
+            self.run_id = kwargs.get("run_id") or "fake_run"
+
+        async def run(self, confirm_callback):
+            return True
+
+    import demandify.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "CalibrationPipeline", FakePipeline)
+    monkeypatch.setattr(cli_module, "_prompt_restart", lambda: False)
+
+    args = _build_run_args(topology_guidance=False, non_interactive=True)
+    asyncio.run(cli_module.cmd_run(args))
+
+    assert FakePipeline.received_kwargs is not None
+    assert FakePipeline.received_kwargs["topology_guidance"] is False
+
+
+def test_cmd_run_forwards_sensor_coverage_od(monkeypatch):
+    class FakePipeline:
+        received_kwargs = None
+
+        def __init__(self, **kwargs):
+            FakePipeline.received_kwargs = kwargs
+            self.output_dir = Path("/tmp/demandify_test")
+            self.run_id = kwargs.get("run_id") or "fake_run"
+
+        async def run(self, confirm_callback):
+            return True
+
+    import demandify.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "CalibrationPipeline", FakePipeline)
+    monkeypatch.setattr(cli_module, "_prompt_restart", lambda: False)
+
+    args = _build_run_args(sensor_coverage_od=False, non_interactive=True)
+    asyncio.run(cli_module.cmd_run(args))
+
+    assert FakePipeline.received_kwargs is not None
+    assert FakePipeline.received_kwargs["sensor_coverage_od"] is False
+
+

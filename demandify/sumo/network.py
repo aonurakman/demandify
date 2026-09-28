@@ -3,8 +3,9 @@ SUMO network conversion from OSM data.
 """
 import subprocess
 import logging
+import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 from shapely.geometry import LineString, Point
 import json
@@ -238,6 +239,10 @@ def convert_osm_to_sumo(
         "--junctions.join",  # Join junctions
         "--tls.guess-signals",  # Guess traffic lights
         "--tls.discard-simple",  # Discard simple TLS
+        "--tls.join",  # Cluster multi-node traffic light junctions
+        "--tls.default-type", "actuated",  # Demand-responsive actuated traffic lights
+        "--crossings.guess",  # Guess pedestrian crossings at junctions
+        "--crossings.guess.roundabout-priority",  # Prioritize roundabout flow over crossings
         "--remove-edges.isolated",  # Remove isolated edges
         "--keep-edges.components", "1",  # Keep only largest connected component
         "--seed", str(seed)
@@ -283,3 +288,129 @@ def convert_osm_to_sumo(
     except subprocess.CalledProcessError as e:
         logger.error(f"netconvert failed: {e.stderr}")
         raise RuntimeError(f"Failed to convert OSM to SUMO: {e.stderr}")
+
+
+def compute_effective_freeflow_kmh(
+    edge_attrs: Dict[str, Any],
+    obs_speed: float = 0.0,
+    empirical_freeflow: Optional[float] = None,
+) -> float:
+    """
+    Resolve a physically grounded effective free-flow speed (km/h) for an edge.
+
+    Resolution hierarchy:
+    1. Empirical Ground Truth: If empirical_freeflow is provided and positive (>= 1.0),
+       use it directly, bounded below by the observed speed.
+    2. Road Hierarchy Derating: If empirical freeflow is unavailable (e.g. vector tiles),
+       derate raw OSM speed limits using road classification to reflect real-world urban
+       friction (parked cars, driveways, intersections):
+         - living_street: min(raw_speed, 20 km/h)
+         - residential, service: min(raw_speed, 35 km/h)
+         - tertiary, unclassified: min(raw_speed, 45 km/h)
+         - other (primary, secondary, trunk, motorway): raw_speed
+    3. Physical Lower Bound: Effective freeflow is never lower than the observed speed,
+       and never lower than 1.0 km/h to prevent division by zero.
+    """
+    if empirical_freeflow is not None:
+        try:
+            ff_f = float(empirical_freeflow)
+            if math.isfinite(ff_f) and ff_f >= 1.0:
+                obs_f = (
+                    float(obs_speed)
+                    if (obs_speed is not None and math.isfinite(float(obs_speed)))
+                    else 0.0
+                )
+                return max(ff_f, obs_f)
+        except (TypeError, ValueError):
+            pass
+
+    raw_speed = float(edge_attrs.get("speed", 13.89)) * 3.6
+    road_type = str(edge_attrs.get("type", "")).lower()
+    obs_f = (
+        float(obs_speed)
+        if (obs_speed is not None and math.isfinite(float(obs_speed)))
+        else 0.0
+    )
+
+    if "living_street" in road_type:
+        eff_speed = min(raw_speed, 20.0)
+    elif "residential" in road_type or "service" in road_type:
+        eff_speed = min(raw_speed, 35.0)
+    elif "tertiary" in road_type or "unclassified" in road_type:
+        eff_speed = min(raw_speed, 45.0)
+    else:
+        eff_speed = raw_speed
+
+    return max(eff_speed, obs_f, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Effective-capacity derating helpers
+# ---------------------------------------------------------------------------
+
+_VTYPE_REF_SPEED_MS = 13.89  # 50 km/h — reference speed for tau derivation
+_VTYPE_EFFECTIVE_LENGTH = 7.5  # vehicle length + min gap (m), Krauss defaults
+
+
+def tau_from_capacity_factor(factor: float) -> float:
+    """Convert an effective-capacity factor to a SUMO Krauss car-following tau.
+
+    In the Krauss model, road throughput capacity at speed *v* is approximately:
+
+        C(tau) = v / (L + tau * v)
+
+    where *L* is the effective vehicle length (length + minGap).  Setting a
+    higher *tau* increases the required headway between vehicles, which reduces
+    the number of cars a lane can carry — equivalent to the friction introduced
+    by trucks, buses, and other mixed-traffic modes absent from the simulation.
+
+    The factor is defined relative to the default SUMO tau of 1.0 s:
+
+        factor = C(tau_new) / C(tau_default=1.0)
+
+    Solved for tau_new at the reference speed (50 km/h):
+
+        tau_new = (L + v_ref) / (factor * v_ref) - L / v_ref
+
+    Args:
+        factor: Target capacity fraction relative to the default car-only
+            capacity.  Must be in (0, 1].  1.0 returns the SUMO default tau
+            (1.0 s) and means no derating.  0.85 gives roughly 15 % capacity
+            reduction, matching typical urban mixed-traffic conditions.
+
+    Returns:
+        tau in seconds (≥ 1.0 s).
+    """
+    if not (0.0 < factor <= 1.0):
+        raise ValueError(f"effective_capacity_factor must be in (0, 1]; got {factor}")
+    v = _VTYPE_REF_SPEED_MS
+    L = _VTYPE_EFFECTIVE_LENGTH
+    tau = (L + v) / (factor * v) - L / v
+    return max(1.0, tau)
+
+
+def write_vehicle_types_xml(tau: float, output_path: Path) -> None:
+    """Write a SUMO additional-file that overrides the passenger vType tau.
+
+    Only *tau* is overridden; all other default parameters (length, minGap,
+    accelration, sigma, …) remain at their SUMO defaults.  This file should be
+    loaded via ``--additional-files`` in every simulation that uses the derated
+    capacity model.
+
+    Args:
+        tau: The car-following reaction-time in seconds (≥ 1.0).
+        output_path: Destination path for the XML file.
+    """
+    root = ET.Element("additional")
+    ET.SubElement(root, "vType", {"id": "passenger", "tau": f"{tau:.4f}"})
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    logger.debug(
+        "Written vehicle_types.xml with tau=%.4f (capacity factor ≈ %.2f): %s",
+        tau,
+        _VTYPE_REF_SPEED_MS / (_VTYPE_EFFECTIVE_LENGTH + tau * _VTYPE_REF_SPEED_MS)
+        / (_VTYPE_REF_SPEED_MS / (_VTYPE_EFFECTIVE_LENGTH + 1.0 * _VTYPE_REF_SPEED_MS)),
+        output_path,
+    )

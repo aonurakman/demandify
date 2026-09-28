@@ -9,6 +9,8 @@ import pandas as pd
 from shapely.geometry import LineString, Point
 from rtree import index as rtree_index
 
+from demandify.sumo.network import compute_effective_freeflow_kmh
+
 logger = logging.getLogger(__name__)
 
 # Try to import pyproj for coordinate transformation
@@ -303,7 +305,11 @@ class EdgeMatcher:
                 
                 if edge_id and confidence >= min_confidence:
                     edge_attrs = self.network.get_edge_attributes(edge_id)
-                    sumo_freeflow_speed_kmh = float(edge_attrs.get('speed', 13.89)) * 3.6
+                    sumo_freeflow_speed_kmh = compute_effective_freeflow_kmh(
+                        edge_attrs=edge_attrs,
+                        obs_speed=float(row.get('current_speed', 0.0) or 0.0),
+                        empirical_freeflow=row.get('freeflow_speed'),
+                    )
                     matches.append({
                         'edge_id': edge_id,
                         'segment_id': segment_id,

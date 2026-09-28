@@ -4,7 +4,7 @@ Seeded demand generation for SUMO.
 from collections import Counter
 from heapq import heappop, heappush
 from multiprocessing import get_all_start_methods, get_context
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -18,6 +18,7 @@ from demandify.sumo.network import SUMONetwork
 from demandify.sumo.departure_schedule import (
     sequential_departure_times,
     format_departure_time,
+    GOLDEN_RATIO_CONJUGATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,17 @@ class DemandGenerator:
     OD_VALIDATION_BATCH_MAX = 64
     K_PATH_SEARCH_STATE_LIMIT = 15000
     K_PATH_SEARCH_TIMEOUT_SECONDS = 0.20
+    ROAD_HIERARCHY_WEIGHTS = {
+        "motorway": 1.0,
+        "trunk": 1.0,
+        "primary": 1.0,
+        "secondary": 1.0,
+        "tertiary": 0.6,
+        "unclassified": 0.5,
+        "residential": 0.2,
+        "living_street": 0.05,
+        "service": 0.05,
+    }
     
     def __init__(self, network: SUMONetwork, seed: int = 42):
         """
@@ -200,9 +212,10 @@ class DemandGenerator:
         self,
         max_od_pairs: int = 150,
         max_consecutive_failures: int = 10000,
-        min_trip_distance: float = 0.0,
+        min_trip_distance: Optional[float] = None,
         min_connection_paths: int = 1,
         num_workers: int = 1,
+        observed_edge_ids: Optional[Iterable[Any]] = None,
     ) -> List[Tuple[str, str]]:
         """
         Select origin/destination edges by building validated OD pairs.
@@ -216,11 +229,13 @@ class DemandGenerator:
         Args:
             max_od_pairs: Target number of OD pairs to create
             max_consecutive_failures: Max failures before giving up
-            min_trip_distance: Minimum Euclidean distance between origin and destination O/D
+            min_trip_distance: Minimum Euclidean distance between origin and destination O/D.
+                If None, adaptively computed as 20% of network Cartesian extent (min 50m).
             min_connection_paths: Minimum number of distinct simple routes required
                 between origin and destination for the pair to be eligible. Use 1
                 for reachability-only behavior.
             num_workers: Number of workers to use when validating sampled OD pairs.
+            observed_edge_ids: Optional set/iterable of observed edge IDs to maximize coverage.
 
         Returns:
             List of (origin_edge, destination_edge) pairs that should be routable in SUMO.
@@ -239,6 +254,11 @@ class DemandGenerator:
         edge_roles = sampling_profiles["edge_roles"]
         has_boundary_bias = sampling_profiles["has_boundary_bias"]
         
+        obs_set = {str(e) for e in observed_edge_ids} if observed_edge_ids else set()
+        target_sample_count = (
+            min(3 * max_od_pairs, max_od_pairs + 80) if obs_set else max_od_pairs
+        )
+
         # Build valid OD pairs one at a time
         valid_pairs: List[Tuple[str, str]] = []
         valid_pairs_set = set()
@@ -254,7 +274,8 @@ class DemandGenerator:
         )
 
         logger.debug(
-            "Building up to %s validated OD pairs (min_dist=%sm, min_connection_paths=%s)...",
+            "Building up to %s validated OD pairs (target_final=%s, min_dist=%sm, min_connection_paths=%s)...",
+            target_sample_count,
             max_od_pairs,
             min_trip_distance,
             min_connection_paths,
@@ -276,8 +297,19 @@ class DemandGenerator:
             self.K_PATH_SEARCH_TIMEOUT_SECONDS,
         )
 
-        current_min_dist = min_trip_distance
-        logger.debug(f"Generating {max_od_pairs} OD pairs (min_dist={int(min_trip_distance)}m)...")
+        if min_trip_distance is None:
+            boundary = self.network.get_network_boundary()
+            if boundary is not None:
+                diag = math.hypot(boundary[2] - boundary[0], boundary[3] - boundary[1])
+                current_min_dist = max(50.0, diag * 0.20)
+            else:
+                current_min_dist = 0.0
+        else:
+            current_min_dist = max(0.0, float(min_trip_distance))
+
+        logger.debug(
+            f"Generating {target_sample_count} OD pairs (target_final={max_od_pairs}, min_dist={int(current_min_dist)}m)..."
+        )
 
         pool = None
         if num_workers > 1:
@@ -299,9 +331,9 @@ class DemandGenerator:
             )
 
         try:
-            while len(valid_pairs) < max_od_pairs:
+            while len(valid_pairs) < target_sample_count:
                 # Safety break
-                if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                if total_attempts > target_sample_count * 100 and total_attempts > 10000:
                     logger.warning(
                         "Reached maximum attempt limit (%s). Stopping with %s pairs.",
                         total_attempts,
@@ -328,10 +360,10 @@ class DemandGenerator:
 
                 candidate_pairs: List[Tuple[str, str]] = []
                 candidate_set = set()
-                target_batch = min(validation_batch_size, max_od_pairs - len(valid_pairs))
+                target_batch = min(validation_batch_size, target_sample_count - len(valid_pairs))
 
                 while len(candidate_pairs) < target_batch:
-                    if total_attempts > max_od_pairs * 100 and total_attempts > 10000:
+                    if total_attempts > target_sample_count * 100 and total_attempts > 10000:
                         break
                     if consecutive_failures > max_consecutive_failures:
                         break
@@ -390,7 +422,7 @@ class DemandGenerator:
                 )
 
                 for origin, destination in candidate_pairs:
-                    if len(valid_pairs) >= max_od_pairs:
+                    if len(valid_pairs) >= target_sample_count:
                         break
                     if results.get((origin, destination), False):
                         valid_pairs.append((origin, destination))
@@ -406,7 +438,7 @@ class DemandGenerator:
                     len(valid_pairs) != last_logged_found
                     or (now - last_progress_log_time) >= self.OD_PROGRESS_TIME_SECONDS
                 ):
-                    logger.info("%s", self._format_od_progress(len(valid_pairs), max_od_pairs))
+                    logger.info("%s", self._format_od_progress(len(valid_pairs), target_sample_count))
                     last_progress_log_time = now
                     last_logged_found = len(valid_pairs)
         finally:
@@ -422,7 +454,43 @@ class DemandGenerator:
         
         if consecutive_failures >= max_consecutive_failures:
             logger.warning(f"Stopped after {consecutive_failures} consecutive failures. "
-                          f"Created {len(valid_pairs)} pairs (target was {max_od_pairs})")
+                          f"Created {len(valid_pairs)} pairs (target was {target_sample_count})")
+
+        if obs_set and len(valid_pairs) > max_od_pairs:
+            # Precompute traversed observed edges for each candidate pair
+            cand_traversed: Dict[Tuple[str, str], Set[str]] = {}
+            for pair in valid_pairs:
+                path = self.find_shortest_path(pair[0], pair[1])
+                cand_traversed[pair] = set(path) & obs_set
+
+            selected_pairs: List[Tuple[str, str]] = []
+            covered_edges: Set[str] = set()
+            indexed_remaining = list(enumerate(valid_pairs))
+
+            while len(selected_pairs) < max_od_pairs and indexed_remaining:
+                best_item = max(
+                    indexed_remaining,
+                    key=lambda item: (
+                        len(cand_traversed[item[1]] - covered_edges),
+                        len(cand_traversed[item[1]]),
+                        -item[0],
+                    ),
+                )
+                selected_pairs.append(best_item[1])
+                covered_edges.update(cand_traversed[best_item[1]])
+                indexed_remaining.remove(best_item)
+
+            logger.info(
+                "Coverage-guided OD selection: selected %d pairs covering %d / %d observed edges "
+                "(from candidate pool of %d)",
+                len(selected_pairs),
+                len(covered_edges),
+                len(obs_set),
+                len(valid_pairs),
+            )
+            valid_pairs = selected_pairs
+        elif len(valid_pairs) > max_od_pairs:
+            valid_pairs = valid_pairs[:max_od_pairs]
         
         origins = {o for o, _ in valid_pairs}
         destinations = {d for _, d in valid_pairs}
@@ -798,8 +866,24 @@ class DemandGenerator:
             return "spawn"
         return None
     
+    @classmethod
+    def _get_road_hierarchy_factor(cls, road_type: Any) -> float:
+        """Return selection probability multiplier based on OSM road hierarchy.
+
+        Arterials and primary/secondary corridors retain full weight (1.0).
+        Tertiary/unclassified collectors are moderately derated (0.6 / 0.5).
+        Local residential streets are derated (0.2) to prevent unrealistic
+        funneling of metropolitan volumes into quiet neighborhood roads.
+        Living streets and service ways receive minimal weight (0.05).
+        """
+        t = str(road_type or "").lower()
+        for key, factor in cls.ROAD_HIERARCHY_WEIGHTS.items():
+            if key in t:
+                return factor
+        return 1.0
+
     def _calculate_edge_weights(self, edges: List[str]) -> List[float]:
-        """Calculate selection weights for edges based on road importance."""
+        """Calculate selection weights for edges based on road importance and hierarchy."""
         weights = []
         for edge in edges:
             attrs = self.network.get_edge_attributes(edge)
@@ -807,9 +891,11 @@ class DemandGenerator:
             p = max(1, attrs.get('priority', 1))
             s = max(5.0, attrs.get('speed', 13.89))
             l = max(1, attrs.get('numLanes', 1))
+            road_type = attrs.get('type', '')
+            hierarchy_factor = self._get_road_hierarchy_factor(road_type)
             
-            # Boost highways significantly
-            weight = p * s * l
+            # Boost highways/arterials while derating local residential and service alleys
+            weight = p * s * l * hierarchy_factor
             weights.append(weight)
         return weights
     
@@ -889,6 +975,69 @@ class DemandGenerator:
         )
         self._k_path_cache[cache_key] = bool(result)
         return bool(result)
+
+    def find_shortest_path(self, from_edge: str, to_edge: str) -> List[str]:
+        """
+        Find shortest directed path of edges from from_edge to to_edge using BFS.
+
+        Returns empty list if no route exists.
+        """
+        if from_edge == to_edge:
+            return [from_edge]
+
+        visited: Dict[str, Optional[str]] = {from_edge: None}
+        queue = [from_edge]
+        idx = 0
+
+        while idx < len(queue):
+            current = queue[idx]
+            idx += 1
+
+            if current == to_edge:
+                break
+
+            neighbors = self._deterministic_adjacency.get(current, ())
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    visited[neighbor] = current
+                    queue.append(neighbor)
+
+        if to_edge not in visited:
+            return []
+
+        path = []
+        curr: Optional[str] = to_edge
+        while curr is not None:
+            path.append(curr)
+            curr = visited[curr]
+        path.reverse()
+        return path
+
+    def compute_od_edge_incidence(
+        self,
+        od_pairs: List[Tuple[str, str]],
+        observed_edge_ids: Iterable[Any],
+    ) -> List[List[str]]:
+        """
+        For each OD pair, compute the list of observed edge IDs traversed by the
+        shortest path between origin and destination.
+
+        Args:
+            od_pairs: List of (origin, destination) edge ID pairs.
+            observed_edge_ids: Iterable/set of observed edge IDs.
+
+        Returns:
+            List of lists of traversed observed edge IDs, aligned with od_pairs.
+        """
+        incidence: List[List[str]] = []
+        observed_set = {str(e) for e in observed_edge_ids}
+
+        for origin, dest in od_pairs:
+            path = self.find_shortest_path(str(origin), str(dest))
+            traversed_observed = [edge for edge in path if edge in observed_set]
+            incidence.append(traversed_observed)
+
+        return incidence
     
     def genome_to_demand_csv(
         self,
@@ -921,13 +1070,17 @@ class DemandGenerator:
         trips = []
         trip_id = 0
         
+        stagger = num_od > 1
         for od_idx, (origin, dest) in enumerate(od_pairs):
+            phase_offset = (((od_idx + 1) * GOLDEN_RATIO_CONJUGATE) % 1.0) if stagger else None
             for bin_idx, (start_time, end_time) in enumerate(departure_bins):
                 count = int(max(0, round(counts[od_idx, bin_idx])))
                 
                 # Generate individual departure times within the bin
                 if count > 0:
-                    departure_times = sequential_departure_times(start_time, end_time, count)
+                    departure_times = sequential_departure_times(
+                        start_time, end_time, count, phase_offset=phase_offset
+                    )
                     
                     for dep_time in departure_times:
                         trips.append({

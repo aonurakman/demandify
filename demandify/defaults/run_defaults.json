@@ -14,7 +14,6 @@
   "initial_population": 1000,
   "max_od_pairs": 50,
   "min_connection_paths": 1,
-  "bin_minutes": 5,
   "ga_mutation_sigma": 20,
   "ga_mutation_indpb": 0.3,
   "ga_immigrant_rate": 0.03,
@@ -23,5 +22,10 @@
   "ga_stagnation_boost": 1.5,
   "ga_checkpoint_interval": 10,
   "ga_assortative_mating": true,
-  "ga_deterministic_crowding": true
+  "ga_deterministic_crowding": true,
+  "ga_early_stopping": false,
+  "effective_capacity_factor": 1.0,
+  "mesosim": true,
+  "topology_guidance": true,
+  "sensor_coverage_od": true
 }

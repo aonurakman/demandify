@@ -206,3 +206,70 @@ def test_adaptive_boundary_bias_lifts_sparse_boundary_roles_without_collapsing_i
     assert adaptive_destination_outgoing > static_destination_outgoing + 0.05
     assert _role_share(adaptive_origin, "internal") > 0.50
     assert _role_share(adaptive_destination, "internal") > 0.50
+
+
+def test_select_od_pairs_with_sensor_coverage(tmp_path):
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+    gen = DemandGenerator(network, seed=42)
+
+    # Observed edges on internal corridor
+    observed_edges = ["inner_in", "hub_w"]
+    pairs = gen.select_od_pairs(
+        max_od_pairs=2,
+        min_connection_paths=1,
+        observed_edge_ids=observed_edges,
+    )
+
+    assert len(pairs) == 2
+    # Verify coverage: at least one selected pair traverses an observed edge
+    covered = set()
+    for o, d in pairs:
+        path = gen.find_shortest_path(o, d)
+        covered.update(set(path) & set(observed_edges))
+
+    assert len(covered) > 0
+
+
+def test_select_od_pairs_coverage_is_deterministic(tmp_path):
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+
+    observed = ["inner_in", "hub_w", "to_e"]
+
+    gen1 = DemandGenerator(network, seed=123)
+    pairs1 = gen1.select_od_pairs(max_od_pairs=3, observed_edge_ids=observed)
+
+    gen2 = DemandGenerator(network, seed=123)
+    pairs2 = gen2.select_od_pairs(max_od_pairs=3, observed_edge_ids=observed)
+
+    assert pairs1 == pairs2
+
+
+def test_select_od_pairs_scale_adaptive_distance(tmp_path):
+    import math
+
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+    gen = DemandGenerator(network, seed=42)
+
+    boundary = network.get_network_boundary()
+    assert boundary is not None
+    diag = math.hypot(boundary[2] - boundary[0], boundary[3] - boundary[1])
+    expected_adaptive_min = max(50.0, diag * 0.20)
+
+    # When min_trip_distance is None, it should adaptively use 20% of network diagonal
+    pairs = gen.select_od_pairs(
+        max_od_pairs=2,
+        min_trip_distance=None,
+        min_connection_paths=1,
+    )
+
+    assert len(pairs) == 2
+    for o, d in pairs:
+        ox, oy = network.get_edge_centroid(o)
+        dx, dy = network.get_edge_centroid(d)
+        dist = math.hypot(dx - ox, dy - oy)
+        assert dist >= expected_adaptive_min * 0.79  # within tolerance including relaxation if needed
+
+
