@@ -1,7 +1,7 @@
 /* Demand Studio Modern Stylesheet */
 
 .studio-container {
-    height: calc(100vh - 65px);
+    height: calc(100vh - 96px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -121,7 +121,7 @@
 }
 
 .legend-bar.flow {
-    background: linear-gradient(to right, #475569, #fbbf24, #f59e0b, #f97316, #ea580c, #9a3412);
+    background: linear-gradient(to right, #475569, #fde047, #fbbf24, #ea580c, #c2410c, #9a3412);
 }
 
 .legend-bar.congestion {
@@ -130,8 +130,8 @@
 
 /* Sidebar Area */
 .studio-sidebar {
-    width: 440px;
-    max-width: 45vw;
+    width: 540px;
+    max-width: 50vw;
     background: #ffffff;
     border-left: 1px solid #e2e8f0;
     display: flex;
@@ -171,14 +171,14 @@
 }
 
 .od-card:hover {
-    border-color: #fdba74;
-    box-shadow: 0 2px 8px rgba(234, 88, 12, 0.12);
+    border-color: #fb923c;
+    box-shadow: 0 2px 8px rgba(194, 65, 12, 0.12);
 }
 
 .od-card.selected {
-    border-color: #ea580c;
+    border-color: #c2410c;
     background: #fff7ed;
-    box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.22);
+    box-shadow: 0 0 0 2px rgba(194, 65, 12, 0.22);
 }
 
 .od-flow-input {
@@ -222,9 +222,9 @@
     height: 22px !important;
     width: 22px !important;
     border-radius: 50% !important;
-    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%) !important;
+    background: linear-gradient(135deg, #d9531e 0%, #c2410c 100%) !important;
     margin-top: -7px !important;
-    box-shadow: 0 2px 8px rgba(234, 88, 12, 0.45) !important;
+    box-shadow: 0 2px 8px rgba(194, 65, 12, 0.45) !important;
     border: 2.5px solid #ffffff !important;
     cursor: grab !important;
     transition: transform 0.15s ease !important;
@@ -245,8 +245,8 @@
     height: 22px !important;
     width: 22px !important;
     border-radius: 50% !important;
-    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%) !important;
-    box-shadow: 0 2px 8px rgba(234, 88, 12, 0.45) !important;
+    background: linear-gradient(135deg, #d9531e 0%, #c2410c 100%) !important;
+    box-shadow: 0 2px 8px rgba(194, 65, 12, 0.45) !important;
     border: 2.5px solid #ffffff !important;
     cursor: grab !important;
 }
@@ -271,15 +271,4 @@
     font-size: 1.25rem;
     font-weight: 700;
     color: #fbbf24;
-}
-
-/* Snapping Pulse Animation */
-@keyframes pulse-pin {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-    70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-
-.pin-pulse-green {
-    animation: pulse-pin 1.5s infinite;
 }

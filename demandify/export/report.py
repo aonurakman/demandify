@@ -162,7 +162,7 @@ class ReportGenerator:
             loss_history,
             marker="o",
             linewidth=2,
-            color="#2563eb",
+            color="#c2410c",
             markersize=5,
             label="Selected MAE",
             zorder=3,
@@ -259,7 +259,7 @@ class ReportGenerator:
                 matched_sim_speeds,
                 alpha=0.5,
                 s=30,
-                color="#2563eb",
+                color="#c2410c",
                 edgecolors="white",
                 linewidths=0.3,
                 label=f"Matched edges (n={n_matched})",
@@ -499,13 +499,13 @@ class ReportGenerator:
                 marker="o",
                 markersize=4,
                 linewidth=2,
-                color="#2563eb",
+                color="#c2410c",
                 label="Genotypic Diversity (L2)",
             )
 
         ax1.set_xlabel("Generation")
-        ax1.set_ylabel("Genotypic Diversity (L2)", color="#2563eb")
-        ax1.tick_params(axis="y", labelcolor="#2563eb")
+        ax1.set_ylabel("Genotypic Diversity (L2)", color="#c2410c")
+        ax1.tick_params(axis="y", labelcolor="#c2410c")
         ax1.grid(True, alpha=0.3)
 
         if has_phenotypic:
@@ -671,7 +671,7 @@ class ReportGenerator:
             margin-bottom: 20px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }}
-        h1 {{ color: #2563eb; margin: 0; }}
+        h1 {{ color: #c2410c; margin: 0; }}
         h2 {{ color: #374151; margin-top: 0; }}
         table {{
             width: 100%;
@@ -684,12 +684,12 @@ class ReportGenerator:
             border-bottom: 1px solid #e5e7eb;
         }}
         th {{ background-color: #f3f4f6; font-weight: 600; }}
-        .metric {{ font-size: 1.5em; color: #2563eb; font-weight: bold; }}
+        .metric {{ font-size: 1.5em; color: #c2410c; font-weight: bold; }}
         img {{ max-width: 100%; height: auto; }}
         .plots {{ display: flex; gap: 20px; flex-wrap: wrap; }}
         .plot {{ flex: 1; min-width: 400px; }}
         .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));  gap: 15px; }}
-        .help-text {{ font-size: 0.9em; color: #666; margin-top: 10px; background: #f0f9ff; padding: 10px; border-radius: 4px; }}
+        .help-text {{ font-size: 0.9em; color: #9a3412; margin-top: 10px; background: #fff7ed; padding: 10px; border-radius: 4px; }}
     </style>
 </head>
 <body>

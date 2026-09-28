@@ -64,9 +64,9 @@ function getFlowColor(flow) {
     if (!flow || flow <= 0) return '#475569'; // Neutral slate for inactive network edges
     if (flow < 50) return '#fde047';         // Light golden yellow
     if (flow < 150) return '#fbbf24';        // Warm golden amber
-    if (flow < 300) return '#f97316';        // Vibrant orange
-    if (flow < 600) return '#ea580c';        // Demandify core orange
-    return '#c2410c';                        // Deep dark orange / rust
+    if (flow < 300) return '#ea580c';        // Medium orange
+    if (flow < 600) return '#c2410c';        // Dark burnt orange
+    return '#9a3412';                        // Deep rust mahogany
 }
 
 /**
@@ -207,7 +207,7 @@ function renderBoundarySpotlight() {
 
     // Subtle dashed orange boundary rectangle around the simulation area
     Studio.networkBoundaryRect = L.rectangle(bounds, {
-        color: '#ea580c',
+        color: '#c2410c',
         weight: 2,
         dashArray: '8, 6',
         fill: false,
@@ -301,7 +301,6 @@ async function selectOrigin(edgeId, latlng) {
         fillColor: '#10b981',
         fillOpacity: 1,
         weight: 3,
-        className: 'pin-pulse-green'
     }).addTo(Studio.map).bindPopup(`<strong>Origin:</strong> ${edgeId}`).openPopup();
 
     updateFloatingHelper(`Origin set to <code>${edgeId}</code>. Click an existing destination to view/edit, or click any other road to create a new OD.`);
@@ -674,17 +673,17 @@ function renderODList(filterQuery = '') {
 
         card.innerHTML = `
             <div class="d-flex justify-content-between align-items-center mb-1">
-                <div class="fw-bold small text-truncate" style="max-width: 220px;" title="${od.origin} &rarr; ${od.destination}">
+                <div class="fw-bold small d-flex align-items-center gap-1 flex-wrap me-2" title="${od.origin} &rarr; ${od.destination}">
                     <span class="text-muted me-1">#${idx+1}</span>
                     <span class="text-success"><i class="bi bi-geo-alt-fill"></i> ${od.origin}</span>
-                    <span class="text-muted">&rarr;</span>
+                    <span class="text-muted mx-1">&rarr;</span>
                     <span class="text-danger"><i class="bi bi-pin-map-fill"></i> ${od.destination}</span>
                 </div>
-                <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-secondary btn-sm p-1" title="Focus route on map" onclick="focusOD('${od.id}', event)">
-                        <i class="bi bi-crosshair"></i>
+                <div class="btn-group btn-group-sm flex-shrink-0">
+                    <button class="btn btn-outline-secondary btn-sm px-2 py-1" title="Focus route on map" onclick="focusOD('${od.id}', event)">
+                        <i class="bi bi-bullseye"></i>
                     </button>
-                    <button class="btn btn-outline-danger btn-sm p-1" title="Delete OD pair" onclick="deleteOD('${od.id}', event)">
+                    <button class="btn btn-outline-danger btn-sm px-2 py-1" title="Delete OD pair" onclick="deleteOD('${od.id}', event)">
                         <i class="bi bi-trash"></i>
                     </button>
                 </div>
