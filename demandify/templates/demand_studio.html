@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>demandify - Demand Studio</title>
+
+    <!-- Bootstrap 5 CSS & Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- Demandify Styles -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/studio.css">
+</head>
+
+<body>
+    {% set active_tab = 'studio' %}
+    {% include 'navbar.html' %}
+
+    <div class="studio-container">
+        <!-- Studio Top Toolbar -->
+        <div class="studio-toolbar">
+            <!-- Left: Source Selector & OSM Fetch -->
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <div class="input-group input-group-sm" style="width: 290px;">
+                    <span class="input-group-text bg-white"><i class="bi bi-diagram-3-fill text-primary"></i></span>
+                    <select class="form-select form-select-sm" id="studio-source-select" aria-label="Select Source">
+                        <option value="">Loading sources...</option>
+                    </select>
+                </div>
+
+                <button class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#osmModal">
+                    <i class="bi bi-cloud-download"></i>
+                    <span>+ From OSM</span>
+                </button>
+            </div>
+
+            <!-- Center: Stat Badges -->
+            <div class="d-flex align-items-center gap-2">
+                <div class="studio-stat-badge">
+                    <span class="stat-label">Total Demand</span>
+                    <div class="d-flex align-items-baseline gap-1">
+                        <span class="stat-value text-primary" id="stat-total-demand">0 veh/h</span>
+                        <small class="text-muted" id="stat-total-demand-min">(0.00 veh/min)</small>
+                    </div>
+                </div>
+
+                <div class="studio-stat-badge">
+                    <span class="stat-label">Active ODs</span>
+                    <span class="stat-value" id="stat-active-ods">0 / 0</span>
+                </div>
+
+                <div class="studio-stat-badge d-none d-lg-inline-flex">
+                    <span class="stat-label">Network Edges</span>
+                    <span class="stat-value" id="stat-network-edges">0</span>
+                </div>
+            </div>
+
+            <!-- Right: Simulation Controls & Actions -->
+            <div class="d-flex align-items-center gap-2">
+                <div class="input-group input-group-sm" style="width: 140px;">
+                    <span class="input-group-text bg-light"><i class="bi bi-clock"></i></span>
+                    <select class="form-select form-select-sm" id="sim-window-select">
+                        <option value="15" selected>15 min</option>
+                        <option value="30">30 min</option>
+                        <option value="60">60 min</option>
+                    </select>
+                </div>
+
+                <button class="btn btn-sm btn-success d-flex align-items-center gap-1 px-3 shadow-sm" id="btn-test-sim" title="Run rapid background mesoscopic simulation in SUMO">
+                    <i class="bi bi-play-fill fs-6"></i>
+                    <span class="fw-semibold">Test in SUMO</span>
+                </button>
+
+                <button class="btn btn-sm btn-primary d-flex align-items-center gap-1 shadow-sm" id="btn-save-scenario">
+                    <i class="bi bi-save"></i>
+                    <span>Save Scenario</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Studio Workspace -->
+        <div class="studio-workspace">
+            <!-- Left / Center: Leaflet Map Pane -->
+            <div class="studio-map-pane">
+                <div id="studio-map"></div>
+
+                <!-- Floating Helper Guidance -->
+                <div class="map-floating-panel">
+                    <div class="d-flex align-items-start gap-2">
+                        <i class="bi bi-info-circle-fill text-primary mt-1"></i>
+                        <div class="small" id="map-helper-text">
+                            Click any road on the map to set an Origin link and view connected destinations.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- View Mode Pill Toggle -->
+                <div class="map-view-toggle btn-group btn-group-sm" role="group">
+                    <button type="button" class="btn btn-sm btn-outline-primary btn-view-mode active" data-mode="flow">
+                        <i class="bi bi-water me-1"></i>Flow Bandwidth
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary btn-view-mode" data-mode="congestion">
+                        <i class="bi bi-speedometer me-1"></i>Congestion Heatmap
+                    </button>
+                </div>
+
+                <!-- Map Legend -->
+                <div class="map-legend-panel">
+                    <div id="legend-flow">
+                        <div class="fw-bold mb-1 text-muted" style="font-size: 0.72rem; text-transform: uppercase;">Edge Demand Flow</div>
+                        <div class="legend-bar flow"></div>
+                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem;">
+                            <span>0 veh/h</span>
+                            <span>150</span>
+                            <span>&gt; 600+ veh/h</span>
+                        </div>
+                    </div>
+                    <div id="legend-congestion" class="d-none">
+                        <div class="fw-bold mb-1 text-muted" style="font-size: 0.72rem; text-transform: uppercase;">Simulated Speed / Free-flow</div>
+                        <div class="legend-bar congestion"></div>
+                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem;">
+                            <span class="text-danger fw-bold">Gridlock (&lt;40%)</span>
+                            <span class="text-warning">Slow</span>
+                            <span class="text-success fw-bold">Free-flow (&gt;85%)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Loading Spinner Overlay -->
+                <div id="studio-loading-overlay" class="position-absolute top-0 start-0 w-100 h-100 bg-white bg-opacity-75 d-flex flex-column align-items-center justify-content-center d-none" style="z-index: 2000;">
+                    <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+                    <h5 class="fw-bold text-dark" id="studio-loading-msg">Loading...</h5>
+                </div>
+            </div>
+
+            <!-- Right: Studio Control Sidebar -->
+            <div class="studio-sidebar">
+                <!-- Sidebar Header -->
+                <div class="sidebar-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0 fw-bold"><i class="bi bi-sliders me-1 text-primary"></i> Demand Control</h6>
+                        <button class="btn btn-sm btn-outline-primary" id="btn-new-od" title="Click on map to place new OD pair">
+                            <i class="bi bi-plus-lg me-1"></i>New OD
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sidebar Content -->
+                <div class="sidebar-content">
+                    <!-- Demand Multiplier Card -->
+                    <div class="multiplier-card">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <label class="form-label small fw-bold mb-0">
+                                <i class="bi bi-arrows-angle-expand me-1 text-primary"></i> Global Multiplier
+                            </label>
+                            <span class="badge bg-primary fs-6" id="multiplier-val-display">1.00×</span>
+                        </div>
+
+                        <!-- Range Slider -->
+                        <input type="range" class="form-range" id="multiplier-slider" min="0.1" max="2.0" step="0.05" value="1.0">
+
+                        <!-- Quick Presets -->
+                        <div class="d-flex gap-1 justify-content-between mb-2">
+                            <button class="btn btn-outline-secondary preset-btn" data-factor="0.5">0.5×</button>
+                            <button class="btn btn-outline-secondary preset-btn" data-factor="0.8">0.8×</button>
+                            <button class="btn btn-outline-secondary preset-btn" data-factor="1.0">1.0×</button>
+                            <button class="btn btn-outline-secondary preset-btn" data-factor="1.2">1.2×</button>
+                            <button class="btn btn-outline-secondary preset-btn" data-factor="1.5">1.5×</button>
+                            <button class="btn btn-outline-secondary preset-btn" data-factor="2.0">2.0×</button>
+                        </div>
+
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div class="form-check form-check-inline mb-0">
+                                <input class="form-check-input" type="checkbox" id="check-preserve-min" checked>
+                                <label class="form-check-label small text-muted" for="check-preserve-min" style="font-size: 0.76rem;">
+                                    Preserve min 1 veh/h
+                                </label>
+                            </div>
+                            <button class="btn btn-sm btn-link text-muted p-0 text-decoration-none small" id="btn-reset-multiplier">
+                                <i class="bi bi-arrow-counterclockwise"></i> Reset
+                            </button>
+                        </div>
+
+                        <div class="small text-primary fw-semibold mt-1" id="multiplier-delta-preview"></div>
+                    </div>
+
+                    <!-- SUMO Test Telemetry Card -->
+                    <div class="sim-results-card d-none" id="sim-results-card">
+                        <div class="d-flex justify-content-between align-items-center mb-2 border-bottom border-secondary pb-1">
+                            <span class="fw-bold small text-uppercase text-light"><i class="bi bi-activity me-1 text-info"></i> SUMO Test Results</span>
+                            <span class="badge bg-success-subtle text-success">Finished</span>
+                        </div>
+                        <div class="row g-2 text-center">
+                            <div class="col-3">
+                                <small class="text-secondary d-block" style="font-size: 0.68rem;">Trips</small>
+                                <span class="metric-val" id="sim-res-inserted">-</span>
+                            </div>
+                            <div class="col-3">
+                                <small class="text-secondary d-block" style="font-size: 0.68rem;">Completion</small>
+                                <span class="metric-val" id="sim-res-completion">-</span>
+                            </div>
+                            <div class="col-3">
+                                <small class="text-secondary d-block" style="font-size: 0.68rem;">Teleports</small>
+                                <span class="metric-val" id="sim-res-teleports">-</span>
+                            </div>
+                            <div class="col-3">
+                                <small class="text-secondary d-block" style="font-size: 0.68rem;">Avg Speed</small>
+                                <span class="metric-val" id="sim-res-speed">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Selected OD Detail Card -->
+                    <div class="card mb-3 border-primary border-2 shadow-sm d-none" id="od-detail-panel">
+                        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center py-2">
+                            <span class="fw-bold small text-primary" id="detail-od-title">Selected OD</span>
+                            <button type="button" class="btn-close btn-sm" id="btn-close-od-detail" aria-label="Close"></button>
+                        </div>
+                        <div class="card-body p-3">
+                            <div class="row g-2 mb-2 small">
+                                <div class="col-6">
+                                    <span class="text-muted d-block" style="font-size: 0.72rem;">ORIGIN LINK</span>
+                                    <code class="fw-bold text-success" id="detail-orig-id">-</code>
+                                </div>
+                                <div class="col-6">
+                                    <span class="text-muted d-block" style="font-size: 0.72rem;">DESTINATION LINK</span>
+                                    <code class="fw-bold text-danger" id="detail-dest-id">-</code>
+                                </div>
+                            </div>
+                            <div class="d-flex align-items-center justify-content-between pt-2 border-top">
+                                <label class="form-label small fw-bold mb-0">Flow Volume:</label>
+                                <div class="d-flex align-items-center gap-1">
+                                    <input type="number" class="form-control form-control-sm text-center fw-bold" style="width: 85px;" id="detail-flow-h" min="0" max="5000">
+                                    <span class="small text-muted">veh/h</span>
+                                </div>
+                            </div>
+                            <div class="text-end mt-1">
+                                <small class="text-muted">Rate: <span id="detail-flow-min" class="fw-bold text-dark">0</span> veh/min</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Search Filter & List -->
+                    <div class="mb-2">
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" id="od-search-input" placeholder="Filter by OD or road link ID...">
+                        </div>
+                    </div>
+
+                    <div id="od-list-container">
+                        <!-- Dynamic OD Cards -->
+                        <div class="text-center text-muted p-4">
+                            <div class="spinner-border spinner-border-sm text-primary me-2"></div>
+                            Loading OD pairs...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Fetch Network from OpenStreetMap -->
+    <div class="modal fade" id="osmModal" tabindex="-1" aria-labelledby="osmModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="osmModalLabel"><i class="bi bi-cloud-download text-primary me-2"></i>Fetch Network from OpenStreetMap</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small text-muted">
+                        Download raw road network topology for any bounding box via Overpass API and convert directly to a SUMO network. The resulting scenario starts with zero demand so you can build your own OD pairs from scratch.
+                    </p>
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold">Scenario Name</label>
+                        <input type="text" class="form-control form-control-sm" id="osm-scenario-name" placeholder="e.g. berlin_mitte_custom" value="osm_network_01">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold">Bounding Box (West, South, East, North)</label>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <input type="number" step="0.0001" class="form-control form-control-sm" id="osm-bbox-west" placeholder="West (min Lon)" value="20.0174">
+                            </div>
+                            <div class="col-6">
+                                <input type="number" step="0.0001" class="form-control form-control-sm" id="osm-bbox-south" placeholder="South (min Lat)" value="50.0702">
+                            </div>
+                            <div class="col-6">
+                                <input type="number" step="0.0001" class="form-control form-control-sm" id="osm-bbox-east" placeholder="East (max Lon)" value="20.0566">
+                            </div>
+                            <div class="col-6">
+                                <input type="number" step="0.0001" class="form-control form-control-sm" id="osm-bbox-north" placeholder="North (max Lat)" value="50.0875">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="small text-muted mb-2">Presets:</div>
+                    <div class="d-flex gap-1 flex-wrap mb-3">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="setOSMPreset('Krakow', 20.0174, 50.0702, 20.0566, 50.0875)">Krakow</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="setOSMPreset('Den Haag', 4.2817, 52.0696, 4.3300, 52.0874)">Den Haag</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="setOSMPreset('Leeds', -1.5717, 53.7964, -1.5350, 53.8110)">Leeds</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="setOSMPreset('Paris', 2.2961, 48.8469, 2.3071, 48.8532)">Paris Eiffel</button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-primary" id="btn-submit-osm">
+                        <i class="bi bi-cloud-arrow-down me-1"></i>Fetch & Convert Network
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS & Leaflet JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Studio JS -->
+    <script src="/static/js/studio.js"></script>
+
+    <script>
+        function setOSMPreset(name, west, south, east, north) {
+            document.getElementById('osm-scenario-name').value = `${name.toLowerCase().replace(/\s+/g, '_')}_custom`;
+            document.getElementById('osm-bbox-west').value = west;
+            document.getElementById('osm-bbox-south').value = south;
+            document.getElementById('osm-bbox-east').value = east;
+            document.getElementById('osm-bbox-north').value = north;
+        }
+    </script>
+</body>
+
+</html>

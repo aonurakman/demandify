@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from demandify import __version__
-from demandify.web import dataset_routes, routes
+from demandify.web import dataset_routes, routes, studio_routes
 from demandify.utils import logging  # Setup logging
 
 
@@ -47,6 +47,7 @@ templates = Jinja2Templates(directory=str(templates_dir))
 # Include routes
 app.include_router(routes.router)
 app.include_router(dataset_routes.router)
+app.include_router(studio_routes.router)
 
 
 @app.get("/health")

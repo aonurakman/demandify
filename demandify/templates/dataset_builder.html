@@ -16,16 +16,10 @@
 </head>
 
 <body>
-    <div class="container-fluid">
-        <div class="row py-2 bg-white shadow-sm">
-            <div class="col-12 text-center">
-                <img src="/static/banner.png" alt="demandify" class="header-logo">
-                <div class="mt-2">
-                    <h4 class="mb-0">Offline Dataset Builder</h4>
-                    <small class="text-muted">Preparation-only workflow (separate from calibration runs)</small>
-                </div>
-            </div>
-        </div>
+    {% set active_tab = 'dataset_builder' %}
+    {% include 'navbar.html' %}
+
+    <div class="container-fluid px-3 px-lg-4">
 
         <div class="row mt-4 g-4">
             <div class="col-lg-6">
