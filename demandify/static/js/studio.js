@@ -663,11 +663,20 @@ async function loadSelectedSource() {
         if (simCard) {
             simCard.classList.add('d-none');
         }
-        document.getElementById('stat-avg-speed').textContent = '- km/h';
-        document.getElementById('stat-completed-trips').textContent = '-';
-        document.getElementById('stat-teleports').textContent = '-';
-        document.getElementById('stat-teleports').className = 'fw-bold';
-        document.getElementById('multiplier-delta-preview').textContent = '';
+        const insertedEl = document.getElementById('sim-res-inserted');
+        if (insertedEl) insertedEl.textContent = '-';
+        const compEl = document.getElementById('sim-res-completion');
+        if (compEl) compEl.textContent = '-';
+        const teleportsEl = document.getElementById('sim-res-teleports');
+        if (teleportsEl) {
+            teleportsEl.textContent = '-';
+            teleportsEl.className = 'metric-val';
+        }
+        const speedEl = document.getElementById('sim-res-speed');
+        if (speedEl) speedEl.textContent = '-';
+
+        const previewEl = document.getElementById('multiplier-delta-preview');
+        if (previewEl) previewEl.textContent = '';
         setViewMode('flow');
 
         clearSelection();
