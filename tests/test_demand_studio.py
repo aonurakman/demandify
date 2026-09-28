@@ -205,3 +205,22 @@ def test_studio_test_simulation_endpoint(client):
     assert data["stats"]["total_vehicles_inserted"] > 0
     assert "teleports" in data["stats"]
     assert "mean_edge_speed_kmh" in data["stats"]
+
+
+def test_studio_disconnected_od_pair_detection(client):
+    """Verify that disconnected OD pairs return routable=False and are rejected."""
+    # In Brussels network, these two links are disconnected
+    res = client.post(
+        "/api/studio/route",
+        json={
+            "source_type": "dataset",
+            "source_id": "brussel_v1",
+            "origin": "662874055#0",
+            "destination": "24387267#0",
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["routable"] is False
+    assert len(data["path_edges"]) == 0
+    assert len(data["coordinates"]) == 0

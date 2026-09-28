@@ -356,6 +356,37 @@ async function selectOrigin(edgeId, latlng) {
 }
 
 async function selectDestination(destEdgeId, latlng) {
+    const origin = Studio.selectedOrigin;
+    if (!origin) return;
+
+    updateFloatingHelper(`Checking route connectivity from <code>${origin}</code> to <code>${destEdgeId}</code>...`);
+
+    // Verify routability on the directed SUMO network before opening creation or setting destination
+    let routeData = null;
+    try {
+        const res = await fetch('/api/studio/route', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                source_type: Studio.currentSource.type,
+                source_id: Studio.currentSource.id,
+                origin: origin,
+                destination: destEdgeId,
+            })
+        });
+        routeData = await res.json();
+    } catch (err) {
+        console.error('Error checking route connectivity:', err);
+    }
+
+    if (!routeData || !routeData.routable || !routeData.path_edges || routeData.path_edges.length === 0) {
+        // Disconnected OD pair: discard selection, give warning, and do not proceed
+        clearSelection();
+        alert(`⚠️ Disconnected OD Pair:\n\nNo connected road path exists from origin '${origin}' to destination '${destEdgeId}'.\n\nIn this directed road network, this destination cannot be reached from this origin. Selection has been discarded.`);
+        updateFloatingHelper(`<span class="text-danger fw-semibold">⚠️ Cannot connect <code>${origin} &rarr; ${destEdgeId}</code> (no path). Selection discarded.</span>`);
+        return;
+    }
+
     Studio.selectedDestination = destEdgeId;
 
     // Place Red Destination Marker
@@ -375,34 +406,59 @@ async function selectDestination(destEdgeId, latlng) {
     Studio.destinationMarker.bindPopup(destPopup).openPopup();
 
     // Check if OD pair already exists
-    let existing = Studio.odPairs.find(od => od.origin === Studio.selectedOrigin && od.destination === destEdgeId);
+    let existing = Studio.odPairs.find(od => od.origin === origin && od.destination === destEdgeId);
 
     if (existing) {
         Studio.pendingNewOD = null;
         Studio.selectedOD = existing;
-        highlightODRoute(existing.origin, existing.destination);
+        existing.path = routeData.path_edges;
+        drawRoutePolyline(routeData.coordinates);
         showODDetailCard(existing, false);
         scrollSidebarToOD(existing.id);
-        updateFloatingHelper(`Selected existing OD: <code>${existing.origin} &rarr; ${existing.destination}</code> (${existing.vehs_per_hour} veh/h)`);
+        updateFloatingHelper(`Selected existing OD: <code>${origin} &rarr; ${destEdgeId}</code> (${existing.vehs_per_hour} veh/h)`);
     } else {
         // Pending New OD: determine vehicle volume on right sidebar first before confirming
         const defaultVehs = 60; // 1 veh/min default
         Studio.selectedOD = null;
         Studio.pendingNewOD = {
-            origin: Studio.selectedOrigin,
+            origin: origin,
             destination: destEdgeId,
             vehs_per_hour: defaultVehs,
             vehs_per_min: 1.0,
             base_vehs_per_hour: defaultVehs,
+            path: routeData.path_edges,
         };
-        highlightODRoute(Studio.selectedOrigin, destEdgeId);
+        drawRoutePolyline(routeData.coordinates);
         showODDetailCard(Studio.pendingNewOD, true);
-        updateFloatingHelper(`New OD route: <code>${Studio.selectedOrigin} &rarr; ${destEdgeId}</code>. Set flow volume and click <strong>"Add OD Pair"</strong> to create.`);
+        const distKm = routeData.distance_m ? (routeData.distance_m / 1000).toFixed(2) + ' km' : '';
+        updateFloatingHelper(`New OD route: <code>${origin} &rarr; ${destEdgeId}</code> (${distKm}). Set flow volume and click <strong>"Add OD Pair"</strong> to create.`);
+    }
+}
+
+function drawRoutePolyline(coordinates) {
+    if (Studio.selectedRouteLayer) {
+        Studio.map.removeLayer(Studio.selectedRouteLayer);
+        Studio.selectedRouteLayer = null;
+    }
+    if (coordinates && coordinates.length > 0) {
+        const latlngs = coordinates.map(c => [c[1], c[0]]);
+        Studio.selectedRouteLayer = L.polyline(latlngs, {
+            color: '#facc15',
+            weight: 6,
+            opacity: 0.95,
+            lineCap: 'round',
+        }).addTo(Studio.map);
+        Studio.map.flyToBounds(Studio.selectedRouteLayer.getBounds(), { padding: [60, 60], maxZoom: 16 });
     }
 }
 
 function saveNewOD() {
     if (!Studio.pendingNewOD) return;
+    if (!Studio.pendingNewOD.path || Studio.pendingNewOD.path.length === 0) {
+        alert('Cannot create OD pair: No valid route exists between this origin and destination.');
+        clearSelection();
+        return;
+    }
     const flowInput = Math.max(0, parseInt(document.getElementById('detail-flow-h').value) || 0);
     const newOD = {
         id: `od_custom_${Date.now()}`,
@@ -412,7 +468,7 @@ function saveNewOD() {
         vehs_per_min: parseFloat((flowInput / 60.0).toFixed(2)),
         base_vehs_per_hour: flowInput,
         trips_in_window: Math.max(1, Math.round(flowInput * ((Studio.durationMinutes || 60) / 60.0))),
-        path: Studio.pendingNewOD.path || [Studio.pendingNewOD.origin, Studio.pendingNewOD.destination],
+        path: Studio.pendingNewOD.path,
     };
 
     Studio.odPairs.unshift(newOD); // Add to top
@@ -428,26 +484,14 @@ function saveNewOD() {
 }
 
 function discardNewOD() {
-    Studio.pendingNewOD = null;
-    if (Studio.destinationMarker) {
-        Studio.map.removeLayer(Studio.destinationMarker);
-        Studio.destinationMarker = null;
-    }
-    if (Studio.selectedRouteLayer) {
-        Studio.map.removeLayer(Studio.selectedRouteLayer);
-        Studio.selectedRouteLayer = null;
-    }
-    document.getElementById('od-detail-panel').classList.add('d-none');
-    if (Studio.selectedOrigin) {
-        updateFloatingHelper(`Discarded new OD. Origin still set to <code>${Studio.selectedOrigin}</code>. Click an existing destination or pick another road.`);
-    } else {
-        updateFloatingHelper('Click any road to select an Origin link.');
-    }
+    // Discard entire selection including origin and destination markers
+    clearSelection();
 }
 
 async function highlightODRoute(origin, destination) {
     if (Studio.selectedRouteLayer) {
         Studio.map.removeLayer(Studio.selectedRouteLayer);
+        Studio.selectedRouteLayer = null;
     }
 
     try {
@@ -469,16 +513,9 @@ async function highlightODRoute(origin, destination) {
             if (Studio.selectedOD) {
                 Studio.selectedOD.path = data.path_edges;
             }
-            const latlngs = data.coordinates.map(c => [c[1], c[0]]);
-            Studio.selectedRouteLayer = L.polyline(latlngs, {
-                color: '#facc15',
-                weight: 6,
-                opacity: 0.95,
-                lineCap: 'round',
-            }).addTo(Studio.map);
-
-            // Fit bounds smoothly
-            Studio.map.flyToBounds(Studio.selectedRouteLayer.getBounds(), { padding: [60, 60], maxZoom: 16 });
+            drawRoutePolyline(data.coordinates);
+        } else {
+            updateFloatingHelper(`<span class="text-danger fw-semibold">⚠️ No routable path found between <code>${origin} &rarr; ${destination}</code></span>`);
         }
     } catch (err) {
         console.error('Error fetching route:', err);
@@ -618,6 +655,20 @@ async function loadSelectedSource() {
         Studio.multiplier = 1.0;
         document.getElementById('multiplier-slider').value = 1.0;
         document.getElementById('multiplier-val-display').textContent = '1.00×';
+
+        // Discard any SUMO test results, heatmap, and telemetry from previous scenario
+        Studio.edgeCongestion = {};
+        Studio.lastTestStats = null;
+        const simCard = document.getElementById('sim-results-card');
+        if (simCard) {
+            simCard.classList.add('d-none');
+        }
+        document.getElementById('stat-avg-speed').textContent = '- km/h';
+        document.getElementById('stat-completed-trips').textContent = '-';
+        document.getElementById('stat-teleports').textContent = '-';
+        document.getElementById('stat-teleports').className = 'fw-bold';
+        document.getElementById('multiplier-delta-preview').textContent = '';
+        setViewMode('flow');
 
         clearSelection();
         recalculateFlows();
@@ -923,6 +974,10 @@ function scrollSidebarToOD(odId) {
    ========================================================================== */
 async function testSimulation() {
     if (!Studio.currentSource) return;
+    if (!Studio.odPairs || Studio.odPairs.length === 0) {
+        alert('Cannot run SUMO test: No demand defined on this network. Please add or import OD pairs first.');
+        return;
+    }
     const btn = document.getElementById('btn-test-sim');
     const origHtml = btn.innerHTML;
     btn.disabled = true;

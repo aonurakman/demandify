@@ -550,6 +550,10 @@ def run_studio_test_simulation(
     Execute a rapid background SUMO simulation (using mesosim) to evaluate
     the current demand and produce an edge congestion heatmap.
     """
+    # Filter out any unroutable OD pairs to ensure valid simulation
+    mgr = StudioNetworkManager(network_file)
+    od_pairs = [od for od in od_pairs if mgr.find_shortest_path(str(od["origin"]), str(od["destination"]))]
+
     trips_df = generate_studio_trips_df(od_pairs, window_minutes=window_minutes)
     if trips_df.empty:
         return {
@@ -674,7 +678,10 @@ def save_studio_scenario(
     if src_meta.exists():
         shutil.copy2(src_meta, dest_net.with_suffix(".meta.json"))
 
-    # 2. Save demand.csv
+    # 2. Save demand.csv (filtering any unroutable ODs)
+    mgr = StudioNetworkManager(network_file)
+    od_pairs = [od for od in od_pairs if mgr.find_shortest_path(str(od["origin"]), str(od["destination"]))]
+
     trips_df = generate_studio_trips_df(od_pairs, window_minutes=window_minutes)
     dest_demand = data_dir / "demand.csv"
     trips_df.to_csv(dest_demand, index=False)
