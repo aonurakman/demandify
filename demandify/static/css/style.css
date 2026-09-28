@@ -417,8 +417,12 @@ body {
 }
 
 .navbar-logo {
-    max-height: 44px;
-    width: auto;
+    height: 38px !important;
+    max-height: 38px !important;
+    max-width: 160px !important;
+    width: auto !important;
+    object-fit: contain !important;
+    display: inline-block !important;
     transition: transform 0.2s ease;
 }
 

@@ -14,8 +14,8 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
     <!-- Demandify Styles -->
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="stylesheet" href="/static/css/studio.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version or '0.0.6' }}">
+    <link rel="stylesheet" href="/static/css/studio.css?v={{ version or '0.0.6' }}">
 </head>
 
 <body>
@@ -325,7 +325,7 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <!-- Studio JS -->
-    <script src="/static/js/studio.js"></script>
+    <script src="/static/js/studio.js?v={{ version or '0.0.6' }}"></script>
 
     <script>
         function setOSMPreset(name, west, south, east, north) {
