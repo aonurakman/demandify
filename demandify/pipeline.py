@@ -12,6 +12,7 @@ import shlex
 import pandas as pd
 import numpy as np
 import logging
+import math
 
 from demandify.utils.logger import current_run_id, remove_run_logging, setup_logging
 
@@ -1082,22 +1083,25 @@ class CalibrationPipeline:
         network = SUMONetwork(network_file)
         demand_gen = DemandGenerator(network, seed=self.seed)
 
-        # Calculate adaptive minimum trip distance
-        # Heuristic: 10% of the bounding box diagonal -
-        # To prevent picking origin/dest that are practically neighbors
-        w, s, e, n = self.bbox
-        # Very rough approximation of meters (lat/lon degrees to meters)
-        # Using 111km per degree lat, and ~75km per degree lon at 48N
-        dx = (e - w) * 75000.0
-        dy = (n - s) * 111000.0
-        diag = (dx * dx + dy * dy) ** 0.5
+        # Calculate scale-adaptive minimum trip distance based on network extent
+        boundary = (
+            network.get_network_boundary()
+            if hasattr(network, "get_network_boundary")
+            else None
+        )
+        if boundary is not None:
+            diag = math.hypot(boundary[2] - boundary[0], boundary[3] - boundary[1])
+        else:
+            w, s, e, n = self.bbox
+            dx = (e - w) * 75000.0
+            dy = (n - s) * 111000.0
+            diag = math.hypot(dx, dy)
 
-        # Adaptive min distance: max(200m, 10% of diagonal)
-        # But cap it at 1km for very large maps to avoid filtering too much
-        self.min_trip_distance = min(1000.0, max(200.0, diag * 0.10))
+        # Scale-adaptive: 20% of network diagonal (at least 50m to prevent zero-distance identical edges)
+        self.min_trip_distance = max(50.0, diag * 0.20)
 
         logger.debug(
-            f"Network diagonal ~{int(diag)}m. Using min_trip_distance={int(self.min_trip_distance)}m"
+            f"Network diagonal ~{int(diag)}m. Using scale-adaptive min_trip_distance={int(self.min_trip_distance)}m (20% of extent)"
         )
 
         observed_edge_ids = None

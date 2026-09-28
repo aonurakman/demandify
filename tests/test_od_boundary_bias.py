@@ -245,3 +245,31 @@ def test_select_od_pairs_coverage_is_deterministic(tmp_path):
 
     assert pairs1 == pairs2
 
+
+def test_select_od_pairs_scale_adaptive_distance(tmp_path):
+    import math
+
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+    gen = DemandGenerator(network, seed=42)
+
+    boundary = network.get_network_boundary()
+    assert boundary is not None
+    diag = math.hypot(boundary[2] - boundary[0], boundary[3] - boundary[1])
+    expected_adaptive_min = max(50.0, diag * 0.20)
+
+    # When min_trip_distance is None, it should adaptively use 20% of network diagonal
+    pairs = gen.select_od_pairs(
+        max_od_pairs=2,
+        min_trip_distance=None,
+        min_connection_paths=1,
+    )
+
+    assert len(pairs) == 2
+    for o, d in pairs:
+        ox, oy = network.get_edge_centroid(o)
+        dx, dy = network.get_edge_centroid(d)
+        dist = math.hypot(dx - ox, dy - oy)
+        assert dist >= expected_adaptive_min * 0.79  # within tolerance including relaxation if needed
+
+

@@ -20,6 +20,7 @@ from demandify.sumo.simulation import SUMOSimulation
 from demandify.sumo.departure_schedule import (
     sequential_departure_times,
     format_departure_time,
+    GOLDEN_RATIO_CONJUGATE,
 )
 from demandify.calibration.objective import EdgeSpeedObjective
 
@@ -156,13 +157,17 @@ def generate_demand_files(
     _ = seed
     
     # Generate trips
+    stagger = num_od > 1
     for od_idx, (origin, dest) in enumerate(od_pairs):
+        phase_offset = (((od_idx + 1) * GOLDEN_RATIO_CONJUGATE) % 1.0) if stagger else None
         for bin_idx, (start_time, end_time) in enumerate(departure_bins):
             # Ensure non-negative integer count
             count = int(max(0, round(counts[od_idx, bin_idx])))
             
             if count > 0:
-                departure_times = sequential_departure_times(start_time, end_time, count)
+                departure_times = sequential_departure_times(
+                    start_time, end_time, count, phase_offset=phase_offset
+                )
 
                 for dep_time in departure_times:
                     trips.append({

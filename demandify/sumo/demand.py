@@ -18,6 +18,7 @@ from demandify.sumo.network import SUMONetwork
 from demandify.sumo.departure_schedule import (
     sequential_departure_times,
     format_departure_time,
+    GOLDEN_RATIO_CONJUGATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ class DemandGenerator:
         self,
         max_od_pairs: int = 150,
         max_consecutive_failures: int = 10000,
-        min_trip_distance: float = 0.0,
+        min_trip_distance: Optional[float] = None,
         min_connection_paths: int = 1,
         num_workers: int = 1,
         observed_edge_ids: Optional[Iterable[Any]] = None,
@@ -228,7 +229,8 @@ class DemandGenerator:
         Args:
             max_od_pairs: Target number of OD pairs to create
             max_consecutive_failures: Max failures before giving up
-            min_trip_distance: Minimum Euclidean distance between origin and destination O/D
+            min_trip_distance: Minimum Euclidean distance between origin and destination O/D.
+                If None, adaptively computed as 20% of network Cartesian extent (min 50m).
             min_connection_paths: Minimum number of distinct simple routes required
                 between origin and destination for the pair to be eligible. Use 1
                 for reachability-only behavior.
@@ -295,9 +297,18 @@ class DemandGenerator:
             self.K_PATH_SEARCH_TIMEOUT_SECONDS,
         )
 
-        current_min_dist = min_trip_distance
+        if min_trip_distance is None:
+            boundary = self.network.get_network_boundary()
+            if boundary is not None:
+                diag = math.hypot(boundary[2] - boundary[0], boundary[3] - boundary[1])
+                current_min_dist = max(50.0, diag * 0.20)
+            else:
+                current_min_dist = 0.0
+        else:
+            current_min_dist = max(0.0, float(min_trip_distance))
+
         logger.debug(
-            f"Generating {target_sample_count} OD pairs (target_final={max_od_pairs}, min_dist={int(min_trip_distance)}m)..."
+            f"Generating {target_sample_count} OD pairs (target_final={max_od_pairs}, min_dist={int(current_min_dist)}m)..."
         )
 
         pool = None
@@ -1059,13 +1070,17 @@ class DemandGenerator:
         trips = []
         trip_id = 0
         
+        stagger = num_od > 1
         for od_idx, (origin, dest) in enumerate(od_pairs):
+            phase_offset = (((od_idx + 1) * GOLDEN_RATIO_CONJUGATE) % 1.0) if stagger else None
             for bin_idx, (start_time, end_time) in enumerate(departure_bins):
                 count = int(max(0, round(counts[od_idx, bin_idx])))
                 
                 # Generate individual departure times within the bin
                 if count > 0:
-                    departure_times = sequential_departure_times(start_time, end_time, count)
+                    departure_times = sequential_departure_times(
+                        start_time, end_time, count, phase_offset=phase_offset
+                    )
                     
                     for dep_time in departure_times:
                         trips.append({
