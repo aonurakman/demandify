@@ -36,7 +36,7 @@ function initMap() {
             circlemarker: false,
             rectangle: {
                 shapeOptions: {
-                    color: "#2563eb",
+                    color: "#ea580c",
                     weight: 2
                 }
             }
@@ -335,7 +335,7 @@ function applyBbox(bbox, fitMap) {
 
     const bounds = [[south, west], [north, east]];
     drawnItems.clearLayers();
-    const rect = L.rectangle(bounds, { color: "#2563eb", weight: 2 });
+    const rect = L.rectangle(bounds, { color: "#ea580c", weight: 2 });
     drawnItems.addLayer(rect);
     if (fitMap) {
         map.fitBounds(bounds);

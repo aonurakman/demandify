@@ -67,6 +67,10 @@
     z-index: 1;
 }
 
+#studio-map .leaflet-interactive {
+    cursor: pointer !important;
+}
+
 /* Map Overlays */
 .map-floating-panel {
     position: absolute;
@@ -117,7 +121,7 @@
 }
 
 .legend-bar.flow {
-    background: linear-gradient(to right, #94a3b8, #3b82f6, #8b5cf6, #ef4444);
+    background: linear-gradient(to right, #475569, #fbbf24, #f59e0b, #f97316, #ea580c, #9a3412);
 }
 
 .legend-bar.congestion {
@@ -167,14 +171,14 @@
 }
 
 .od-card:hover {
-    border-color: #93c5fd;
-    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+    border-color: #fdba74;
+    box-shadow: 0 2px 8px rgba(234, 88, 12, 0.12);
 }
 
 .od-card.selected {
-    border-color: #2563eb;
-    background: #eff6ff;
-    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+    border-color: #ea580c;
+    background: #fff7ed;
+    box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.22);
 }
 
 .od-flow-input {
@@ -266,7 +270,7 @@
 .sim-results-card .metric-val {
     font-size: 1.25rem;
     font-weight: 700;
-    color: #38bdf8;
+    color: #fbbf24;
 }
 
 /* Snapping Pulse Animation */

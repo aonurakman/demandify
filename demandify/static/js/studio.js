@@ -40,7 +40,6 @@ document.addEventListener('DOMContentLoaded', () => {
 function initMap() {
     Studio.map = L.map('studio-map', {
         zoomControl: true,
-        preferCanvas: true,
     }).setView([50.0647, 19.9450], 13); // Default view
 
     // Standard OpenStreetMap tiles (100% free, no API key required)
@@ -50,15 +49,84 @@ function initMap() {
     }).addTo(Studio.map);
 
     Studio.destinationsGroup = L.layerGroup().addTo(Studio.map);
+
+    // Map-level click snap: makes road link picking effortless by snapping to the closest road
+    // within 28 screen pixels even if the user does not click precisely on the thin line
+    Studio.map.on('click', (e) => {
+        const closest = findClosestEdge(e.latlng, 28);
+        if (closest) {
+            handleEdgeClick(closest.id, closest.nearestLatLng || e.latlng);
+        }
+    });
 }
 
 function getFlowColor(flow) {
-    if (!flow || flow <= 0) return '#475569'; // Crisp dark slate for 0 flow on network edges
-    if (flow < 50) return '#3b82f6';         // blue
-    if (flow < 150) return '#6366f1';        // indigo
-    if (flow < 300) return '#a855f7';        // purple
-    if (flow < 600) return '#ec4899';        // pink
-    return '#ef4444';                        // red
+    if (!flow || flow <= 0) return '#475569'; // Neutral slate for inactive network edges
+    if (flow < 50) return '#fde047';         // Light golden yellow
+    if (flow < 150) return '#fbbf24';        // Warm golden amber
+    if (flow < 300) return '#f97316';        // Vibrant orange
+    if (flow < 600) return '#ea580c';        // Demandify core orange
+    return '#c2410c';                        // Deep dark orange / rust
+}
+
+/**
+ * Finds the closest road edge to a clicked point in screen-pixel coordinates.
+ * Returns { id, nearestLatLng, distance } or null if none within maxPixelDist.
+ */
+function findClosestEdge(latlng, maxPixelDist = 28) {
+    if (!Studio.networkData || !Studio.networkData.features || !Studio.networkData.features.length) {
+        return null;
+    }
+    const clickPt = Studio.map.latLngToContainerPoint(latlng);
+    let best = null;
+    let minDistance = maxPixelDist;
+
+    for (let f = 0; f < Studio.networkData.features.length; f++) {
+        const feature = Studio.networkData.features[f];
+        if (!feature.geometry || feature.geometry.type !== 'LineString') continue;
+        const coords = feature.geometry.coordinates;
+        if (!coords || coords.length < 2) continue;
+
+        for (let i = 0; i < coords.length - 1; i++) {
+            // Leaflet coordinates are [lon, lat]
+            const p1 = Studio.map.latLngToContainerPoint([coords[i][1], coords[i][0]]);
+            const p2 = Studio.map.latLngToContainerPoint([coords[i + 1][1], coords[i + 1][0]]);
+
+            // Fast bounding box check in pixels
+            const minX = Math.min(p1.x, p2.x) - minDistance;
+            const maxX = Math.max(p1.x, p2.x) + minDistance;
+            const minY = Math.min(p1.y, p2.y) - minDistance;
+            const maxY = Math.max(p1.y, p2.y) + minDistance;
+            if (clickPt.x < minX || clickPt.x > maxX || clickPt.y < minY || clickPt.y > maxY) {
+                continue;
+            }
+
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const lenSq = dx * dx + dy * dy;
+
+            let t = 0;
+            if (lenSq > 0) {
+                t = ((clickPt.x - p1.x) * dx + (clickPt.y - p1.y) * dy) / lenSq;
+                t = Math.max(0, Math.min(1, t));
+            }
+
+            const projX = p1.x + t * dx;
+            const projY = p1.y + t * dy;
+            const dist = Math.hypot(clickPt.x - projX, clickPt.y - projY);
+
+            if (dist < minDistance) {
+                minDistance = dist;
+                const nearestLatLng = Studio.map.containerPointToLatLng(L.point(projX, projY));
+                best = {
+                    id: feature.properties.id,
+                    nearestLatLng: nearestLatLng,
+                    distance: dist
+                };
+            }
+        }
+    }
+    return best;
 }
 
 function getCongestionColor(ratio) {
@@ -90,11 +158,11 @@ function getEdgeStyle(feature) {
     }
 
     const flow = Studio.edgeFlows[edgeId] || 0;
-    const weight = flow > 0 ? Math.min(8.5, Math.max(3.0, Math.log10(flow + 1) * 2.4)) : 2.2;
+    const weight = flow > 0 ? Math.min(8.5, Math.max(3.2, Math.log10(flow + 1) * 2.5)) : 2.8;
     return {
         color: getFlowColor(flow),
         weight: weight,
-        opacity: flow > 0 ? 0.90 : 0.65,
+        opacity: flow > 0 ? 0.90 : 0.70,
     };
 }
 
@@ -172,6 +240,24 @@ function renderNetworkEdges() {
 
             layer.bindTooltip(tooltipContent, { sticky: true, className: 'studio-tooltip' });
 
+            // Dynamic hover feedback: highlights and expands road stroke on hover
+            layer.on('mouseover', () => {
+                const currentWeight = (layer.options && layer.options.weight) || 2.8;
+                layer.setStyle({
+                    weight: currentWeight + 3.5,
+                    opacity: 1.0,
+                });
+                if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+                    layer.bringToFront();
+                }
+            });
+
+            layer.on('mouseout', () => {
+                if (Studio.edgesLayer) {
+                    Studio.edgesLayer.resetStyle(layer);
+                }
+            });
+
             layer.on('click', (e) => {
                 L.DomEvent.stopPropagation(e);
                 handleEdgeClick(props.id, e.latlng);
@@ -237,22 +323,22 @@ async function selectOrigin(edgeId, latlng) {
         });
         const data = await res.json();
 
-        // Highlight existing destination branches with cyan dotted lines
+        // Highlight existing destination branches with golden amber dotted lines
         data.existing_destinations.forEach(item => {
             if (item.coordinates && item.coordinates.length > 0) {
                 const latlngs = item.coordinates.map(c => [c[1], c[0]]);
                 const poly = L.polyline(latlngs, {
-                    color: '#06b6d4',
-                    weight: 3,
+                    color: '#f59e0b',
+                    weight: 3.5,
                     dashArray: '6, 6',
-                    opacity: 0.75,
+                    opacity: 0.85,
                 }).addTo(Studio.destinationsGroup);
 
                 const lastCoord = latlngs[latlngs.length - 1];
                 const marker = L.circleMarker(lastCoord, {
-                    radius: 5,
+                    radius: 5.5,
                     color: '#ffffff',
-                    fillColor: '#06b6d4',
+                    fillColor: '#f59e0b',
                     fillOpacity: 1,
                     weight: 2
                 }).addTo(Studio.destinationsGroup);
