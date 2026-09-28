@@ -1,6 +1,6 @@
 {
   "dataset_name": "eskisehir_v1",
-  "created_at": "2026-03-05T10:00:35.723444",
+  "created_at": "2026-09-28T16:12:52.255827",
   "bbox": {
     "west": 30.5011,
     "south": 39.7613,
@@ -16,33 +16,33 @@
     "tile_zoom": 15
   },
   "stats": {
-    "fetched_segments": 91,
-    "matched_edges": 91,
+    "fetched_segments": 108,
+    "matched_edges": 108,
     "total_network_edges": 1588
   },
   "quality": {
-    "score": 98,
+    "score": 100,
     "label": "excellent",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (98/100): 91 traffic segments map-matched to graph edges from 91 fetched segments (map-match rate 100.0%).",
+    "summary": "EXCELLENT quality (100/100): 108 traffic segments map-matched to graph edges from 108 fetched segments (map-match rate 100.0%).",
     "warnings": [],
     "components": {
       "availability": 35,
       "match_rate": 25,
-      "confidence": 13,
+      "confidence": 15,
       "density": 15,
       "network_coverage": 10
     },
     "metrics": {
-      "fetched_segments": 91,
-      "matched_edges": 91,
+      "fetched_segments": 108,
+      "matched_edges": 108,
       "total_network_edges": 1588,
       "match_rate": 1.0,
-      "observed_to_total_ratio": 0.057304785894206546,
+      "observed_to_total_ratio": 0.06801007556675064,
       "area_km2": 2.353624115395124,
-      "edges_per_km2": 38.663777875475674,
+      "edges_per_km2": 45.88668143463047,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.02197802197802198
+      "low_confidence_share": 0.009259259259259259
     }
   },
   "files": {
