@@ -98,7 +98,7 @@ class CalibrationPipeline:
         ga_early_stopping: bool = False,
         max_od_pairs: int = 1000,
         min_connection_paths: int = 1,
-        bin_minutes: float = 1.0,
+        bin_minutes: Optional[float] = None,
         initial_population: int = 1000,
         offline_dataset: Optional[str] = None,
         save_offline_dataset: bool = False,
@@ -194,7 +194,11 @@ class CalibrationPipeline:
         self.min_connection_paths = int(min_connection_paths)
         if self.min_connection_paths < 1:
             raise ValueError("min_connection_paths must be at least 1")
-        self.bin_minutes = bin_minutes
+        self.bin_minutes = (
+            float(bin_minutes)
+            if bin_minutes is not None
+            else float(self.warmup_minutes + self.window_minutes)
+        )
         self.initial_population = initial_population
 
         if not (0.0 < effective_capacity_factor <= 1.0):
@@ -1122,30 +1126,17 @@ class CalibrationPipeline:
             observed_edge_ids=observed_edge_ids,
         )
 
-        # Create departure bins - cover ENTIRE duration (warmup + window)
-        # We start from t=0 to populate the network during warmup
+        # Single departure bin covering the ENTIRE duration (warmup + window)
+        # Vehicles depart from t=0 across the full simulation window.
         warmup_sec = self.warmup_minutes * 60
         window_sec = self.window_minutes * 60
         total_duration = warmup_sec + window_sec
+        self.bin_minutes = total_duration / 60.0
 
-        # Calculate bins based on bin_minutes (supporting floats)
-        target_bin_duration = int(self.bin_minutes * 60)
-        if target_bin_duration < 1:
-            target_bin_duration = 1
-
-        num_bins = max(1, int(round(total_duration / target_bin_duration)))
-
-        departure_bins = []
-        for i in range(num_bins):
-            start = i * target_bin_duration
-            end = i * target_bin_duration + target_bin_duration
-            # Adjust last bin to match exactly
-            if i == num_bins - 1:
-                end = total_duration
-            departure_bins.append((start, end))
+        departure_bins = [(0, total_duration)]
 
         logger.debug(
-            f"Created {len(od_pairs)} OD pairs and {len(departure_bins)} departure bins (duration={target_bin_duration}s)"
+            f"Created {len(od_pairs)} OD pairs with single departure bin (duration={total_duration}s)"
         )
 
         return demand_gen, od_pairs, departure_bins
@@ -1660,8 +1651,6 @@ class CalibrationPipeline:
             str(self.max_od_pairs),
             "--min-connection-paths",
             str(self.min_connection_paths),
-            "--bin-size",
-            self._format_cli_value(self.bin_minutes),
             "--initial-population",
             str(self.initial_population),
             ]

@@ -266,18 +266,6 @@
                                             <input type="number" class="form-control" id="min_connection_paths"
                                                 name="min_connection_paths" value="{{ run_defaults.min_connection_paths }}" min="1" step="1">
                                         </div>
-                                        <div class="col-12">
-                                            <label for="bin_minutes" class="form-label">
-                                                Bin Duration: <span id="bin-val">{{ run_defaults.bin_minutes }}</span> min
-                                                <span class="info-icon" data-bs-toggle="tooltip"
-                                                    title="Duration of each demand time slot. Smaller means finer detail but harder calibration. Larger is coarser but usually easier to stabilize.">
-                                                    <i class="bi bi-info-circle"></i>
-                                                </span>
-                                            </label>
-                                            <input type="range" class="form-range emphasized-range" id="bin_minutes" name="bin_minutes"
-                                                min="1" max="{{ run_defaults.window_minutes }}" value="{{ run_defaults.bin_minutes }}" step="1"
-                                                oninput="document.getElementById('bin-val').textContent = this.value">
-                                        </div>
                                     </div>
                                 </div>
 

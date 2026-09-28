@@ -201,7 +201,6 @@ async def cmd_run(args):
                 ga_early_stopping=getattr(args, "ga_early_stopping", False),
                 max_od_pairs=args.max_ods,
                 min_connection_paths=args.min_connection_paths,
-                bin_minutes=args.bin_size,
                 initial_population=args.initial_population,
                 effective_capacity_factor=args.capacity_factor,
                 mesosim=getattr(args, "mesosim", False),
@@ -572,12 +571,6 @@ def build_parser() -> argparse.ArgumentParser:
             "alternatives, for example in route-choice benchmarking or fixed-action-space "
             "experiments such as URB/RouteRL."
         ),
-    )
-    run_parser.add_argument(
-        "--bin-size",
-        type=float,
-        default=run_defaults["bin_minutes"],
-        help=f"Time bin size in minutes (default: {run_defaults['bin_minutes']})",
     )
     run_parser.add_argument(
         "--initial-population",

@@ -428,19 +428,6 @@ function initEventListeners() {
 
     // Window duration change handler
     const windowSelect = document.getElementById('window_minutes');
-    if (windowSelect) {
-        windowSelect.addEventListener('change', function () {
-            const maxVal = parseInt(this.value);
-            const binInput = document.getElementById('bin_minutes');
-            if (binInput) {
-                binInput.max = maxVal;
-                if (parseInt(binInput.value) > maxVal) {
-                    binInput.value = maxVal;
-                    document.getElementById('bin-val').textContent = maxVal;
-                }
-            }
-        });
-    }
 
     const advancedParams = document.getElementById('advanced-params');
     const advancedToggle = document.getElementById('advanced-toggle');

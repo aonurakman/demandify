@@ -36,7 +36,6 @@ def _build_run_args(**overrides):
         "ga_deterministic_crowding": True,
         "max_ods": 50,
         "min_connection_paths": 1,
-        "bin_size": 5,
         "initial_population": 1000,
         "capacity_factor": 1.0,
         "mesosim": False,

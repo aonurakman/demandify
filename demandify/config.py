@@ -29,7 +29,6 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "initial_population": 1000,
     "max_od_pairs": 50,
     "min_connection_paths": 1,
-    "bin_minutes": 5,
     "ga_mutation_sigma": 20,
     "ga_mutation_indpb": 0.3,
     "ga_immigrant_rate": 0.03,
@@ -130,7 +129,6 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
             )
         ),
     )
-    merged["bin_minutes"] = int(merged.get("bin_minutes", _RUN_DEFAULTS_FALLBACK["bin_minutes"]))
     merged["ga_mutation_sigma"] = int(
         merged.get("ga_mutation_sigma", _RUN_DEFAULTS_FALLBACK["ga_mutation_sigma"])
     )

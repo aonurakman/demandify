@@ -63,7 +63,6 @@ async def _run_tiny_import_calibration(dataset_id: str, output_dir: Path, run_id
         ga_stagnation_boost=1.2,
         ga_checkpoint_interval=9999,  # keep checkpointing out of this tiny test
         max_od_pairs=10,
-        bin_minutes=3,
         initial_population=50,
         output_dir=output_dir,
         run_id=run_id,

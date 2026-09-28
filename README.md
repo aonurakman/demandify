@@ -180,7 +180,6 @@ Bundled snapshot previews:
 | `--indpb` | Float | 0.3 | Mutation probability (per gene) |
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
 | `--min-connection-paths` | Int | 1 | Minimum number of distinct simple routes required for an OD pair to be eligible during sampling |
-| `--bin-size` | Float | 5 | Time bin size in minutes |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
 
 \* `bbox` is required in create mode. In import mode, use `--import` and do not pass `bbox`.
