@@ -168,3 +168,35 @@ def test_studio_save_scenario(client, tmp_path):
     # Clean up test scenario folder
     import shutil
     shutil.rmtree(scenario_path, ignore_errors=True)
+
+
+def test_studio_test_simulation_endpoint(client):
+    """Verify background test simulation endpoint returns stats and edge congestion."""
+    net_file, _ = resolve_source_paths("dataset", "krakow_v1")
+    mgr = StudioNetworkManager(net_file)
+    routable = mgr.get_routable_edges()
+    orig = routable[0]
+    dest = routable[1]
+
+    od_pairs = [
+        {"id": "od_sim_test", "origin": orig, "destination": dest, "vehs_per_hour": 60, "vehs_per_min": 1.0}
+    ]
+
+    res = client.post(
+        "/api/studio/test-simulation",
+        json={
+            "source_type": "dataset",
+            "source_id": "krakow_v1",
+            "od_pairs": od_pairs,
+            "window_minutes": 5,
+            "mesosim": True,
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert "stats" in data
+    assert "edge_congestion" in data
+    assert data["stats"]["total_vehicles_inserted"] > 0
+    assert "teleports" in data["stats"]
+    assert "mean_edge_speed_kmh" in data["stats"]

@@ -581,7 +581,7 @@ def run_studio_test_simulation(
             mesosim=mesosim,
         )
 
-        edge_speeds, trip_stats, sim_stats = sim.run()
+        edge_speeds, trip_stats = sim.run()
 
         # Build congestion map
         net = SUMONetwork(network_file)
@@ -599,7 +599,7 @@ def run_studio_test_simulation(
 
         total_vehicles = len(trips_df)
         completed = trip_stats.get("completed_trips", 0)
-        teleports = sim_stats.get("teleports", 0)
+        teleports = trip_stats.get("teleports", 0)
         avg_speed = 0.0
         if edge_speeds:
             avg_speed = round(sum(edge_speeds.values()) / len(edge_speeds), 1)

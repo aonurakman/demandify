@@ -417,9 +417,9 @@ body {
 }
 
 .navbar-logo {
-    height: 38px !important;
-    max-height: 38px !important;
-    max-width: 160px !important;
+    height: 48px !important;
+    max-height: 48px !important;
+    max-width: 260px !important;
     width: auto !important;
     object-fit: contain !important;
     display: inline-block !important;
@@ -458,20 +458,14 @@ body {
 }
 
 .nav-pills-demandify .nav-link:hover {
-    color: #0f172a;
-    background: rgba(255, 255, 255, 0.8);
+    color: #ea580c;
+    background: rgba(255, 255, 255, 0.85);
 }
 
 .nav-pills-demandify .nav-link.active {
     color: #ffffff !important;
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
-    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
-}
-
-.nav-pills-demandify .nav-link.active .badge {
-    background: rgba(255, 255, 255, 0.25) !important;
-    color: #ffffff !important;
-    border-color: rgba(255, 255, 255, 0.4) !important;
+    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%) !important;
+    box-shadow: 0 4px 14px rgba(234, 88, 12, 0.35) !important;
 }
 
 @media (max-width: 991.98px) {

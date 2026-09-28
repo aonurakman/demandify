@@ -22,6 +22,9 @@ const Studio = {
     destinationsGroup: null,
     originMarker: null,
     destinationMarker: null,
+    spotlightMask: null,
+    networkBoundaryRect: null,
+    spotlightEnabled: true,
 };
 
 // Initialize Studio when DOM loads
@@ -50,7 +53,7 @@ function initMap() {
 }
 
 function getFlowColor(flow) {
-    if (!flow || flow <= 0) return '#cbd5e1'; // light slate for 0 flow
+    if (!flow || flow <= 0) return '#475569'; // Crisp dark slate for 0 flow on network edges
     if (flow < 50) return '#3b82f6';         // blue
     if (flow < 150) return '#6366f1';        // indigo
     if (flow < 300) return '#a855f7';        // purple
@@ -68,22 +71,80 @@ function getCongestionColor(ratio) {
 
 function getEdgeStyle(feature) {
     const edgeId = feature.properties.id;
-    if (Studio.activeViewMode === 'congestion' && Studio.edgeCongestion[edgeId]) {
-        const ratio = Studio.edgeCongestion[edgeId].ratio;
-        return {
-            color: getCongestionColor(ratio),
-            weight: 4,
-            opacity: 0.88,
-        };
+    if (Studio.activeViewMode === 'congestion') {
+        const cong = Studio.edgeCongestion[edgeId];
+        if (cong) {
+            const ratio = cong.ratio;
+            return {
+                color: getCongestionColor(ratio),
+                weight: 5.5,
+                opacity: 0.95,
+            };
+        } else {
+            return {
+                color: '#94a3b8',
+                weight: 1.5,
+                opacity: 0.30,
+            };
+        }
     }
 
     const flow = Studio.edgeFlows[edgeId] || 0;
-    const weight = flow > 0 ? Math.min(8, Math.max(2.5, Math.log10(flow + 1) * 2.2)) : 1.5;
+    const weight = flow > 0 ? Math.min(8.5, Math.max(3.0, Math.log10(flow + 1) * 2.4)) : 2.2;
     return {
         color: getFlowColor(flow),
         weight: weight,
-        opacity: flow > 0 ? 0.85 : 0.4,
+        opacity: flow > 0 ? 0.90 : 0.65,
     };
+}
+
+function renderBoundarySpotlight() {
+    if (Studio.spotlightMask) {
+        Studio.map.removeLayer(Studio.spotlightMask);
+        Studio.spotlightMask = null;
+    }
+    if (Studio.networkBoundaryRect) {
+        Studio.map.removeLayer(Studio.networkBoundaryRect);
+        Studio.networkBoundaryRect = null;
+    }
+
+    if (!Studio.networkData || !Studio.networkData.bounds || !Studio.spotlightEnabled) return;
+
+    const bounds = Studio.networkData.bounds;
+    const south = bounds[0][0];
+    const west = bounds[0][1];
+    const north = bounds[1][0];
+    const east = bounds[1][1];
+
+    // Polygon mask with hole over the network area (softly dims the outside map)
+    const worldRing = [
+        [-90, -180],
+        [-90, 180],
+        [90, 180],
+        [90, -180]
+    ];
+    const hole = [
+        [south, west],
+        [south, east],
+        [north, east],
+        [north, west]
+    ];
+
+    Studio.spotlightMask = L.polygon([worldRing, hole], {
+        stroke: false,
+        fillColor: '#0f172a',
+        fillOpacity: 0.28,
+        interactive: false,
+    }).addTo(Studio.map);
+
+    // Subtle dashed orange boundary rectangle around the simulation area
+    Studio.networkBoundaryRect = L.rectangle(bounds, {
+        color: '#ea580c',
+        weight: 2,
+        dashArray: '8, 6',
+        fill: false,
+        interactive: false,
+    }).addTo(Studio.map);
 }
 
 function renderNetworkEdges() {
@@ -118,8 +179,10 @@ function renderNetworkEdges() {
         }
     }).addTo(Studio.map);
 
+    renderBoundarySpotlight();
+
     if (Studio.networkData.bounds) {
-        Studio.map.fitBounds(Studio.networkData.bounds, { padding: [30, 30] });
+        Studio.map.fitBounds(Studio.networkData.bounds, { padding: [35, 35] });
     }
 }
 
@@ -858,6 +921,16 @@ function setupEventListeners() {
     document.querySelectorAll('.btn-view-mode').forEach(btn => {
         btn.addEventListener('click', () => setViewMode(btn.dataset.mode));
     });
+
+    // Spotlight Area toggle
+    const btnSpotlight = document.getElementById('btn-toggle-spotlight');
+    if (btnSpotlight) {
+        btnSpotlight.addEventListener('click', () => {
+            Studio.spotlightEnabled = !Studio.spotlightEnabled;
+            btnSpotlight.classList.toggle('active', Studio.spotlightEnabled);
+            renderBoundarySpotlight();
+        });
+    }
 
     // Test Simulation button
     document.getElementById('btn-test-sim').addEventListener('click', testSimulation);
