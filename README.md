@@ -40,7 +40,6 @@ Three integrated web tools are accessible via the top navigation bar:
 - ✅ **Data quality labeling**: Feasibility check reports data quality scores and potential risk flags before running
 
 ![GUI Screenshot](https://github.com/aonurakman/demandify/blob/main/static/gui.png?raw=true)
-![GUI Screenshot](static/gui.png)
 
 ## Quickstart
 
