@@ -69,6 +69,10 @@ def test_api_form_defaults_match_run_defaults():
     assert _form_default(start_sig, "min_connection_paths") == defaults["min_connection_paths"]
     assert _form_default(start_sig, "ga_checkpoint_interval") == defaults["ga_checkpoint_interval"]
     assert _form_default(start_sig, "ga_early_stopping") == defaults["ga_early_stopping"]
+    assert _form_default(start_sig, "effective_capacity_factor") == defaults["effective_capacity_factor"]
+    assert _form_default(start_sig, "mesosim") == defaults["mesosim"]
+    assert _form_default(start_sig, "topology_guidance") == defaults["topology_guidance"]
+    assert _form_default(start_sig, "sensor_coverage_od") == defaults["sensor_coverage_od"]
 
 
 def test_index_template_uses_shared_defaults():

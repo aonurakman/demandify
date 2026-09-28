@@ -181,6 +181,10 @@ Bundled snapshot previews:
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
 | `--min-connection-paths` | Int | 1 | Minimum number of distinct simple routes required for an OD pair to be eligible during sampling |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
+| `--capacity-factor` | Float | 1.0 | Effective road-capacity factor (derating for mixed traffic friction, e.g. 0.85–0.90) |
+| `--mesosim` / `--no-mesosim` | Flag | on | Mesoscopic simulation during GA candidate evaluation (final run is microscopic) |
+| `--topology-guidance` / `--no-topology-guidance` | Flag | on | Use network topology and speed discrepancies to guide GA mutations |
+| `--sensor-coverage-od` / `--no-sensor-coverage-od` | Flag | on | Greedy set-cover during OD selection to maximize sensor edge coverage |
 
 \* `bbox` is required in create mode. In import mode, use `--import` and do not pass `bbox`.
 
@@ -204,6 +208,7 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | `--no-assortative-mating` | Flag | off | Disable assortative mating (dissimilar parent pairing, on by default) |
 | `--deterministic-crowding` | Flag | off | Explicitly enable deterministic crowding |
 | `--no-deterministic-crowding` | Flag | off | Disable deterministic crowding (diversity-preserving replacement, on by default) |
+| `--early-stopping` / `--no-early-stopping` | Flag | off | Stop calibration early if stagnation persists after mutation boost |
 
 All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable features via the corresponding `--no-*` flags or explicitly force-enable them with `--assortative-mating` / `--deterministic-crowding`.
 
@@ -215,8 +220,8 @@ demandify follows a multi-stage pipeline:
 2. **Preparation**:
    - `Create`: fetch traffic + OSM, build network, match edges
    - `Import`: load/copy network + observed traffic files from offline dataset
-3. **Initialize demand** - Select routable OD pairs (lane-permission aware) and time bins
-4. **Calibrate demand** - Run GA to optimize OD/bin vehicle counts against observed edge-speed error
+3. **Initialize demand** - Select routable OD pairs (lane-permission aware)
+4. **Calibrate demand** - Run GA to optimize per-OD vehicle insertion rates against observed edge-speed error
 5. **Export scenario** - Generate `demand.csv`, `trips.xml`, config, and report
 
 ### Advanced GA Dynamics
