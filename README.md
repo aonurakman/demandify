@@ -17,20 +17,27 @@ Pick a spot on the map and demandify will:
 3.  Use the Genetic Algorithm to figure out the demand pattern to match that traffic 🧬
 4. Produces a ready-to-run SUMO scenario in agent-level precision that allows you to test your urban routing policies, even for your CAVs! ([wink](https://github.com/COeXISTENCE-PROJECT/URB) [wink](https://github.com/COeXISTENCE-PROJECT/RouteRL)).
 
+Three integrated web tools are accessible via the top navigation bar:
+- 🚦 **Scenario Calibrator** (`/`): Calibrate realistic vehicle demand against live or offline traffic observations.
+- 💾 **Dataset Builder** (`/dataset-builder`): Prepare and bundle reusable offline traffic snapshots and networks.
+- 🛠️ **Demand Studio** (`/demand-studio`): Inspect, edit, scale, test, and design custom OD traffic scenarios interactively.
+
 ![Workflow](https://github.com/aonurakman/demandify/blob/main/static/schema.png?raw=true)
 
 ## Features
 
 - 🌍 **Real-world calibration**: Uses TomTom Traffic Flow API for live congestion data
 - 📦 **Offline calibration import**: Run from bundled/offline traffic+network snapshots
+- 🛠️ **Demand Studio**: Interactive visual editor to inspect, create, scale, and test traffic demand directly in your browser
+- 🧭 **Unified navigation**: Easily switch between Scenario Calibrator, Dataset Builder, and Demand Studio
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
 - 🧬 **Genetic algorithm**: Calibrates demand against observed congestion with intervalwise MAE scoring, MAE-elite Pareto selection, teleport filtering, immigrants, assortative mating, deterministic crowding, and adaptive mutation boost
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
-- 🖥️ **Clean web UI**: Leaflet map, real-time progress stepper, log console
-- ✅ **Data quality labeling**: Feasibility check now reports a quality score/label before calibration starts
+- 🖥️ **Clean web UI**: Modern dark theme, interactive Leaflet maps, live metrics, and real-time logs
+- ✅ **Data quality labeling**: Feasibility check reports data quality scores and potential risk flags before running
 
 ![GUI Screenshot](https://github.com/aonurakman/demandify/blob/main/static/gui.png?raw=true)
 
@@ -137,27 +144,7 @@ demandify run --import krakow_v1 --name krakow_remote
 
 > **Note:** By default, the CLI pauses after fetching/matching data and asks for confirmation, then asks whether to run another calibration. Pass `--non-interactive` to auto-approve and exit immediately after pipeline completion.
 
-### 7. Build Offline Dataset (Optional) 💾
-
-If you want a reusable prep bundle (for future no-key workflows), open:
-
-- [http://127.0.0.1:8000/dataset-builder](http://127.0.0.1:8000/dataset-builder)
-
-This dedicated page is separate from calibration runs. It executes preparation only (traffic snapshot + OSM + SUMO network + map matching) and stores files under:
-
-- `demandify_datasets/<dataset_name>/`
-
-Each dataset includes `data/traffic_data_raw.csv`, `data/observed_edges.csv`, `data/map.osm`, `sumo/network.net.xml`, and `dataset_meta.json`.
-
-`dataset_meta.json` now includes a computed data quality block (`score`, `label`, `recommendation`, and metrics) to help decide whether a dataset is strong enough for offline calibration.
-
-Bundled snapshot previews:
-
-| Den Haag (`den_haag_v1`) | Krakow (`krakow_v1`) | Eskisehir (`eskisehir_v1`) |
-|---|---|---|
-| ![Den Haag offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/den_haag_v1/plots/network.png?raw=true) | ![Krakow offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/krakow_v1/plots/network.png?raw=true) | ![Eskisehir offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/eskisehir_v1/plots/network.png?raw=true) |
-
-#### Parameters
+#### Calibration CLI Parameters
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -211,6 +198,72 @@ These parameters control diversity mechanisms and adaptive behavior in the genet
 | `--early-stopping` / `--no-early-stopping` | Flag | off | Stop calibration early if stagnation persists after mutation boost |
 
 All advanced dynamics are **enabled by default** with conservative values. For most use cases, the defaults work well. You can disable features via the corresponding `--no-*` flags or explicitly force-enable them with `--assortative-mating` / `--deterministic-crowding`.
+
+### 7. Build Offline Dataset (Optional) 💾
+
+If you want a reusable prep bundle (for future no-key workflows), open:
+
+- [http://127.0.0.1:8000/dataset-builder](http://127.0.0.1:8000/dataset-builder)
+
+This dedicated page is separate from calibration runs. It executes preparation only (traffic snapshot + OSM + SUMO network + map matching) and stores files under:
+
+- `demandify_datasets/<dataset_name>/`
+
+Each dataset includes `data/traffic_data_raw.csv`, `data/observed_edges.csv`, `data/map.osm`, `sumo/network.net.xml`, and `dataset_meta.json`.
+
+`dataset_meta.json` now includes a computed data quality block (`score`, `label`, `recommendation`, and metrics) to help decide whether a dataset is strong enough for offline calibration.
+
+Bundled snapshot previews:
+
+| Den Haag (`den_haag_v1`) | Krakow (`krakow_v1`) | Eskisehir (`eskisehir_v1`) |
+|---|---|---|
+| ![Den Haag offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/den_haag_v1/plots/network.png?raw=true) | ![Krakow offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/krakow_v1/plots/network.png?raw=true) | ![Eskisehir offline network](https://github.com/aonurakman/demandify/blob/main/demandify/offline_datasets/eskisehir_v1/plots/network.png?raw=true) |
+
+### 8. Demand Studio (Interactive Scenario Editor) 🛠️
+
+Want to inspect your trips, try "what-if" traffic experiments, or design a custom traffic scenario from scratch? **Demand Studio** provides an interactive visual workspace directly inside your browser:
+
+- [http://127.0.0.1:8000/demand-studio](http://127.0.0.1:8000/demand-studio) (or click **Studio** in the top navigation bar).
+
+<!-- PLACEHOLDER: Demand Studio Screenshot -->
+<!-- To user: Replace static/demand_studio.png with your screenshot from Demand Studio -->
+![Demand Studio Screenshot](https://github.com/aonurakman/demandify/blob/main/static/demand_studio.png?raw=true)
+
+#### What you can do:
+
+- 🔍 **Inspect and Edit Origin-Destination (OD) Pairs**:
+  - Load trips from any previous calibration run (`demandify_runs/`), offline dataset (`demandify_datasets/` or bundled cities), or saved scenario.
+  - Browse every OD pair in the sidebar, filter or search by road ID, and see the exact shortest path drawn on the map.
+  - Tweak vehicle flow rates directly or delete unwanted pairs with one click.
+
+- 🛣️ **Interactive Route & Pair Selection**:
+  - Click any road on the map to set it as an **Origin** (marked with a green circle).
+  - The map highlights all existing destinations linked to that origin, along with their routes.
+  - Click an existing destination to view and edit its volume, or click any unserved road to stage a brand-new OD pair.
+  - **Smart connectivity guard**: If two selected roads cannot connect (for example, due to one-way streets or separated ramps), demandify lets you know right away and prevents creating broken trips.
+
+- 📈 **Global Demand Multiplier**:
+  - Test lighter off-peak hours or heavy rush-hour conditions with a single slider.
+  - Scale total network demand from **0.1x** to **2.0x**.
+  - All OD pairs are smoothly adjusted to whole vehicle counts while keeping active routes alive.
+
+- 🚦 **Fast In-Browser SUMO Testing**:
+  - Click **"SUMO Test"** to run a quick simulation right in the browser (15, 30, or 60 minute test windows).
+  - Check live metrics on the sidebar:
+    - **Inserted vehicles**: total vehicles added to the network
+    - **Completion rate**: percentage of trips that reached their destination
+    - **Teleports**: count of jammed vehicles (lower is better!)
+    - **Average speed**: overall network speed in km/h
+  - Toggle between **Flow Bandwidth** (line thickness shows vehicle volumes) and **Congestion Heatmap** (green = free flow, orange/red = congested).
+
+- 🗺️ **Fetch Clean Networks from OpenStreetMap**:
+  - Want to build demand from scratch without needing a TomTom key?
+  - Select **"Fetch from OpenStreetMap"** in the scenario dropdown.
+  - Enter a bounding box and a name: demandify downloads the OSM map and builds a clean SUMO road network ready for you to place vehicles.
+
+- 💾 **Export Ready-to-Run Scenarios**:
+  - Hit **"Save Scenario"** to export your modified scenario under `demandify_scenarios/<scenario_name>/`.
+  - It generates all ready-to-run SUMO files: `network.net.xml`, `trips.xml`, `scenario.sumocfg`, and `demand.csv`.
 
 ## How It Works
 
@@ -283,26 +336,47 @@ demandify cache clear
 demandify --version
 ```
 
-## Output Files
+## Output Files & Directories
 
-Each run creates a folder with:
+### Calibration Runs (`demandify_runs/run_<timestamp>/`)
 
-- **`demand.csv`** - Travel demand with exact schema:
-  - `ID`, `origin link id`, `destination link id`, `departure timestep`
+Each calibration run creates a folder with:
+
+- **`demand.csv`** - Travel demand with exact schema: `ID`, `origin link id`, `destination link id`, `departure timestep`
 - **`trips.xml`** - SUMO trips file
 - **`network.net.xml`** - SUMO network
-- **`scenario.sumocfg`** - SUMO configuration (ready to run; ignores route errors by default)
-- **`observed_edges.csv`** - Observed traffic speeds
-- **`run_meta.json`** - Complete run metadata with selected-candidate summary and best-MAE diagnostics
-- **`report.html`** - Calibration report with visualizations
-- **`latest_selected/`** - Lightweight rolling recovery export with `demand.csv`, `trips.xml`, `network.net.xml`, `scenario.sumocfg`, and minimal metadata
+- **`scenario.sumocfg`** - Ready-to-run SUMO configuration file (configured with default route resilience)
+- **`observed_edges.csv`** - Speed observations mapped to SUMO edge IDs
+- **`run_meta.json`** - Complete run metadata with fitness scores and best-candidate diagnostics
+- **`report.html`** - Standalone HTML calibration report with interactive charts and metrics
+- **`latest_selected/`** - Rolling recovery export kept up-to-date across generations
 - **`<run_id>/`** - URB/RouteRL-compatible export bundle
 
-Run the scenario:
+Run the calibrated scenario:
 ```bash
 cd demandify_runs/run_<timestamp>/sumo
 sumo-gui -c scenario.sumocfg
 ```
+
+### Demand Studio Scenarios (`demandify_scenarios/<scenario_name>/`)
+
+When you save a scenario from Demand Studio, it exports a standalone bundle ready to run:
+
+- **`sumo/network.net.xml`** - Road network geometry
+- **`sumo/trips.xml`** - Vehicle departure trips
+- **`sumo/scenario.sumocfg`** - Ready-to-run SUMO scenario configuration
+- **`data/demand.csv`** - Complete OD demand table
+- **`scenario_meta.json`** - Scenario summary, vehicle counts, and test telemetry
+
+### Offline Datasets (`demandify_datasets/<dataset_name>/`)
+
+Datasets generated via the Dataset Builder store:
+
+- **`data/traffic_data_raw.csv`** - Raw TomTom congestion observations
+- **`data/observed_edges.csv`** - Map-matched edge speeds
+- **`data/map.osm`** - Raw OpenStreetMap road data
+- **`sumo/network.net.xml`** - Converted car-only SUMO network
+- **`dataset_meta.json`** - Feasibility metrics, data quality score, and bounding box metadata
 
 ## Configuration
 
