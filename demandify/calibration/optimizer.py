@@ -339,16 +339,41 @@ class GeneticAlgorithm:
         return float(rate_fraction)
 
     def _primary_sort_key(self, individual):
-        """Primary ordering used to define the MAE elite slice."""
+        """Deb's feasibility-first ordering.
+
+        Feasible candidates (teleports == 0) always precede infeasible candidates.
+        - Among feasible candidates: ranked strictly by pure MAE.
+        - Among infeasible candidates: ranked by teleports (fewer is better),
+          then failure total, then MAE.
+        """
+        teleports = self._individual_teleports(individual)
         rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
-        return (
-            self._individual_mae(individual),
-            self._individual_teleports(individual),
-            rate_is_inf,
-            rate_fraction,
-            self._individual_missing_edges(individual),
-            self._individual_magnitude(individual),
-        )
+        fail_total = self._individual_fail_total(individual)
+        mae = self._individual_mae(individual)
+        missing_edges = self._individual_missing_edges(individual)
+        magnitude = self._individual_magnitude(individual)
+
+        if teleports == 0:
+            return (
+                0,
+                mae,
+                fail_total,
+                rate_is_inf,
+                rate_fraction,
+                missing_edges,
+                magnitude,
+            )
+        else:
+            return (
+                1,
+                teleports,
+                fail_total,
+                rate_is_inf,
+                rate_fraction,
+                mae,
+                missing_edges,
+                magnitude,
+            )
 
     def _pareto_objective_tuple(self, individual, include_teleports: bool):
         """Build Pareto objectives for an individual."""
