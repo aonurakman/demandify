@@ -2,7 +2,7 @@
 Scenario export and project folder generation.
 """
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import shutil
 import json
 from datetime import datetime
@@ -18,6 +18,7 @@ def write_sumocfg(
     simulation_time: int,
     step_length: float = 1.0,
     seed: Optional[int] = 42,
+    additional_files: Optional[List[Path]] = None,
 ) -> None:
     """Write a dynamic-routing SUMO scenario configuration file."""
     import os
@@ -42,6 +43,22 @@ def write_sumocfg(
     input_elem = ET.SubElement(root, "input")
     ET.SubElement(input_elem, "net-file").set("value", rel_net)
     ET.SubElement(input_elem, "route-files").set("value", rel_trips)
+
+    # Additional files (e.g. vehicle_types.xml for capacity derating)
+    add_files: List[Path] = list(additional_files) if additional_files is not None else []
+    if additional_files is None:
+        candidate_vtypes = output_file.parent / "vehicle_types.xml"
+        if candidate_vtypes.exists():
+            add_files.append(candidate_vtypes)
+
+    if add_files:
+        rel_adds = []
+        for af in add_files:
+            try:
+                rel_adds.append(os.path.relpath(af, output_file.parent))
+            except ValueError:
+                rel_adds.append(str(af))
+        ET.SubElement(input_elem, "additional-files").set("value", ",".join(rel_adds))
 
     # Time
     time_elem = ET.SubElement(root, "time")
@@ -132,16 +149,28 @@ class ScenarioExporter:
         final_demand = ensure_in_project(demand_csv, "demand.csv")
         final_trips = ensure_in_project(trips_file, "trips.xml")
         final_edges = ensure_in_project(observed_edges_csv, "observed_edges.csv")
-        
+
+        # Track vehicle_types.xml if present (e.g. capacity derating)
+        vtypes_candidate = Path(network_file).parent / "vehicle_types.xml"
+        if not vtypes_candidate.exists():
+            vtypes_candidate = Path(trips_file).parent / "vehicle_types.xml"
+        if vtypes_candidate.exists():
+            target_vtypes_name = (
+                f"{final_net.parent.name}/vehicle_types.xml"
+                if final_net.parent != self.output_dir
+                else "vehicle_types.xml"
+            )
+            ensure_in_project(vtypes_candidate, target_vtypes_name)
+
         # Determine location for sumocfg
         # We prefer to put it alongside the network file (usually in sumo/)
         sumocfg_path = final_net.parent / "scenario.sumocfg"
-        
+
         # Get deterministic routing seed from metadata.
         # Prefer SUMO seed used for final evaluation when available.
         run_info = run_metadata.get('run_info', {})
         seed = run_info.get('sumo_seed', run_info.get('seed', 42))
-        
+
         # Generate sumocfg with dynamic routing configuration
         write_sumocfg(
             network_file=final_net,
@@ -152,14 +181,14 @@ class ScenarioExporter:
             step_length=run_metadata.get('simulation_config', {}).get('step_length_seconds', 1.0),
             seed=seed
         )
-        
+
         # Save metadata
         self._save_metadata(run_metadata)
-        
+
         logger.debug(f"Scenario exported successfully to {self.output_dir}")
-        
+
         return self.output_dir
-    
+
     def _create_sumocfg(
         self,
         network_file: Path,
@@ -167,7 +196,8 @@ class ScenarioExporter:
         output_file: Path,
         simulation_time: int,
         step_length: float = 1.0,
-        seed: int = 42
+        seed: int = 42,
+        additional_files: Optional[List[Path]] = None,
     ):
         """Backward-compatible wrapper around shared SUMO config writer."""
         write_sumocfg(
@@ -177,6 +207,7 @@ class ScenarioExporter:
             simulation_time=simulation_time,
             step_length=step_length,
             seed=seed,
+            additional_files=additional_files,
         )
     
     def _save_metadata(self, metadata: Dict):

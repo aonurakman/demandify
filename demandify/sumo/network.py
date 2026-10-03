@@ -390,18 +390,20 @@ def tau_from_capacity_factor(factor: float) -> float:
 
 
 def write_vehicle_types_xml(tau: float, output_path: Path) -> None:
-    """Write a SUMO additional-file that overrides the passenger vType tau.
+    """Write a SUMO additional-file that overrides the vehicle type tau.
 
-    Only *tau* is overridden; all other default parameters (length, minGap,
-    accelration, sigma, …) remain at their SUMO defaults.  This file should be
-    loaded via ``--additional-files`` in every simulation that uses the derated
-    capacity model.
+    Overrides tau for both SUMO's built-in DEFAULT_VEHTYPE (used when <trip>
+    omits a type attribute) and the passenger vType (used when type="passenger").
+    All other default parameters (length, minGap, acceleration, sigma, etc.) remain at
+    their SUMO defaults. This file should be loaded via ``--additional-files``
+    in every simulation that uses the derated capacity model.
 
     Args:
         tau: The car-following reaction-time in seconds (≥ 1.0).
         output_path: Destination path for the XML file.
     """
     root = ET.Element("additional")
+    ET.SubElement(root, "vType", {"id": "DEFAULT_VEHTYPE", "tau": f"{tau:.4f}"})
     ET.SubElement(root, "vType", {"id": "passenger", "tau": f"{tau:.4f}"})
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ")

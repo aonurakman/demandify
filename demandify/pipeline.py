@@ -708,7 +708,7 @@ class CalibrationPipeline:
 
             # Log observed edge coverage and active-edge accuracy
             observed_edge_ids = set(observed_edges["edge_id"])
-            total_obs = len(observed_edge_ids)
+            total_obs = len(observed_edges)
             matched_count = quality_metrics.get("matched_edges", 0)
             cov_pct = (matched_count / total_obs * 100.0) if total_obs > 0 else 0.0
             act_mae = quality_metrics.get("active_mae")
@@ -1390,6 +1390,12 @@ class CalibrationPipeline:
             demand_gen.genome_to_demand_csv(best_genome, od_pairs, departure_bins, demand_csv)
             demand_gen.demand_csv_to_trips_xml(demand_csv, trips_file)
             shutil.copy2(network_file, latest_network)
+
+            # Copy vehicle_types.xml if present (capacity derating)
+            src_vtypes = self.output_dir / "sumo" / "vehicle_types.xml"
+            if src_vtypes.exists():
+                shutil.copy2(src_vtypes, sumo_dir / "vehicle_types.xml")
+
             latest_seed = int(_stable_seed(np.asarray(best_genome), self.seed))
             write_sumocfg(
                 network_file=latest_network,
@@ -1426,6 +1432,7 @@ class CalibrationPipeline:
                     "trips_xml": "sumo/trips.xml",
                     "network_xml": "sumo/network.net.xml",
                     "scenario_config": "sumo/scenario.sumocfg",
+                    **({"vehicle_types_xml": "sumo/vehicle_types.xml"} if src_vtypes.exists() else {}),
                 },
             }
             with open(latest_dir / "run_meta.json", "w", encoding="utf-8") as f:
@@ -1942,6 +1949,7 @@ class CalibrationPipeline:
                 "routes_xml": None,
                 "network_xml": f"sumo/{network_file.name}",
                 "scenario_config": "sumo/scenario.sumocfg",
+                "vehicle_types_xml": "sumo/vehicle_types.xml" if (self.output_dir / "sumo" / "vehicle_types.xml").exists() else None,
                 "observed_edges_csv": "data/observed_edges.csv",
                 "traffic_data_raw_csv": "data/traffic_data_raw.csv",
                 "observed_speed_heatmap_png": "plots/network_observed_speed_heatmap.png",
