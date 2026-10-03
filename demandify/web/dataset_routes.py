@@ -300,6 +300,7 @@ async def run_dataset_builder(job_id: str, params: dict):
             context["observed_edges"],
             context.get("total_edges", 0),
             bbox=tuple(params["bbox"]),
+            network_file=context.get("network_file"),
         )
         metadata = _build_dataset_metadata(
             params, context, pipeline.provider_meta, quality

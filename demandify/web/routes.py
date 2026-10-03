@@ -298,6 +298,7 @@ async def check_feasibility(
             context["observed_edges"],
             context.get("total_edges", 0),
             bbox=bbox,
+            network_file=context.get("network_file"),
         )
 
         return {

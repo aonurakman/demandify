@@ -784,6 +784,7 @@ class CalibrationPipeline:
                     context["observed_edges"],
                     context.get("total_edges", 0),
                     bbox=self.bbox,
+                    network_file=context.get("network_file"),
                 )
 
                 stats = {
@@ -873,6 +874,7 @@ class CalibrationPipeline:
             context["observed_edges"],
             context.get("total_edges", 0),
             bbox=self.bbox,
+            network_file=context.get("network_file"),
         )
         metadata = {
             "dataset_name": dataset_name,
