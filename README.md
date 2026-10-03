@@ -168,7 +168,7 @@ demandify run --import krakow_v1 --name krakow_remote
 | `--max-ods` | Int | 50 | Max OD pairs to generate |
 | `--min-connection-paths` | Int | 1 | Minimum number of distinct simple routes required for an OD pair to be eligible during sampling |
 | `--initial-population` | Int | 1000 | Target initial number of vehicles (controls sparse initialization) |
-| `--capacity-factor` | Float | 1.0 | Effective road-capacity factor (derating for mixed traffic friction, e.g. 0.85–0.90) |
+| `--capacity-factor` | Float | 1.0 | Effective road-capacity factor (derating for mixed traffic friction; 0.85–0.90 recommended for dense urban areas) |
 | `--mesosim` / `--no-mesosim` | Flag | on | Mesoscopic simulation during GA candidate evaluation (final run is microscopic) |
 | `--topology-guidance` / `--no-topology-guidance` | Flag | on | Use network topology and speed discrepancies to guide GA mutations |
 | `--sensor-coverage-od` / `--no-sensor-coverage-od` | Flag | on | Greedy set-cover during OD selection to maximize sensor edge coverage |
@@ -179,6 +179,8 @@ demandify run --import krakow_v1 --name krakow_remote
 - positional `bbox` is rejected
 - `--tile-zoom` is rejected
 - all calibration controls (seed, GA params, warmup/window, etc.) remain available
+
+> 💡 **Tip**: In dense urban areas, real-world friction (buses, delivery vans, heavy vehicles) reduces effective road capacity compared to an idealized car-only network. Derating capacity slightly with `--capacity-factor 0.85` reflects this friction naturally, helping the optimizer achieve realistic vehicle volumes without over-generating demand.
 
 #### Advanced GA Dynamics
 
