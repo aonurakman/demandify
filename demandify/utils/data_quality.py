@@ -85,13 +85,13 @@ def _score_critical_hierarchy(
         if observed_to_total_ratio >= 0.10:
             return 21
         if observed_to_total_ratio >= 0.06:
-            return 17
+            return 18
         if observed_to_total_ratio >= 0.03:
-            return 13
+            return 15
         if observed_to_total_ratio >= 0.01:
-            return 8
+            return 10
         if observed_to_total_ratio > 0.0:
-            return 4
+            return 5
         return 0
 
     return 10
@@ -184,7 +184,7 @@ def _score_congestion_dynamics(
             elif speed_cv >= 0.10:
                 p_cv = 2
             elif congestion_share >= 0.80:
-                p_cv = 1
+                p_cv = 2
             else:
                 p_cv = 0
         else:
@@ -259,32 +259,40 @@ def _score_sample_volume(unique_edges: int) -> int:
         return 15
     if unique_edges >= 60:
         return 12
-    if unique_edges >= 35:
-        return 9
-    if unique_edges >= 20:
-        return 6
-    if unique_edges >= 10:
-        return 4
-    if unique_edges >= 3:
+    if unique_edges >= 40:
+        return 10
+    if unique_edges >= 25:
+        return 7
+    if unique_edges >= 15:
+        return 5
+    if unique_edges >= 5:
         return 2
+    if unique_edges >= 1:
+        return 1
     return 0
 
 
 def _label_from_score(score: int, warnings: Optional[List[str]] = None) -> str:
     """
     Categorizes score into 5 quality tiers.
+    - >= 90: excellent (gold-standard benchmark datasets)
+    - 75 to 89: good (solid, dependable calibration networks)
+    - 60 to 74: fair (usable with caveats / peripheral clustering)
+    - 50 to 59: weak (single-corridor concentration / significant blind spots)
+    - < 50: poor (insufficient coverage / high risk of failure)
+
     Applies a structural safety cap: datasets with severe spatial clustering
     or critically low arterial coverage cannot be labeled 'excellent'.
     """
-    if score >= 85:
+    if score >= 90:
         if warnings and any(w in warnings for w in ("low_critical_coverage", "spatial_clustering")):
             return "good"
         return "excellent"
-    if score >= 70:
+    if score >= 75:
         return "good"
-    if score >= 55:
+    if score >= 60:
         return "fair"
-    if score >= 40:
+    if score >= 50:
         return "weak"
     return "poor"
 
@@ -297,9 +305,9 @@ def _recommendation(
 ) -> str:
     if matched_edges == 0:
         return "do_not_proceed"
-    if unique_edges < 5 or score < 40:
+    if unique_edges < 5 or score < 50:
         return "high_risk"
-    if score < 70 or (warnings and "spatial_clustering" in warnings):
+    if score < 75 or (warnings and "spatial_clustering" in warnings):
         return "caution"
     return "proceed"
 

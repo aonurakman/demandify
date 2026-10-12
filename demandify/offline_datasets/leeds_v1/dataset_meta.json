@@ -21,28 +21,39 @@
     "total_network_edges": 1719
   },
   "quality": {
-    "score": 98,
+    "score": 90,
     "label": "excellent",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (98/100): 187 traffic segments map-matched to graph edges from 195 fetched segments (map-match rate 95.9%).",
+    "summary": "EXCELLENT quality (90/100): 187 traffic observations (104 unique edges) matched from 195 raw segments (95.9% match rate). 12.5% critical road coverage, 88% grid occupancy (Gini 0.36).",
     "warnings": [],
     "components": {
-      "availability": 35,
-      "match_rate": 25,
-      "confidence": 13,
-      "density": 15,
-      "network_coverage": 10
+      "critical_hierarchy": 18,
+      "spatial_dispersion": 23,
+      "congestion_dynamics": 20,
+      "match_fidelity": 14,
+      "sample_volume": 15
     },
     "metrics": {
       "fetched_segments": 195,
       "matched_edges": 187,
+      "unique_matched_edges": 104,
       "total_network_edges": 1719,
-      "match_rate": 0.958974358974359,
-      "observed_to_total_ratio": 0.10878417684700407,
-      "area_km2": 3.8987390314474477,
-      "edges_per_km2": 47.96422599503263,
+      "critical_network_edges": 224,
+      "critical_matched_edges": 28,
+      "critical_coverage_ratio": 0.125,
+      "spatial_active_cells": 16,
+      "spatial_occupied_cells": 14,
+      "spatial_occupancy_ratio": 0.875,
+      "spatial_gini": 0.359,
+      "congested_edges_count": 138,
+      "congestion_share": 0.738,
+      "speed_cv": 0.538,
+      "match_rate": 0.959,
+      "observed_to_total_ratio": 0.0605,
+      "area_km2": 3.9,
+      "edges_per_km2": 26.68,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.06417112299465241
+      "low_confidence_share": 0.0642
     }
   },
   "files": {
