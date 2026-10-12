@@ -728,6 +728,51 @@
                         </li>
                     </ul>
 
+                    <div id="check-quality-pillars" class="card bg-light border-0 p-2 mb-3 d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="small fw-semibold text-secondary">
+                                <i class="bi bi-bar-chart-steps me-1"></i> Quality Pillars Breakdown
+                            </span>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2" id="check-pillars-list">
+                            <span class="badge bg-white text-dark border rounded-pill d-inline-flex align-items-center py-1.5 px-2.5 pillar-badge" id="pillar-badge-hierarchy">
+                                <span class="me-1">Hierarchy:</span>
+                                <span class="fw-bold" id="pillar-score-hierarchy">-</span><span class="text-muted">/25</span>
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-secondary border-0 bg-transparent lh-1 pillar-help-btn" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-container="body" title="Coverage across primary corridors (motorways, trunks, primary, secondary roads) carrying bulk traffic (max 25 pts)." aria-label="Hierarchy info">
+                                    <i class="bi bi-question-circle"></i>
+                                </button>
+                            </span>
+                            <span class="badge bg-white text-dark border rounded-pill d-inline-flex align-items-center py-1.5 px-2.5 pillar-badge" id="pillar-badge-spatial">
+                                <span class="me-1">Dispersion:</span>
+                                <span class="fw-bold" id="pillar-score-spatial">-</span><span class="text-muted">/25</span>
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-secondary border-0 bg-transparent lh-1 pillar-help-btn" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-container="body" title="Geographic distribution across 4x4 grid cells and absence of single-corridor clustering via Gini inequality (max 25 pts)." aria-label="Dispersion info">
+                                    <i class="bi bi-question-circle"></i>
+                                </button>
+                            </span>
+                            <span class="badge bg-white text-dark border rounded-pill d-inline-flex align-items-center py-1.5 px-2.5 pillar-badge" id="pillar-badge-congestion">
+                                <span class="me-1">Congestion:</span>
+                                <span class="fw-bold" id="pillar-score-congestion">-</span><span class="text-muted">/20</span>
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-secondary border-0 bg-transparent lh-1 pillar-help-btn" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-container="body" title="Presence of bottleneck slowdowns (speeds below 85% free-flow) and speed variance to inform OD calibration (max 20 pts)." aria-label="Congestion info">
+                                    <i class="bi bi-question-circle"></i>
+                                </button>
+                            </span>
+                            <span class="badge bg-white text-dark border rounded-pill d-inline-flex align-items-center py-1.5 px-2.5 pillar-badge" id="pillar-badge-fidelity">
+                                <span class="me-1">Fidelity:</span>
+                                <span class="fw-bold" id="pillar-score-fidelity">-</span><span class="text-muted">/15</span>
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-secondary border-0 bg-transparent lh-1 pillar-help-btn" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-container="body" title="Match success rate and geometric confidence of GPS segments snapped to SUMO network edges (max 15 pts)." aria-label="Fidelity info">
+                                    <i class="bi bi-question-circle"></i>
+                                </button>
+                            </span>
+                            <span class="badge bg-white text-dark border rounded-pill d-inline-flex align-items-center py-1.5 px-2.5 pillar-badge" id="pillar-badge-volume">
+                                <span class="me-1">Volume:</span>
+                                <span class="fw-bold" id="pillar-score-volume">-</span><span class="text-muted">/15</span>
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-1 text-secondary border-0 bg-transparent lh-1 pillar-help-btn" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-container="body" title="Total unique road links with observed traffic data, ensuring multi-point OD constraints (max 15 pts)." aria-label="Volume info">
+                                    <i class="bi bi-question-circle"></i>
+                                </button>
+                            </span>
+                        </div>
+                    </div>
+
                     <div id="check-quality-summary" class="small text-muted mb-3">-</div>
 
                     <div id="check-warning" class="alert alert-warning d-none">

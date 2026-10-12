@@ -529,9 +529,13 @@ function initEventListeners() {
 
                 const warningEl = document.getElementById('check-warning');
                 const criticalEl = document.getElementById('check-critical');
+                const pillarsContainer = document.getElementById('check-quality-pillars');
 
                 warningEl.classList.add('d-none');
                 criticalEl.classList.add('d-none');
+                if (pillarsContainer) {
+                    pillarsContainer.classList.add('d-none');
+                }
 
                 if (qualityLabelEl) {
                     qualityLabelEl.textContent = '-';
@@ -574,6 +578,55 @@ function initEventListeners() {
                         qualitySummaryEl.textContent = summary;
                     }
 
+                    if (quality.components && pillarsContainer) {
+                        pillarsContainer.classList.remove('d-none');
+
+                        const updatePillar = (id, compScore, max) => {
+                            const scoreEl = document.getElementById(`pillar-score-${id}`);
+                            if (scoreEl) {
+                                scoreEl.textContent = Number.isFinite(compScore) ? compScore : '-';
+                                scoreEl.className = 'fw-bold';
+                                if (Number.isFinite(compScore)) {
+                                    const ratio = compScore / max;
+                                    if (ratio >= 0.8) scoreEl.classList.add('text-success');
+                                    else if (ratio >= 0.6) scoreEl.classList.add('text-primary');
+                                    else if (ratio >= 0.4) scoreEl.classList.add('text-info');
+                                    else if (ratio >= 0.2) scoreEl.classList.add('text-warning');
+                                    else scoreEl.classList.add('text-danger');
+                                }
+                            }
+                        };
+
+                        updatePillar('hierarchy', quality.components.critical_hierarchy, 25);
+                        updatePillar('spatial', quality.components.spatial_dispersion, 25);
+                        updatePillar('congestion', quality.components.congestion_dynamics, 20);
+                        updatePillar('fidelity', quality.components.match_fidelity, 15);
+                        updatePillar('volume', quality.components.sample_volume, 15);
+
+                        const helpButtons = pillarsContainer.querySelectorAll('.pillar-help-btn');
+                        helpButtons.forEach(btn => {
+                            let tooltip = bootstrap.Tooltip.getInstance(btn);
+                            if (!tooltip) {
+                                tooltip = new bootstrap.Tooltip(btn, {
+                                    trigger: 'hover focus',
+                                    container: 'body'
+                                });
+                            }
+                            const badge = btn.closest('.pillar-badge');
+                            if (badge && !badge.dataset.hoverBound) {
+                                badge.dataset.hoverBound = 'true';
+                                badge.addEventListener('mouseenter', () => {
+                                    const tt = bootstrap.Tooltip.getInstance(btn);
+                                    if (tt) tt.show();
+                                });
+                                badge.addEventListener('mouseleave', () => {
+                                    const tt = bootstrap.Tooltip.getInstance(btn);
+                                    if (tt) tt.hide();
+                                });
+                            }
+                        });
+                    }
+
                     if (recommendation === 'do_not_proceed') {
                         criticalEl.classList.remove('d-none');
                     } else if (recommendation === 'high_risk' || recommendation === 'caution') {
@@ -599,7 +652,14 @@ function initEventListeners() {
                 toggleSaveOfflineDatasetNameInput();
 
                 // Show Modal
-                const modal = new bootstrap.Modal(document.getElementById('checkModal'));
+                const checkModalEl = document.getElementById('checkModal');
+                if (checkModalEl && !checkModalEl.dataset.tooltipCleanBound) {
+                    checkModalEl.dataset.tooltipCleanBound = 'true';
+                    checkModalEl.addEventListener('hide.bs.modal', () => {
+                        document.querySelectorAll('.tooltip').forEach(el => el.remove());
+                    });
+                }
+                const modal = new bootstrap.Modal(checkModalEl);
                 modal.show();
 
             } else {

@@ -611,3 +611,30 @@ body {
         justify-content: center;
     }
 }
+
+/* Quality Pillars breakdown styling */
+.pillar-badge {
+    font-size: 0.78rem;
+    font-weight: 500;
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.pillar-badge:hover {
+    border-color: #adb5bd !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.pillar-help-btn {
+    display: inline-flex;
+    align-items: center;
+    color: #6c757d;
+    cursor: pointer;
+    text-decoration: none;
+    transition: color 0.15s ease-in-out, transform 0.15s ease-in-out;
+}
+
+.pillar-help-btn:hover {
+    color: #0d6efd !important;
+    transform: scale(1.22);
+}
+
