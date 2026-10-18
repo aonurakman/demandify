@@ -517,9 +517,7 @@ body {
    Unified Top Navbar Styling
    ========================================================================== */
 .app-navbar-wrapper {
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    background: #ffffff;
     border-bottom: 1px solid #e2e8f0;
     box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
     z-index: 1040;
