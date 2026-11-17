@@ -82,7 +82,7 @@ class SimulationConfig:
     # Mesoscopic simulation mode for fast GA candidate evaluations
     mesosim: bool = True
 
-    # Routing mode for vehicle route selection ('static', 'pretrip', 'dynamic')
+    # Routing mode for vehicle route selection ('static', 'dynamic')
     routing_mode: str = "static"
 
 

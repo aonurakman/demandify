@@ -55,7 +55,7 @@ class SUMOSimulation:
             simulation_time: Total simulation time in seconds
             seed: Random seed for deterministic routing (required for dynamic routing)
             use_dynamic_routing: Legacy boolean; maps to routing_mode if set
-            routing_mode: Routing paradigm ('static', 'pretrip', 'dynamic')
+            routing_mode: Routing paradigm ('static', 'dynamic')
             debug: If True, preserve intermediate files (tripinfo, etc.)
             extra_additional_files: Optional list of additional SUMO files (e.g.
                 vehicle_types.xml for capacity derating) appended to the
@@ -77,9 +77,9 @@ class SUMOSimulation:
                 routing_mode = "dynamic"
 
         mode_clean = str(routing_mode).lower().strip()
-        if mode_clean not in ("static", "pretrip", "dynamic"):
+        if mode_clean not in ("static", "dynamic"):
             raise ValueError(
-                f"Unknown routing_mode: '{routing_mode}'. Expected 'static', 'pretrip', or 'dynamic'."
+                f"Unknown routing_mode: '{routing_mode}'. Expected 'static' or 'dynamic'."
             )
         self.routing_mode = mode_clean
         self.use_dynamic_routing = (self.routing_mode != "static")
@@ -331,15 +331,9 @@ class SUMOSimulation:
         ET.SubElement(processing_elem, 'ignore-junction-blocker').set('value', '15')
         
         # Routing configuration
-        if self.routing_mode == "pretrip":
+        if self.routing_mode == "dynamic":
             routing_elem = ET.SubElement(root, 'routing')
-            # Pre-trip dynamic routing: live traffic weights at depart, 0 periodic rerouting
-            ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '1.0')
-            ET.SubElement(routing_elem, 'device.rerouting.period').set('value', '0')
-            ET.SubElement(routing_elem, 'routing-algorithm').set('value', 'dijkstra')
-        elif self.routing_mode == "dynamic":
-            routing_elem = ET.SubElement(root, 'routing')
-            # Grounded dynamic rerouting (legacy: 50% fleet participation, 300s period)
+            # Dynamic mid-trip rerouting (50% fleet participation, 300s period)
             ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '0.50')
             ET.SubElement(routing_elem, 'device.rerouting.period').set('value', '300')
             ET.SubElement(routing_elem, 'routing-algorithm').set('value', 'dijkstra')

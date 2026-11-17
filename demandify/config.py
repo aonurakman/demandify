@@ -188,7 +188,7 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
         merged.get("routing_mode", _RUN_DEFAULTS_FALLBACK["routing_mode"])
     ).lower().strip()
     merged["routing_mode"] = (
-        routing_mode if routing_mode in {"static", "pretrip", "dynamic"} else "static"
+        routing_mode if routing_mode in {"static", "dynamic"} else "static"
     )
     return merged
 

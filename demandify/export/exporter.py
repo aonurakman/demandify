@@ -74,12 +74,7 @@ def write_sumocfg(
 
     # Routing configuration
     mode_clean = str(routing_mode).lower().strip()
-    if mode_clean == "pretrip":
-        routing_elem = ET.SubElement(root, "routing")
-        ET.SubElement(routing_elem, "device.rerouting.probability").set("value", "1.0")
-        ET.SubElement(routing_elem, "device.rerouting.period").set("value", "0")
-        ET.SubElement(routing_elem, "routing-algorithm").set("value", "dijkstra")
-    elif mode_clean == "dynamic":
+    if mode_clean == "dynamic":
         routing_elem = ET.SubElement(root, "routing")
         ET.SubElement(routing_elem, "device.rerouting.probability").set("value", "0.50")
         ET.SubElement(routing_elem, "device.rerouting.period").set("value", "300")

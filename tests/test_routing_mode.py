@@ -22,25 +22,6 @@ def test_simulation_routing_mode_static(tmp_path):
     assert root.find("routing") is None
 
 
-def test_simulation_routing_mode_pretrip(tmp_path):
-    sim = SUMOSimulation(
-        network_file=Path("net.net.xml"),
-        vehicle_file=Path("trips.xml"),
-        routing_mode="pretrip",
-        seed=42,
-    )
-    assert sim.routing_mode == "pretrip"
-    assert sim.use_dynamic_routing is True
-
-    cfg_file = tmp_path / "sim.sumocfg"
-    sim._create_config(cfg_file, tmp_path / "edge.xml", tmp_path / "tripinfo.xml", tmp_path / "stats.xml")
-    root = ET.parse(cfg_file).getroot()
-    routing = root.find("routing")
-    assert routing is not None
-    assert routing.find("device.rerouting.probability").get("value") == "1.0"
-    assert routing.find("device.rerouting.period").get("value") == "0"
-
-
 def test_simulation_routing_mode_dynamic(tmp_path):
     sim = SUMOSimulation(
         network_file=Path("net.net.xml"),
@@ -61,12 +42,13 @@ def test_simulation_routing_mode_dynamic(tmp_path):
 
 
 def test_simulation_invalid_routing_mode():
-    with pytest.raises(ValueError, match="Unknown routing_mode"):
-        SUMOSimulation(
-            network_file=Path("net.net.xml"),
-            vehicle_file=Path("trips.xml"),
-            routing_mode="invalid_mode",
-        )
+    for bad_mode in ("invalid_mode", "pretrip"):
+        with pytest.raises(ValueError, match="Unknown routing_mode"):
+            SUMOSimulation(
+                network_file=Path("net.net.xml"),
+                vehicle_file=Path("trips.xml"),
+                routing_mode=bad_mode,
+            )
 
 
 def test_write_sumocfg_routing_modes(tmp_path):
@@ -76,14 +58,14 @@ def test_write_sumocfg_routing_modes(tmp_path):
     root = ET.parse(static_cfg).getroot()
     assert root.find("routing") is None
 
-    # Pretrip
-    pretrip_cfg = tmp_path / "pretrip.sumocfg"
-    write_sumocfg(Path("net.net.xml"), Path("trips.xml"), pretrip_cfg, 900, routing_mode="pretrip")
-    root = ET.parse(pretrip_cfg).getroot()
+    # Dynamic
+    dynamic_cfg = tmp_path / "dynamic.sumocfg"
+    write_sumocfg(Path("net.net.xml"), Path("trips.xml"), dynamic_cfg, 900, routing_mode="dynamic")
+    root = ET.parse(dynamic_cfg).getroot()
     routing = root.find("routing")
     assert routing is not None
-    assert routing.find("device.rerouting.probability").get("value") == "1.0"
-    assert routing.find("device.rerouting.period").get("value") == "0"
+    assert routing.find("device.rerouting.probability").get("value") == "0.50"
+    assert routing.find("device.rerouting.period").get("value") == "300"
 
 
 def test_cli_routing_mode_default_and_flags():
@@ -93,13 +75,13 @@ def test_cli_routing_mode_default_and_flags():
     args = parser.parse_args(["run", "4.28,52.06,4.33,52.08"])
     assert args.routing_mode == "static"
 
-    # Explicit pretrip
-    args = parser.parse_args(["run", "4.28,52.06,4.33,52.08", "--routing-mode", "pretrip"])
-    assert args.routing_mode == "pretrip"
-
     # Explicit dynamic
     args = parser.parse_args(["run", "4.28,52.06,4.33,52.08", "--routing-mode", "dynamic"])
     assert args.routing_mode == "dynamic"
+
+    # Removed pretrip is rejected
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "4.28,52.06,4.33,52.08", "--routing-mode", "pretrip"])
 
 
 def test_web_start_run_forwards_routing_mode_and_lefthand(monkeypatch, tmp_path):
@@ -139,12 +121,13 @@ def test_web_start_run_forwards_routing_mode_and_lefthand(monkeypatch, tmp_path)
     assert captured["params"]["routing_mode"] == "dynamic"
     assert captured["params"]["lefthand"] is True
 
-    bad_resp = client.post(
-        "/api/run",
-        data={
-            "data_mode": "import",
-            "offline_dataset": "rennes_v1",
-            "routing_mode": "invalid",
-        },
-    )
-    assert bad_resp.status_code == 400
+    for rejected_mode in ("invalid", "pretrip"):
+        bad_resp = client.post(
+            "/api/run",
+            data={
+                "data_mode": "import",
+                "offline_dataset": "rennes_v1",
+                "routing_mode": rejected_mode,
+            },
+        )
+        assert bad_resp.status_code == 400

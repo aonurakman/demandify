@@ -572,13 +572,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--routing-mode",
         dest="routing_mode",
-        choices=["static", "pretrip", "dynamic"],
+        choices=["static", "dynamic"],
         default=run_defaults.get("routing_mode", "static"),
         help=(
             "Vehicle routing behavior in SUMO. "
             "'static' (default): Pure static shortest path based on free-flow speed; no rerouting device. "
-            "'pretrip': Pre-trip dynamic routing on live traffic at departure; zero mid-trip rerouting. "
-            "'dynamic': Dynamic mid-trip rerouting (legacy: 50%% fleet participation, 300s period)."
+            "'dynamic': Dynamic mid-trip rerouting (50%% fleet participation, 300s period)."
         ),
     )
     run_parser.add_argument(

@@ -173,7 +173,7 @@ demandify run --import krakow_v1 --name krakow_remote
 | `--topology-guidance` / `--no-topology-guidance` | Flag | on | Use network topology and speed discrepancies to guide GA mutations |
 | `--sensor-coverage-od` / `--no-sensor-coverage-od` | Flag | on | Greedy set-cover during OD selection to maximize sensor edge coverage |
 | `--lefthand` / `--righthand` | Flag | auto | Force left-hand (or right-hand) traffic network conversion (auto-detected from coordinates by default) |
-| `--routing-mode` | String | static | Vehicle routing mode (`static`, `pretrip`, `dynamic`; `dynamic` recommended for unconstrained demand) |
+| `--routing-mode` | String | static | Vehicle routing mode (`static`, `dynamic`; `dynamic` recommended for unconstrained demand) |
 
 \* `bbox` is required in create mode. In import mode, use `--import` and do not pass `bbox`.
 

@@ -215,9 +215,9 @@ class CalibrationPipeline:
         self.topology_guidance = bool(topology_guidance)
         self.sensor_coverage_od = bool(sensor_coverage_od)
         mode_clean = str(routing_mode).lower().strip()
-        if mode_clean not in ("static", "pretrip", "dynamic"):
+        if mode_clean not in ("static", "dynamic"):
             raise ValueError(
-                f"Unknown routing_mode: '{routing_mode}'. Expected 'static', 'pretrip', or 'dynamic'."
+                f"Unknown routing_mode: '{routing_mode}'. Expected 'static' or 'dynamic'."
             )
         self.routing_mode = mode_clean
         self.lefthand = bool(lefthand) if lefthand is not None else None

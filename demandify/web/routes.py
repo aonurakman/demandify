@@ -463,10 +463,10 @@ async def start_run(
         )
 
     routing_mode_clean = str(routing_mode or RUN_DEFAULTS["routing_mode"]).lower().strip()
-    if routing_mode_clean not in {"static", "pretrip", "dynamic"}:
+    if routing_mode_clean not in {"static", "dynamic"}:
         raise HTTPException(
             status_code=400,
-            detail="routing_mode must be one of 'static', 'pretrip', or 'dynamic'",
+            detail="routing_mode must be one of 'static' or 'dynamic'",
         )
 
     resolved_lefthand: Optional[bool]
