@@ -58,7 +58,21 @@ class EdgeSpeedObjective:
                 - sumo_freeflow_speed_kmh  (SUMO network speed limit, km/h)
                 - match_confidence
         """
-        self.observed_edges = observed_edges.set_index("edge_id")
+        from demandify.sumo.matching import deduplicate_observed_edges
+
+        deduped = (
+            deduplicate_observed_edges(observed_edges)
+            if observed_edges is not None and not observed_edges.empty and "edge_id" in observed_edges.columns
+            else observed_edges
+        )
+        self.observed_edges = deduped.set_index("edge_id")
+
+    @staticmethod
+    def _clamp_sim_speed(sim_speed: float, freeflow: float, obs_speed: float) -> float:
+        """Clamp simulated speed to free-flow ceiling when vehicles overspeed due to speedFactor > 1.0."""
+        if obs_speed <= freeflow and sim_speed > freeflow:
+            return freeflow
+        return sim_speed
 
     @staticmethod
     def _sumo_freeflow_kmh(obs_row: pd.Series) -> float:
@@ -144,7 +158,11 @@ class EdgeSpeedObjective:
 
                 if edge_interval_speeds:
                     for interval_idx in range(measurement_intervals):
-                        sim_speed = edge_interval_speeds.get(interval_idx, freeflow)
+                        sim_speed = self._clamp_sim_speed(
+                            float(edge_interval_speeds.get(interval_idx, freeflow)),
+                            freeflow,
+                            obs_speed,
+                        )
                         err = (sim_speed - obs_speed) / freeflow
                         errors.append(err)
                         active_errors.append(err)
@@ -161,7 +179,11 @@ class EdgeSpeedObjective:
             freeflow = self._sumo_freeflow_kmh(obs_row)
 
             if edge_id in simulated_speeds:
-                sim_speed = simulated_speeds[edge_id]
+                sim_speed = self._clamp_sim_speed(
+                    float(simulated_speeds[edge_id]),
+                    freeflow,
+                    obs_speed,
+                )
                 err = (sim_speed - obs_speed) / freeflow
                 errors.append(err)
                 active_errors.append(err)
@@ -190,27 +212,32 @@ class EdgeSpeedObjective:
 
         if not errors:
             return {
+                "loss": float("inf"),
                 "mae": float("inf"),
+                "std": float("inf"),
                 "active_mae": None,
                 "sensor_coverage": 0.0,
                 "fail_total": compute_fail_total(trip_stats),
                 "failure_rate": float("inf"),
-                "loss": float("inf"),
                 "missing_edges": missing_count,
             }
 
-        mae = float(np.mean(np.abs(errors)))
+        abs_err = np.abs(errors)
+        mae = float(np.mean(abs_err))
+        std = float(np.std(abs_err)) if len(abs_err) > 1 else 0.0
+        loss = float(mae + std)
         active_mae = float(np.mean(np.abs(active_errors))) if active_errors else None
         fail_total = compute_fail_total(trip_stats)
         failure_rate = calculate_failure_rate(fail_total, expected_vehicles)
 
         return {
             "mae": mae,
+            "std": std,
+            "loss": loss,
             "active_mae": active_mae,
             "sensor_coverage": sensor_coverage,
             "fail_total": int(fail_total),
             "failure_rate": float(failure_rate),
-            "loss": float(mae),
             "missing_edges": int(missing_count),
         }
 
@@ -220,7 +247,10 @@ class EdgeSpeedObjective:
         trip_stats: Optional[Dict[str, float]] = None,
         expected_vehicles: int = 0,
     ) -> float:
-        """Calculate loss (dimensionless speed-ratio MAE, lower is better).
+        """Calculate loss (dimensionless speed-ratio MAE + std, lower is better).
+
+        Combines average error (MAE) with spatial dispersion (std) into an
+        upper-band mean-variance loss, penalizing uneven corridor locking.
 
         Args:
             simulated_speeds: Dict-like edge speeds, optionally with attached
@@ -229,13 +259,13 @@ class EdgeSpeedObjective:
             expected_vehicles: Total vehicles that should have run.
 
         Returns:
-            Float MAE value (dimensionless, lower is better).
+            Float loss value (MAE + std, dimensionless, lower is better).
         """
         return self.calculate_loss_components(
             simulated_speeds,
             trip_stats=trip_stats,
             expected_vehicles=expected_vehicles,
-        )["mae"]
+        )["loss"]
 
     def calculate_metrics(
         self,
@@ -266,7 +296,11 @@ class EdgeSpeedObjective:
                     matched += 1
                     edge_errs = []
                     for interval_idx in range(measurement_intervals):
-                        sim_speed = edge_interval_speeds.get(interval_idx, freeflow)
+                        sim_speed = self._clamp_sim_speed(
+                            float(edge_interval_speeds.get(interval_idx, freeflow)),
+                            freeflow,
+                            obs_speed,
+                        )
                         err = (sim_speed - obs_speed) / freeflow
                         errors.append(err)
                         active_errors.append(err)
@@ -284,7 +318,11 @@ class EdgeSpeedObjective:
                 freeflow = self._sumo_freeflow_kmh(obs_row)
 
                 if edge_id in simulated_speeds:
-                    sim_speed = simulated_speeds[edge_id]
+                    sim_speed = self._clamp_sim_speed(
+                        float(simulated_speeds[edge_id]),
+                        freeflow,
+                        obs_speed,
+                    )
                     matched += 1
                     err = (sim_speed - obs_speed) / freeflow
                     errors.append(err)
@@ -298,11 +336,16 @@ class EdgeSpeedObjective:
                 edge_discrepancies[str(edge_id)] = float(err)
 
         if errors:
-            mae = float(np.mean(np.abs(errors)))
+            abs_err = np.abs(errors)
+            mae = float(np.mean(abs_err))
+            std = float(np.std(abs_err)) if len(abs_err) > 1 else 0.0
+            loss = float(mae + std)
             mse = float(np.mean(np.square(errors)))
             avg_diff = float(np.mean(errors))
         else:
             mae = float("inf")
+            std = float("inf")
+            loss = float("inf")
             mse = float("inf")
             avg_diff = 0.0
 
@@ -311,7 +354,9 @@ class EdgeSpeedObjective:
         sensor_coverage = float(matched / total_edges) if total_edges > 0 else 0.0
 
         return {
+            "loss": loss,
             "mae": mae,
+            "std": std,
             "mse": mse,
             "active_mae": active_mae,
             "sensor_coverage": sensor_coverage,

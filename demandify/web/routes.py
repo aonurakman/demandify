@@ -5,6 +5,7 @@ Web routes for demandify with pipeline execution.
 import asyncio
 import logging
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ RUN_DEFAULTS = get_run_defaults()
 
 # In-memory run storage (in production, use Redis or DB)
 active_runs = {}
+run_cancel_events: dict[str, threading.Event] = {}
 
 # Maximum number of log entries to keep in memory per run
 MAX_LOG_ENTRIES = 100
@@ -136,8 +138,9 @@ async def save_api_key_endpoint(service: str = Form(...), key: str = Form(...)):
 
 async def run_calibration_pipeline(run_id: str, params: dict):
     """Background task to run calibration pipeline with progress updates."""
-    from demandify.pipeline import CalibrationPipeline
+    from demandify.pipeline import CalibrationPipeline, PipelineCancelledError
 
+    cancel_event = run_cancel_events.get(run_id)
     try:
         # Capture event loop for thread-safe progress updates
         loop = asyncio.get_running_loop()
@@ -193,6 +196,8 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             mesosim=params.get("mesosim", True),
             topology_guidance=params.get("topology_guidance", True),
             sensor_coverage_od=params.get("sensor_coverage_od", True),
+            lefthand=params.get("lefthand"),
+            routing_mode=params.get("routing_mode", RUN_DEFAULTS["routing_mode"]),
             offline_dataset=params.get("offline_dataset"),
             save_offline_dataset=params.get("save_offline_dataset", False),
             save_offline_dataset_name=params.get("save_offline_dataset_name"),
@@ -200,6 +205,7 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             run_id=run_id,
             output_dir=output_dir,
             progress_callback=update_progress,
+            cancel_event=cancel_event,
         )
 
         # Run pipeline
@@ -216,6 +222,10 @@ async def run_calibration_pipeline(run_id: str, params: dict):
             active_runs[run_id]["status"] = "aborted"
             update_progress(0, "Aborted", "Run aborted.")
 
+    except PipelineCancelledError:
+        if run_id in active_runs:
+            active_runs[run_id]["status"] = "aborted"
+            update_progress(0, "Aborted", "Run aborted.")
     except Exception as e:
         logger.error(f"Pipeline failed for run {run_id}: {e}", exc_info=True)
         if run_id in active_runs:
@@ -224,6 +234,8 @@ async def run_calibration_pipeline(run_id: str, params: dict):
                 {"message": f"Error: {str(e)}", "level": "error"}
             )
             _trim_run_logs(run_id)
+    finally:
+        run_cancel_events.pop(run_id, None)
 
 
 @router.post("/api/check_feasibility")
@@ -350,13 +362,14 @@ async def start_run(
     ga_early_stopping: bool = Form(RUN_DEFAULTS["ga_early_stopping"]),
     max_od_pairs: int = Form(RUN_DEFAULTS["max_od_pairs"]),
     min_connection_paths: int = Form(RUN_DEFAULTS["min_connection_paths"]),
-    bin_minutes: Optional[int] = Form(None),
     initial_population: int = Form(RUN_DEFAULTS["initial_population"]),
     parallel_workers: Optional[int] = Form(RUN_DEFAULTS["parallel_workers"]),
     effective_capacity_factor: float = Form(RUN_DEFAULTS.get("effective_capacity_factor", 1.0)),
     mesosim: bool = Form(RUN_DEFAULTS.get("mesosim", True)),
     topology_guidance: bool = Form(RUN_DEFAULTS.get("topology_guidance", True)),
     sensor_coverage_od: bool = Form(RUN_DEFAULTS.get("sensor_coverage_od", True)),
+    routing_mode: str = Form(RUN_DEFAULTS["routing_mode"]),
+    lefthand: Optional[str] = Form(None),
     save_offline_dataset: bool = Form(False),
     save_offline_dataset_name: Optional[str] = Form(None),
 ):
@@ -448,6 +461,27 @@ async def start_run(
             status_code=400,
             detail="ga_generations must be at least 1",
         )
+
+    routing_mode_clean = str(routing_mode or RUN_DEFAULTS["routing_mode"]).lower().strip()
+    if routing_mode_clean not in {"static", "pretrip", "dynamic"}:
+        raise HTTPException(
+            status_code=400,
+            detail="routing_mode must be one of 'static', 'pretrip', or 'dynamic'",
+        )
+
+    resolved_lefthand: Optional[bool]
+    if lefthand is None or str(lefthand).strip().lower() in {"", "auto", "none", "null"}:
+        resolved_lefthand = None
+    elif str(lefthand).strip().lower() in {"true", "1", "yes", "lefthand"}:
+        resolved_lefthand = True
+    elif str(lefthand).strip().lower() in {"false", "0", "no", "righthand"}:
+        resolved_lefthand = False
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="lefthand must be 'auto', 'true', or 'false'",
+        )
+
     requested_run_id = run_id.strip() if run_id and run_id.strip() else None
     if requested_run_id:
         requested_output_dir = Path.cwd() / "demandify_runs" / f"run_{requested_run_id}"
@@ -463,7 +497,8 @@ async def start_run(
     # Create or use run ID
     actual_run_id = requested_run_id if requested_run_id else str(uuid.uuid4())
 
-    # Store run metadata
+    # Store run metadata and cooperative cancellation event
+    run_cancel_events[actual_run_id] = threading.Event()
     active_runs[actual_run_id] = {
         "status": "running",
         "progress": {"stage": 0, "stage_name": "Initializing", "logs": []},
@@ -503,6 +538,8 @@ async def start_run(
         "mesosim": mesosim,
         "topology_guidance": topology_guidance,
         "sensor_coverage_od": sensor_coverage_od,
+        "routing_mode": routing_mode_clean,
+        "lefthand": resolved_lefthand,
         "save_offline_dataset": save_offline_dataset,
         "save_offline_dataset_name": resolved_save_dataset_name,
         "save_offline_dataset_root": (
@@ -521,6 +558,28 @@ async def list_offline_datasets():
     """List all discovered offline datasets (generated + packaged)."""
     datasets = get_offline_dataset_catalog(include_generated=True, include_packaged=True)
     return {"datasets": datasets}
+
+
+@router.post("/api/run/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    """Signal cooperative cancellation for an active run."""
+    if run_id not in active_runs:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = active_runs[run_id]
+    if run.get("status") in {"completed", "failed", "aborted"}:
+        return {"run_id": run_id, "status": run["status"]}
+
+    cancel_event = run_cancel_events.get(run_id)
+    if cancel_event is not None:
+        cancel_event.set()
+
+    run["status"] = "aborted"
+    run["progress"]["logs"].append(
+        {"message": "Cancellation requested by user.", "level": "warning"}
+    )
+    _trim_run_logs(run_id)
+    return {"run_id": run_id, "status": "aborted"}
 
 
 @router.get("/api/run/{run_id}/progress")
@@ -550,13 +609,20 @@ async def get_status(run_id: str):
 @router.get("/results", response_class=HTMLResponse)
 async def results_page(request: Request, run_id: str):
     """Results page for a completed run."""
+    from demandify import __version__
+
     if run_id not in active_runs:
         raise HTTPException(status_code=404, detail="Run not found")
 
     return templates.TemplateResponse(
         request=request,
         name="results.html",
-        context={"request": request, "run_id": run_id, "run_data": active_runs[run_id]},
+        context={
+            "request": request,
+            "run_id": run_id,
+            "run_data": active_runs[run_id],
+            "version": __version__,
+        },
     )
 
 

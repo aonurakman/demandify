@@ -39,6 +39,7 @@ def test_run_defaults_have_required_keys():
         "ga_assortative_mating",
         "ga_deterministic_crowding",
         "ga_early_stopping",
+        "routing_mode",
     }
     assert required_keys.issubset(defaults.keys())
     assert defaults["window_minutes"] in defaults["window_options_minutes"]
@@ -73,6 +74,7 @@ def test_api_form_defaults_match_run_defaults():
     assert _form_default(start_sig, "mesosim") == defaults["mesosim"]
     assert _form_default(start_sig, "topology_guidance") == defaults["topology_guidance"]
     assert _form_default(start_sig, "sensor_coverage_od") == defaults["sensor_coverage_od"]
+    assert _form_default(start_sig, "routing_mode") == defaults["routing_mode"]
 
 
 def test_index_template_uses_shared_defaults():

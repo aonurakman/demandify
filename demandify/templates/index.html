@@ -322,6 +322,34 @@
                                                             id="parallel_workers" name="parallel_workers"
                                                             value="{{ run_defaults.parallel_workers }}" min="1" max="32">
                                                     </div>
+                                                    <div class="col-md-6">
+                                                        <label for="routing_mode" class="form-label small">
+                                                            Routing Mode
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Static: free-flow shortest path. Pretrip: dynamic route at departure. Dynamic: mid-trip rerouting (50% fleet, 300s period; recommended for unconstrained city-wide demand).">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <select class="form-select form-select-sm" id="routing_mode" name="routing_mode">
+                                                            <option value="static" {% if run_defaults.routing_mode == 'static' %}selected{% endif %}>Static (shortest path)</option>
+                                                            <option value="pretrip" {% if run_defaults.routing_mode == 'pretrip' %}selected{% endif %}>Pretrip (at departure)</option>
+                                                            <option value="dynamic" {% if run_defaults.routing_mode == 'dynamic' %}selected{% endif %}>Dynamic (mid-trip rerouting)</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="col-md-6">
+                                                        <label for="lefthand" class="form-label small">
+                                                            Driving Side
+                                                            <span class="info-icon" data-bs-toggle="tooltip"
+                                                                title="Auto-detect driving side from coordinates or force right-hand / left-hand traffic rules in netconvert.">
+                                                                <i class="bi bi-info-circle"></i>
+                                                            </span>
+                                                        </label>
+                                                        <select class="form-select form-select-sm" id="lefthand" name="lefthand">
+                                                            <option value="auto" selected>Auto-detect</option>
+                                                            <option value="false">Right-hand</option>
+                                                            <option value="true">Left-hand</option>
+                                                        </select>
+                                                    </div>
                                                 </div>
                                             </div>
 

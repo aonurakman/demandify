@@ -261,3 +261,108 @@ def test_progress_log_ingestion_is_incremental(run_entry, tmp_path):
         "Third line",
         "Fourth line",
     ]
+
+
+def test_cancel_run_endpoint_signals_event_and_aborts(run_entry):
+    """POST /api/run/{run_id}/cancel should set cancel_event and mark status aborted."""
+    import threading
+    from demandify.web.routes import run_cancel_events
+
+    run_id = run_entry(
+        "test-cancel-active",
+        "running",
+        6,
+        "Calibrating Demand",
+        [{"message": "Gen 1...", "level": "info"}],
+    )
+    cancel_ev = threading.Event()
+    run_cancel_events[run_id] = cancel_ev
+
+    try:
+        client = TestClient(app)
+        resp = client.post(f"/api/run/{run_id}/cancel")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run_id"] == run_id
+        assert data["status"] == "aborted"
+        assert cancel_ev.is_set()
+        assert active_runs[run_id]["status"] == "aborted"
+        assert any(
+            "Cancellation requested" in log["message"]
+            for log in active_runs[run_id]["progress"]["logs"]
+        )
+    finally:
+        run_cancel_events.pop(run_id, None)
+
+
+def test_cancel_run_endpoint_idempotent_on_terminal_and_404_on_missing(run_entry):
+    """Cancel endpoint should return 404 for unknown run and preserve terminal status."""
+    client = TestClient(app)
+    missing_resp = client.post("/api/run/nonexistent-run-xyz/cancel")
+    assert missing_resp.status_code == 404
+
+    run_id = run_entry(
+        "test-cancel-completed",
+        "completed",
+        8,
+        "Complete",
+        [{"message": "Done", "level": "info"}],
+    )
+    done_resp = client.post(f"/api/run/{run_id}/cancel")
+    assert done_resp.status_code == 200
+    assert done_resp.json()["status"] == "completed"
+    assert active_runs[run_id]["status"] == "completed"
+
+
+def test_ga_optimize_aborts_on_cancel_event():
+    """GeneticAlgorithm.optimize should raise PipelineCancelledError when cancel_event is set."""
+    import threading
+    import numpy as np
+    from demandify.calibration.optimizer import GeneticAlgorithm, PipelineCancelledError
+
+    cancel_ev = threading.Event()
+    eval_calls = 0
+
+    def _eval_fn(genome: np.ndarray):
+        nonlocal eval_calls
+        eval_calls += 1
+        if eval_calls >= 3:
+            cancel_ev.set()
+        return float(np.sum(genome)), {"mae": float(np.sum(genome)), "teleports": 0}
+
+    ga = GeneticAlgorithm(
+        genome_size=4,
+        seed=42,
+        initial_population=100,
+        population_size=6,
+        num_generations=10,
+        num_workers=1,
+        cancel_event=cancel_ev,
+    )
+
+    with pytest.raises(PipelineCancelledError):
+        ga.optimize(_eval_fn)
+
+    assert eval_calls == 3
+
+
+def test_pipeline_run_returns_none_when_cancelled(tmp_path):
+    """CalibrationPipeline.run() should return None cleanly when cancel_event is set."""
+    import asyncio
+    import threading
+
+    cancel_ev = threading.Event()
+    cancel_ev.set()
+
+    pipeline = CalibrationPipeline(
+        bbox=(2.29, 48.84, 2.31, 48.85),
+        window_minutes=15,
+        seed=42,
+        output_dir=tmp_path / "run_cancelled",
+        run_id="cancelled_test",
+        cancel_event=cancel_ev,
+    )
+
+    result = asyncio.run(pipeline.run())
+    assert result is None
+

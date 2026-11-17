@@ -16,7 +16,11 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, Point
 
-from demandify.sumo.network import SUMONetwork, convert_osm_to_sumo
+from demandify.sumo.network import (
+    SUMONetwork,
+    apply_road_hierarchy_speed_derating,
+    convert_osm_to_sumo,
+)
 from demandify.sumo.matching import get_network_projection
 from demandify.sumo.departure_schedule import (
     sequential_departure_times,
@@ -101,7 +105,9 @@ def list_studio_sources() -> Dict[str, List[Dict[str, Any]]]:
                 latest_demand = run_path / "latest_selected" / "data" / "demand.csv"
                 if latest_demand.exists():
                     demand_path = latest_demand
-            meta_path = run_path / "metadata.json"
+            meta_path = run_path / "run_meta.json"
+            if not meta_path.exists():
+                meta_path = run_path / "metadata.json"
             meta = {}
             if meta_path.exists():
                 try:
@@ -111,16 +117,19 @@ def list_studio_sources() -> Dict[str, List[Dict[str, Any]]]:
                     pass
 
             run_id = run_path.name.replace("run_", "", 1)
+            run_info = meta.get("run_info", {})
+            sim_cfg = meta.get("simulation_config", {})
+            user_in = meta.get("user_inputs", {})
             sources["runs"].append({
                 "id": run_id,
-                "name": meta.get("run_id", run_id),
+                "name": user_in.get("run_id") or meta.get("run_id", run_id),
                 "type": "run",
                 "path": str(run_path),
                 "has_network": True,
                 "has_demand": demand_path.exists(),
-                "created_at": meta.get("created_at"),
-                "status": meta.get("status", "unknown"),
-                "window_minutes": meta.get("window_minutes", 15),
+                "created_at": run_info.get("timestamp") or meta.get("created_at"),
+                "status": meta.get("status", "completed" if meta_path.exists() else "unknown"),
+                "window_minutes": sim_cfg.get("window_minutes") or meta.get("window_minutes", 15),
             })
 
     # 3. Saved Custom Scenarios
@@ -193,6 +202,63 @@ def resolve_source_paths(source_type: str, source_id: str) -> Tuple[Path, Option
 
     else:
         raise ValueError(f"Unknown source type: {source_type}")
+
+
+def resolve_source_duration_minutes(
+    source_type: str,
+    source_id: str,
+    default: int = 15,
+) -> int:
+    """Resolve the active demand span in minutes from run or scenario metadata."""
+    if source_type == "run":
+        run_path = Path("demandify_runs") / f"run_{source_id}"
+        if not run_path.exists():
+            run_path = Path("demandify_runs") / source_id
+        for meta_candidate in (
+            run_path / "run_meta.json",
+            run_path / "metadata.json",
+            run_path / "latest_selected" / "run_meta.json",
+        ):
+            if not meta_candidate.exists():
+                continue
+            try:
+                meta = json.loads(meta_candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            demand_cfg = meta.get("demand_config") or {}
+            bin_minutes = demand_cfg.get("bin_minutes")
+            if bin_minutes is not None:
+                try:
+                    val = int(round(float(bin_minutes)))
+                    if val >= 1:
+                        return val
+                except (TypeError, ValueError):
+                    pass
+            sim_cfg = meta.get("simulation_config") or {}
+            window = sim_cfg.get("window_minutes")
+            warmup = sim_cfg.get("warmup_minutes", 0)
+            if window is not None:
+                try:
+                    val = int(round(float(window) + float(warmup or 0)))
+                    if val >= 1:
+                        return val
+                except (TypeError, ValueError):
+                    pass
+        return default
+
+    if source_type == "scenario":
+        meta_path = get_scenarios_root() / source_id / "scenario_meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                val = int(round(float(meta.get("window_minutes", default) or default)))
+                if val >= 1:
+                    return val
+            except Exception:
+                pass
+        return default
+
+    return default
 
 
 class StudioNetworkManager:
@@ -580,6 +646,9 @@ def run_studio_test_simulation(
         ET.indent(tree, space="  ")
         tree.write(trips_xml, encoding="utf-8", xml_declaration=True)
 
+        vtypes_file = Path(network_file).parent / "vehicle_types.xml"
+        extra_additional = [vtypes_file] if vtypes_file.exists() else []
+
         sim = SUMOSimulation(
             network_file=network_file,
             vehicle_file=trips_xml,
@@ -589,6 +658,7 @@ def run_studio_test_simulation(
             seed=seed,
             use_dynamic_routing=True,
             mesosim=mesosim,
+            extra_additional_files=extra_additional,
         )
 
         edge_speeds, trip_stats = sim.run()
@@ -678,6 +748,13 @@ def save_studio_scenario(
     if src_meta.exists():
         shutil.copy2(src_meta, dest_net.with_suffix(".meta.json"))
 
+    # Copy vehicle_types.xml if present (capacity derating)
+    src_vtypes = Path(network_file).parent / "vehicle_types.xml"
+    has_vtypes = False
+    if src_vtypes.exists():
+        shutil.copy2(src_vtypes, sumo_dir / "vehicle_types.xml")
+        has_vtypes = True
+
     # 2. Save demand.csv (filtering any unroutable ODs)
     mgr = StudioNetworkManager(network_file)
     od_pairs = [od for od in od_pairs if mgr.find_shortest_path(str(od["origin"]), str(od["destination"]))]
@@ -706,13 +783,18 @@ def save_studio_scenario(
     input_elem = ET.SubElement(cfg_root, "input")
     ET.SubElement(input_elem, "net-file", value="network.net.xml")
     ET.SubElement(input_elem, "route-files", value="trips.xml")
+    if has_vtypes:
+        ET.SubElement(input_elem, "additional-files", value="vehicle_types.xml")
     time_elem = ET.SubElement(cfg_root, "time")
     ET.SubElement(time_elem, "begin", value="0")
     ET.SubElement(time_elem, "end", value=str(int(window_minutes * 60)))
     ET.SubElement(time_elem, "step-length", value="1.0")
     proc_elem = ET.SubElement(cfg_root, "processing")
     ET.SubElement(proc_elem, "ignore-route-errors", value="true")
-    ET.SubElement(proc_elem, "device.rerouting.adaptation-interval", value="10")
+    ET.SubElement(proc_elem, "ignore-junction-blocker", value="15")
+    routing_elem = ET.SubElement(cfg_root, "routing")
+    ET.SubElement(routing_elem, "device.rerouting.probability", value="0.50")
+    ET.SubElement(routing_elem, "device.rerouting.period", value="300")
     cfg_tree = ET.ElementTree(cfg_root)
     ET.indent(cfg_tree, space="  ")
     cfg_tree.write(sumocfg_file, encoding="utf-8", xml_declaration=True)
@@ -768,11 +850,15 @@ async def fetch_osm_and_build_studio_network(
     # Fetch OSM data
     fetcher = OSMFetcher(timeout=180)
     logger.info(f"Fetching OSM for bbox {bbox} -> {osm_file}")
-    await fetcher.fetch_bbox(bbox, osm_file)
+    try:
+        await fetcher.fetch_osm_data(bbox, osm_file)
+    finally:
+        await fetcher.close()
 
-    # Convert to SUMO
+    # Convert to SUMO and apply consistent road-hierarchy speed caps
     logger.info(f"Converting OSM to SUMO -> {net_file}")
     convert_osm_to_sumo(osm_file, net_file, car_only=True)
+    apply_road_hierarchy_speed_derating(net_file)
 
     # Write blank demand.csv
     blank_df = pd.DataFrame(columns=["ID", "origin link id", "destination link id", "departure timestep"])

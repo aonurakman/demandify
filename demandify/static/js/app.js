@@ -713,7 +713,7 @@ function initEventListeners() {
 
         const formData = new FormData(runForm);
         // Handle boolean checkboxes: set to true/false explicitly
-        ['ga_assortative_mating', 'ga_deterministic_crowding', 'ga_early_stopping'].forEach(function(name) {
+        ['ga_assortative_mating', 'ga_deterministic_crowding', 'ga_early_stopping', 'mesosim', 'topology_guidance', 'sensor_coverage_od'].forEach(function(name) {
             var cb = document.getElementById(name);
             if (cb) formData.set(name, cb.checked ? 'true' : 'false');
         });
@@ -746,9 +746,17 @@ function initEventListeners() {
     });
 
     // Cancel button
-    document.getElementById('cancel-btn').addEventListener('click', function () {
+    document.getElementById('cancel-btn').addEventListener('click', async function () {
         if (confirm('Are you sure you want to cancel this run?')) {
+            const runIdToCancel = currentRunId;
             stopProgressPolling();
+            if (runIdToCancel) {
+                try {
+                    await fetch(`/api/run/${runIdToCancel}/cancel`, { method: 'POST' });
+                } catch (error) {
+                    console.error('Error cancelling run:', error);
+                }
+            }
             resetUI();
         }
     });

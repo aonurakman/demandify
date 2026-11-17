@@ -270,7 +270,53 @@ def test_latest_selected_export_tracks_latest_generation(monkeypatch, tmp_path):
     latest_meta = json.loads((latest_dir / "run_meta.json").read_text(encoding="utf-8"))
     assert latest_meta["latest_selected"]["generation"] == 2
     assert latest_meta["latest_selected"]["selected_mae"] == 2.0
+    assert latest_meta["latest_selected"]["selected_loss"] == 2.0
     assert latest_meta["latest_selected"]["selected_teleports"] == 0
+
+
+def test_checkpoint_meta_separates_best_mae_and_best_loss(monkeypatch, tmp_path):
+    pipeline = pipeline_module.CalibrationPipeline(
+        bbox=(20.0, 50.0, 20.1, 50.1),
+        window_minutes=15,
+        seed=42,
+        output_dir=tmp_path / "run_ckpt_meta",
+        run_id="ckpt_meta",
+    )
+
+    class FakeDemandGen:
+        def genome_to_demand_csv(self, genome, od_pairs, departure_bins, output_path):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("ID,origin link id,destination link id,departure timestep\n", encoding="utf-8")
+
+        def demand_csv_to_trips_xml(self, demand_csv, trips_file):
+            trips_file.parent.mkdir(parents=True, exist_ok=True)
+            trips_file.write_text("<routes/>", encoding="utf-8")
+
+    class FakeURBExporter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(pipeline_module, "URBDataExporter", FakeURBExporter)
+
+    net_file = tmp_path / "network.net.xml"
+    net_file.write_text("<net/>", encoding="utf-8")
+    pipeline._save_generation_checkpoint(
+        generation=1,
+        best_genome=np.array([5], dtype=int),
+        best_loss=0.27,
+        best_metrics={"mae": 0.27, "loss": 0.50},
+        demand_gen=FakeDemandGen(),
+        od_pairs=[("o1", "d1")],
+        departure_bins=[(0, 60)],
+        network_file=net_file,
+    )
+
+    meta = json.loads((pipeline.output_dir / "checkpoints" / "gen_0001" / "checkpoint_meta.json").read_text())
+    assert meta["best_mae"] == 0.27
+    assert meta["best_loss"] == 0.50
 
 
 def test_initialize_demand_passes_worker_count_to_od_selection(monkeypatch, tmp_path):

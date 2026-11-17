@@ -10,6 +10,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import logging
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,9 @@ class ReportGenerator:
         # Create visualizations
         loss_plot = self._create_loss_plot(loss_history, generation_stats)
         speed_plot = self._create_speed_comparison(observed_edges, simulated_speeds)
+        speed_heatmap_plot = self._create_speed_comparison_heatmap(
+            observed_edges, simulated_speeds
+        )
 
         # Create additional plots if generation_stats available
         extra_plots = []
@@ -75,7 +79,13 @@ class ReportGenerator:
 
         # Build HTML
         html = self._build_html(
-            loss_plot, speed_plot, mismatches, metadata, observed_edges, extra_plots
+            loss_plot,
+            speed_plot,
+            mismatches,
+            metadata,
+            observed_edges,
+            extra_plots,
+            speed_heatmap_plot=speed_heatmap_plot,
         )
 
         # Save
@@ -151,12 +161,12 @@ class ReportGenerator:
     def _create_loss_plot(
         self, loss_history: List[float], generation_stats: Optional[List[dict]] = None
     ) -> str:
-        """Create MAE convergence plot with optional mean±stddev band."""
+        """Create objective loss convergence plot with optional mean±stddev band."""
         fig, ax = plt.subplots(figsize=(8, 4))
 
         generations = list(range(1, len(loss_history) + 1))
 
-        # Selected MAE line
+        # Selected loss line
         ax.plot(
             generations,
             loss_history,
@@ -164,7 +174,7 @@ class ReportGenerator:
             linewidth=2,
             color="#c2410c",
             markersize=5,
-            label="Selected MAE",
+            label="Selected Loss",
             zorder=3,
         )
 
@@ -179,7 +189,7 @@ class ReportGenerator:
                 linewidth=1.5,
                 linestyle="--",
                 color="#f59e0b",
-                label="Mean MAE",
+                label="Mean Loss",
                 zorder=2,
             )
 
@@ -190,8 +200,8 @@ class ReportGenerator:
             )
 
         ax.set_xlabel("Generation")
-        ax.set_ylabel("MAE (speed ratio)")
-        ax.set_title("Calibration Convergence")
+        ax.set_ylabel("Loss (MAE + std, speed ratio)")
+        ax.set_title("Calibration Loss Convergence")
         ax.legend(loc="upper right", fontsize=9)
         ax.grid(True, alpha=0.3)
 
@@ -347,6 +357,156 @@ class ReportGenerator:
         plt.close(fig)
 
         return "plots/speed_comparison.png"
+
+    def _create_speed_comparison_heatmap(
+        self, observed_edges: pd.DataFrame, simulated_speeds: Dict[str, float]
+    ) -> str:
+        """Create observed vs simulated discrete 2D binned speed heatmap."""
+        matched_obs_speeds = []
+        matched_sim_speeds = []
+        fallback_obs_speeds = []
+        fallback_sim_speeds = []
+        all_obs_speeds = []
+        all_sim_speeds = []
+
+        for _, row in observed_edges.iterrows():
+            edge_id = row["edge_id"]
+            obs_speed = row["current_speed"]
+            sim_speed, status = self._representative_sim_speed(edge_id, row, simulated_speeds)
+            if status == "matched":
+                matched_obs_speeds.append(obs_speed)
+                matched_sim_speeds.append(sim_speed)
+            else:
+                fallback_obs_speeds.append(obs_speed)
+                fallback_sim_speeds.append(sim_speed)
+
+            all_obs_speeds.append(obs_speed)
+            all_sim_speeds.append(sim_speed)
+
+        n_matched = len(matched_obs_speeds)
+        n_missing = len(fallback_obs_speeds)
+
+        max_val = max(max(all_obs_speeds, default=0.0), max(all_sim_speeds, default=0.0))
+        bin_size = 5.0 if max_val <= 70.0 else 10.0
+        upper_limit = float(np.ceil((max_val + 1e-5) / bin_size) * bin_size)
+        if upper_limit < 10.0:
+            upper_limit = 10.0
+
+        bins = np.arange(0, upper_limit + bin_size, bin_size)
+        H, xedges, yedges = np.histogram2d(all_obs_speeds, all_sim_speeds, bins=bins)
+        H_plot = H.T
+
+        fig, ax = plt.subplots(figsize=(6.5, 6))
+
+        cmap = plt.cm.YlOrRd.copy()
+        cmap.set_under("white")
+
+        vmax = int(H.max()) if H.size > 0 and H.max() > 0 else 1
+        bounds = np.arange(0.5, vmax + 1.5, 1) if vmax <= 15 else np.linspace(0.5, vmax + 0.5, 10)
+        norm = mcolors.BoundaryNorm(bounds, cmap.N)
+
+        mesh = ax.pcolormesh(
+            xedges,
+            yedges,
+            np.ma.masked_equal(H_plot, 0),
+            cmap=cmap,
+            norm=norm,
+            edgecolors="#cccccc",
+            linewidth=0.5,
+        )
+
+        # Diagonal reference line
+        ax.plot([0, upper_limit], [0, upper_limit], "r--", linewidth=1.5, label="Perfect match (y=x)")
+
+        # Cell count annotations
+        for i in range(len(xedges) - 1):
+            for j in range(len(yedges) - 1):
+                count = int(H[i, j])
+                if count > 0:
+                    cx = (xedges[i] + xedges[i + 1]) / 2
+                    cy = (yedges[j] + yedges[j + 1]) / 2
+                    color = "white" if count > (vmax * 0.6) else "#1f2937"
+                    ax.text(
+                        cx,
+                        cy,
+                        str(count),
+                        ha="center",
+                        va="center",
+                        fontsize=7.5,
+                        fontweight="bold",
+                        color=color,
+                    )
+
+        ax.set_xlim(0, upper_limit)
+        ax.set_ylim(0, upper_limit)
+        ax.set_aspect("equal")
+
+        ax.set_xlabel("Observed Speed (km/h)", fontsize=9)
+        ax.set_ylabel("Simulated Speed (km/h)", fontsize=9)
+        ax.set_title("Speed Comparison Heatmap: Observed vs Simulated", fontsize=10, fontweight="bold")
+        ax.legend(loc="upper left", fontsize=8)
+
+        # Region labels
+        ax.text(
+            0.04,
+            0.88,
+            "Sim > Obs\n(Too Fast / Empty)",
+            transform=ax.transAxes,
+            verticalalignment="top",
+            color="red",
+            fontsize=8,
+            alpha=0.7,
+        )
+        ax.text(
+            0.96,
+            0.04,
+            "Sim < Obs\n(Too Slow / Congested)",
+            transform=ax.transAxes,
+            horizontalalignment="right",
+            verticalalignment="bottom",
+            color="orange",
+            fontsize=8,
+            alpha=0.7,
+        )
+
+        # Stats box
+        stats_text = f"n = {n_matched} matched"
+        if n_missing > 0:
+            stats_text += f", {n_missing} missing"
+        if len(all_obs_speeds) >= 2:
+            obs_arr = np.array(all_obs_speeds)
+            sim_arr = np.array(all_sim_speeds)
+            ss_res = np.sum((sim_arr - obs_arr) ** 2)
+            ss_tot = np.sum((obs_arr - np.mean(obs_arr)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+            rmse = np.sqrt(np.mean((sim_arr - obs_arr) ** 2))
+            mae = np.mean(np.abs(sim_arr - obs_arr))
+            stats_text += f"\nR² = {r_squared:.3f}, RMSE = {rmse:.1f} km/h\nMAE = {mae:.1f} km/h"
+
+        ax.text(
+            0.96,
+            0.25,
+            stats_text,
+            transform=ax.transAxes,
+            horizontalalignment="right",
+            verticalalignment="top",
+            fontsize=7.5,
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85, edgecolor="#ccc"),
+        )
+
+        cbar = fig.colorbar(mesh, ax=ax, shrink=0.75, pad=0.03)
+        cbar.set_label("Edge Count", fontsize=8)
+
+        fig.tight_layout()
+
+        plot_dir = self.output_dir / "plots"
+        plot_dir.mkdir(exist_ok=True)
+        plot_path = plot_dir / "speed_comparison_heatmap.png"
+
+        fig.savefig(plot_path, dpi=100, bbox_inches="tight")
+        plt.close(fig)
+
+        return "plots/speed_comparison_heatmap.png"
 
     def _create_failures_plot(self, generation_stats: List[dict]) -> Optional[str]:
         """Create plot showing zero-flow edges and fail totals over generations."""
@@ -597,13 +757,16 @@ class ReportGenerator:
         metadata: Dict,
         observed_edges: pd.DataFrame,
         extra_plots: Optional[List[tuple]] = None,
+        speed_heatmap_plot: Optional[str] = None,
     ) -> str:
         """Build HTML report."""
 
         # Safely extract metrics
         results = metadata.get("results", {})
         # Prefer the ratio-MAE value; fall back to the legacy km/h key for old runs.
-        final_loss = results.get("final_loss_mae") or results.get("final_loss_mae_kmh")
+        final_loss = results.get("final_loss_mae")
+        if final_loss is None:
+            final_loss = results.get("final_loss_mae_kmh")
         final_loss_str = f"{final_loss:.4f}" if final_loss is not None else "N/A"
         active_loss = results.get("final_active_mae")
         active_loss_str = f"{active_loss:.4f}" if active_loss is not None else "N/A"
@@ -641,6 +804,17 @@ class ReportGenerator:
             <div class="plot">
                 <h3>{title}</h3>
                 <img src="{plot_path}" alt="{title}">
+            </div>"""
+
+        heatmap_plot_html = ""
+        if speed_heatmap_plot:
+            heatmap_plot_html = f"""
+            <div class="plot">
+                <h3>Speed Comparison Heatmap</h3>
+                <img src="{speed_heatmap_plot}" alt="Speed Comparison Heatmap">
+                <p class="help-text">
+                    <strong>Binned density:</strong> Shows concentration of road segments in discrete speed bins (observed vs. simulated). Numbers indicate segment counts in each cell.
+                </p>
             </div>"""
 
         html = f"""
@@ -725,8 +899,8 @@ class ReportGenerator:
         <h2>📈 Calibration Progress</h2>
         <div class="plots">
             <div class="plot">
-                <h3>MAE Convergence</h3>
-                <img src="{loss_plot}" alt="MAE Plot">
+                <h3>Loss Convergence</h3>
+                <img src="{loss_plot}" alt="Loss Convergence Plot">
             </div>
             <div class="plot">
                 <h3>Speed Comparison</h3>
@@ -738,7 +912,7 @@ class ReportGenerator:
                         <li><strong>Below diagonal:</strong> Simulation is slower/more congested than real world.</li>
                     </ul>
                 </p>
-            </div>
+            </div>{heatmap_plot_html}
         </div>
     </div>
     

@@ -17,6 +17,7 @@ def test_early_stopping_triggers_after_boosted_stagnation():
     ga = GeneticAlgorithm(
         genome_size=4,
         seed=42,
+        initial_population=100,
         bounds=(0, 50),
         population_size=6,
         num_generations=15,
@@ -50,6 +51,7 @@ def test_early_stopping_disabled_by_default():
     ga = GeneticAlgorithm(
         genome_size=4,
         seed=42,
+        initial_population=100,
         bounds=(0, 50),
         population_size=6,
         num_generations=8,
@@ -75,6 +77,7 @@ def test_early_stopping_resets_if_improvement_found_during_boost():
     ga = GeneticAlgorithm(
         genome_size=4,
         seed=42,
+        initial_population=100,
         bounds=(0, 50),
         population_size=6,
         num_generations=15,

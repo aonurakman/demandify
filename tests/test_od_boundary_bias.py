@@ -273,3 +273,43 @@ def test_select_od_pairs_scale_adaptive_distance(tmp_path):
         assert dist >= expected_adaptive_min * 0.79  # within tolerance including relaxation if needed
 
 
+def test_select_od_pairs_commuter_corridor_covers_observed_links(tmp_path):
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+    gen = DemandGenerator(network, seed=42)
+
+    # Pick an internal edge as observed that wouldn't normally be chosen by through-traffic
+    observed = ["inner_in"]
+    pairs = gen.select_od_pairs(
+        max_od_pairs=2,
+        min_trip_distance=0.0,
+        min_connection_paths=1,
+        observed_edge_ids=observed,
+    )
+    assert len(pairs) == 2
+    covered = set()
+    for o, d in pairs:
+        path = gen.find_shortest_path(o, d)
+        covered.update(set(path) & set(observed))
+    assert "inner_in" in covered
+
+
+def test_select_od_pairs_multiprocessing_pool_stays_running_for_commuters(tmp_path):
+    network_file = _write_boundary_biased_network(tmp_path)
+    network = SUMONetwork(network_file)
+    gen = DemandGenerator(network, seed=42)
+
+    # With num_workers=2, verify that pool is running when validating commuter candidates
+    observed = ["inner_in"]
+    pairs = gen.select_od_pairs(
+        max_od_pairs=2,
+        min_trip_distance=0.0,
+        min_connection_paths=1,
+        observed_edge_ids=observed,
+        num_workers=2,
+    )
+    assert len(pairs) == 2
+
+
+
+

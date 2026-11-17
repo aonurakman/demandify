@@ -208,11 +208,76 @@ class SUMONetwork:
         return (0.0, 0.0)
 
 
+def is_lefthand_traffic(lat: float, lon: float) -> bool:
+    """Determine whether given coordinates belong to a left-hand driving country/region."""
+    # UK & Ireland (inc. Crown dependencies: Jersey, Guernsey, Isle of Man)
+    if 50.0 <= lat <= 61.0 and -11.0 <= lon <= 1.5:
+        return True
+    if 49.8 <= lat < 50.0 and -6.5 <= lon <= -4.5:
+        return True
+    if 49.15 <= lat <= 49.75 and -2.7 <= lon <= -1.9:
+        return True
+    # Cyprus
+    if 34.5 <= lat <= 35.8 and 32.0 <= lon <= 34.7:
+        return True
+    # Malta
+    if 35.7 <= lat <= 36.1 and 14.1 <= lon <= 14.6:
+        return True
+    # Japan
+    if 24.0 <= lat <= 46.0 and 122.0 <= lon <= 154.0:
+        return True
+    # Australia
+    if -45.0 <= lat <= -10.0 and 112.0 <= lon <= 155.0:
+        return True
+    # New Zealand
+    if -48.0 <= lat <= -34.0 and 166.0 <= lon <= 179.0:
+        return True
+    # Southern / Eastern Africa
+    if -35.0 <= lat <= 5.0 and 16.0 <= lon <= 42.0:
+        return True
+    # Indian Subcontinent (India, Pakistan, Bangladesh, Sri Lanka, Nepal)
+    if 5.5 <= lat <= 37.0 and 60.5 <= lon <= 97.5:
+        return True
+    # Southeast Asia (Malaysia, Singapore, Thailand, Indonesia)
+    if -11.0 <= lat <= 20.5 and 95.0 <= lon <= 141.0:
+        return True
+    # Hong Kong & Macau
+    if 22.1 <= lat <= 22.6 and 113.8 <= lon <= 114.5:
+        return True
+    return False
+
+
+def detect_lefthand_from_osm(osm_file: Path) -> bool:
+    """Detect whether an OSM XML file is located in a left-hand traffic region."""
+    osm_path = Path(osm_file)
+    if not osm_path.exists():
+        return False
+    try:
+        import xml.etree.ElementTree as ET
+        for event, elem in ET.iterparse(osm_path, events=("start",)):
+            if elem.tag == "bounds":
+                minlat = float(elem.attrib.get("minlat", 0))
+                maxlat = float(elem.attrib.get("maxlat", 0))
+                minlon = float(elem.attrib.get("minlon", 0))
+                maxlon = float(elem.attrib.get("maxlon", 0))
+                lat = (minlat + maxlat) / 2.0
+                lon = (minlon + maxlon) / 2.0
+                return is_lefthand_traffic(lat, lon)
+            elif elem.tag == "node":
+                lat = float(elem.attrib.get("lat", 0))
+                lon = float(elem.attrib.get("lon", 0))
+                return is_lefthand_traffic(lat, lon)
+    except Exception as e:
+        logger.debug(f"Failed to detect driving side from OSM file {osm_file}: {e}")
+    return False
+
+
 def convert_osm_to_sumo(
     osm_file: Path,
     output_net_file: Path,
     car_only: bool = True,
-    seed: int = 42
+    seed: int = 42,
+    lefthand: Optional[bool] = None,
 ) -> Tuple[Path, Dict]:
     """
     Convert OSM data to SUMO network using netconvert.
@@ -222,11 +287,20 @@ def convert_osm_to_sumo(
         output_net_file: Path for output .net.xml file
         car_only: If True, only include car-accessible roads
         seed: Random seed for reproducibility
+        lefthand: If True, compile for left-hand traffic. If None, auto-detects from OSM coordinates.
     
     Returns:
         (output_net_file, metadata)
     """
-    logger.debug(f"Converting OSM to SUMO network: {osm_file} -> {output_net_file}")
+    if lefthand is None:
+        resolved_lefthand = detect_lefthand_from_osm(osm_file)
+    else:
+        resolved_lefthand = bool(lefthand)
+
+    logger.debug(
+        f"Converting OSM to SUMO network: {osm_file} -> {output_net_file} "
+        f"(lefthand={resolved_lefthand})"
+    )
     
     # Build netconvert command
     cmd = [
@@ -237,6 +311,8 @@ def convert_osm_to_sumo(
         "--roundabouts.guess",  # Guess roundabouts
         "--ramps.guess",  # Guess highway ramps
         "--junctions.join",  # Join junctions
+        "--junctions.limit-turn-speed", "5.50",  # InTAS/LuST turn speed limit (20 km/h)
+        "--no-turnarounds", "true",  # Prevent mid-junction U-turn gridlocks
         "--tls.guess-signals",  # Guess traffic lights
         "--tls.discard-simple",  # Discard simple TLS
         "--tls.join",  # Cluster multi-node traffic light junctions
@@ -247,6 +323,9 @@ def convert_osm_to_sumo(
         "--keep-edges.components", "1",  # Keep only largest connected component
         "--seed", str(seed)
     ]
+
+    if resolved_lefthand:
+        cmd.extend(["--lefthand", "true"])
     
     if car_only:
         # Only keep edges accessible to passenger cars
@@ -275,6 +354,7 @@ def convert_osm_to_sumo(
             "output_file": str(output_net_file),
             "car_only": car_only,
             "seed": seed,
+            "lefthand": resolved_lefthand,
             "netconvert_args": cmd
         }
         
@@ -290,6 +370,42 @@ def convert_osm_to_sumo(
         raise RuntimeError(f"Failed to convert OSM to SUMO: {e.stderr}")
 
 
+def get_road_hierarchy_cap_kmh(road_type: str) -> Optional[float]:
+    """Return the InTAS/LuST-grounded speed ceiling (km/h) for a road hierarchy.
+
+    Grounded in InTAS (Lobo et al., 2020) and LuST (Codeca et al., 2015):
+      - living_street: 10 km/h (2.78 m/s, pedestrian priority / Schrittgeschwindigkeit)
+      - service / track / footway / path: 20 km/h (5.56 m/s, parking aisles & alleys)
+      - residential: 24 km/h (6.67 m/s, urban residential street with parking & traffic calming)
+      - unclassified: 35 km/h (9.72 m/s, narrow connecting streets)
+      - tertiary: 40 km/h (11.11 m/s, neighborhood collectors)
+      - secondary: 50 km/h (13.89 m/s, urban cross-town avenues)
+      - primary: 50 km/h (13.89 m/s, universal urban arterial baseline)
+      - trunk: 60 km/h (16.67 m/s, urban expressways / inner ring roads)
+      - motorway: 70 km/h (19.44 m/s, urban grade-separated bypasses)
+    """
+    rt = str(road_type).lower()
+    if "living_street" in rt:
+        return 10.0
+    if "service" in rt or "track" in rt or "footway" in rt or "path" in rt:
+        return 20.0
+    if "residential" in rt:
+        return 24.0
+    if "unclassified" in rt:
+        return 35.0
+    if "tertiary" in rt:
+        return 40.0
+    if "secondary" in rt:
+        return 50.0
+    if "primary" in rt:
+        return 50.0
+    if "trunk" in rt:
+        return 60.0
+    if "motorway" in rt:
+        return 70.0
+    return None
+
+
 def compute_effective_freeflow_kmh(
     edge_attrs: Dict[str, Any],
     obs_speed: float = 0.0,
@@ -303,11 +419,15 @@ def compute_effective_freeflow_kmh(
        use it directly, bounded below by the observed speed.
     2. Road Hierarchy Derating: If empirical freeflow is unavailable (e.g. vector tiles),
        derate raw OSM speed limits using road classification to reflect real-world urban
-       friction (parked cars, driveways, intersections):
-         - living_street: min(raw_speed, 20 km/h)
-         - residential, service: min(raw_speed, 35 km/h)
-         - tertiary, unclassified: min(raw_speed, 45 km/h)
-         - other (primary, secondary, trunk, motorway): raw_speed
+       friction (parked cars, driveways, intersections, pedestrian priority):
+         - living_street: min(raw_speed, 10 km/h)
+         - service, track: min(raw_speed, 20 km/h)
+         - residential: min(raw_speed, 24 km/h)
+         - unclassified: min(raw_speed, 35 km/h)
+         - tertiary: min(raw_speed, 40 km/h)
+         - secondary, primary: min(raw_speed, 50 km/h)
+         - trunk: min(raw_speed, 60 km/h)
+         - motorway: min(raw_speed, 70 km/h)
     3. Physical Lower Bound: Effective freeflow is never lower than the observed speed,
        and never lower than 1.0 km/h to prevent division by zero.
     """
@@ -332,12 +452,9 @@ def compute_effective_freeflow_kmh(
         else 0.0
     )
 
-    if "living_street" in road_type:
-        eff_speed = min(raw_speed, 20.0)
-    elif "residential" in road_type or "service" in road_type:
-        eff_speed = min(raw_speed, 35.0)
-    elif "tertiary" in road_type or "unclassified" in road_type:
-        eff_speed = min(raw_speed, 45.0)
+    cap_kmh = get_road_hierarchy_cap_kmh(road_type)
+    if cap_kmh is not None:
+        eff_speed = min(raw_speed, cap_kmh)
     else:
         eff_speed = raw_speed
 
@@ -416,3 +533,93 @@ def write_vehicle_types_xml(tau: float, output_path: Path) -> None:
         / (_VTYPE_REF_SPEED_MS / (_VTYPE_EFFECTIVE_LENGTH + 1.0 * _VTYPE_REF_SPEED_MS)),
         output_path,
     )
+
+
+def apply_road_hierarchy_speed_derating(
+    network_file: Path,
+    observed_edges: Optional[ Any ] = None,
+) -> int:
+    """Apply uniform road-class speed caps to all non-internal edges in a SUMO .net.xml file.
+
+    Uses the same InTAS/LuST-grounded speed caps as ``compute_effective_freeflow_kmh``
+    (living_street <= 10 km/h, service <= 20 km/h, residential <= 24 km/h,
+    unclassified <= 35 km/h, tertiary <= 40 km/h, secondary/primary <= 50 km/h,
+    trunk <= 60 km/h) across all edges in the network so observed and unobserved streets of the same class share identical speed limits
+    (avoiding routing bias). If ``observed_edges`` is provided, ensures no edge is
+    capped below its observed ``current_speed``.
+
+    Returns:
+        Number of edges whose lane speed limits were updated.
+    """
+    network_file = Path(network_file)
+    if not network_file.exists():
+        return 0
+
+    obs_floor_kmh: Dict[str, float] = {}
+    if observed_edges is not None and hasattr(observed_edges, "iterrows"):
+        for _, row in observed_edges.iterrows():
+            eid = str(row.get("edge_id", "")).strip()
+            if not eid:
+                continue
+            try:
+                obs_v = float(row.get("current_speed", 0.0) or 0.0)
+                if math.isfinite(obs_v) and obs_v > 0.0:
+                    obs_floor_kmh[eid] = max(obs_floor_kmh.get(eid, 0.0), obs_v)
+            except (TypeError, ValueError):
+                pass
+
+    try:
+        tree = ET.parse(network_file)
+    except Exception as exc:
+        logger.warning("Could not parse network file %s for speed derating: %s", network_file, exc)
+        return 0
+
+    root = tree.getroot()
+    updated_edges = 0
+
+    for edge in root.findall(".//edge"):
+        edge_id = edge.get("id", "")
+        if not edge_id or edge_id.startswith(":"):
+            continue
+
+        road_type = str(edge.get("type", "")).lower()
+        cap_kmh = get_road_hierarchy_cap_kmh(road_type)
+        if cap_kmh is None:
+            continue
+
+        if edge_id in obs_floor_kmh:
+            cap_kmh = max(cap_kmh, obs_floor_kmh[edge_id])
+
+        cap_ms = max(1.0 / 3.6, cap_kmh / 3.6)
+        edge_modified = False
+
+        if edge.get("speed") is not None:
+            try:
+                if float(edge.get("speed")) > cap_ms + 1e-3:
+                    edge.set("speed", f"{cap_ms:.2f}")
+                    edge_modified = True
+            except (TypeError, ValueError):
+                pass
+
+        for lane in edge.findall("lane"):
+            try:
+                cur_ms = float(lane.get("speed", "13.89"))
+            except (TypeError, ValueError):
+                continue
+            if cur_ms > cap_ms + 1e-3:
+                lane.set("speed", f"{cap_ms:.2f}")
+                edge_modified = True
+
+        if edge_modified:
+            updated_edges += 1
+
+    if updated_edges > 0:
+        tree.write(network_file, encoding="utf-8", xml_declaration=True)
+        logger.debug(
+            "Applied road-hierarchy speed caps to %d edges in %s",
+            updated_edges,
+            network_file,
+        )
+
+    return updated_edges
+

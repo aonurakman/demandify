@@ -17,43 +17,45 @@
   },
   "stats": {
     "fetched_segments": 195,
-    "matched_edges": 187,
-    "total_network_edges": 1719
+    "matched_edges": 107,
+    "total_network_edges": 1732
   },
   "quality": {
-    "score": 90,
-    "label": "excellent",
+    "score": 80,
+    "label": "good",
     "recommendation": "proceed",
-    "summary": "EXCELLENT quality (90/100): 187 traffic observations (104 unique edges) matched from 195 raw segments (95.9% match rate). 12.5% critical road coverage, 88% grid occupancy (Gini 0.36).",
-    "warnings": [],
+    "summary": "GOOD quality (80/100): 107 traffic observations (107 unique edges) matched from 195 raw segments (54.9% match rate). 11.4% critical road coverage, 100% grid occupancy (Gini 0.31).",
+    "warnings": [
+      "low_match_rate"
+    ],
     "components": {
-      "critical_hierarchy": 18,
+      "critical_hierarchy": 14,
       "spatial_dispersion": 23,
       "congestion_dynamics": 20,
-      "match_fidelity": 14,
+      "match_fidelity": 8,
       "sample_volume": 15
     },
     "metrics": {
       "fetched_segments": 195,
-      "matched_edges": 187,
-      "unique_matched_edges": 104,
-      "total_network_edges": 1719,
-      "critical_network_edges": 224,
-      "critical_matched_edges": 28,
-      "critical_coverage_ratio": 0.125,
+      "matched_edges": 107,
+      "unique_matched_edges": 107,
+      "total_network_edges": 1732,
+      "critical_network_edges": 228,
+      "critical_matched_edges": 26,
+      "critical_coverage_ratio": 0.114,
       "spatial_active_cells": 16,
-      "spatial_occupied_cells": 14,
-      "spatial_occupancy_ratio": 0.875,
-      "spatial_gini": 0.359,
-      "congested_edges_count": 138,
-      "congestion_share": 0.738,
-      "speed_cv": 0.538,
-      "match_rate": 0.959,
-      "observed_to_total_ratio": 0.0605,
+      "spatial_occupied_cells": 16,
+      "spatial_occupancy_ratio": 1.0,
+      "spatial_gini": 0.315,
+      "congested_edges_count": 77,
+      "congestion_share": 0.72,
+      "speed_cv": 0.518,
+      "match_rate": 0.5487,
+      "observed_to_total_ratio": 0.0618,
       "area_km2": 3.9,
-      "edges_per_km2": 26.68,
+      "edges_per_km2": 27.44,
       "median_match_confidence": 1.0,
-      "low_confidence_share": 0.0642
+      "low_confidence_share": 0.0467
     }
   },
   "files": {
@@ -63,5 +65,6 @@
     "sumo_network": "sumo/network.net.xml",
     "network_plot": "plots/network.png",
     "pipeline_log": "logs/pipeline.log"
-  }
+  },
+  "driving_side": "left"
 }

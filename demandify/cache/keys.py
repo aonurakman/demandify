@@ -44,13 +44,14 @@ def osm_key(bbox_key: str) -> str:
     })
 
 
-def network_key(osm_key: str, car_only: bool, seed: int) -> str:
+def network_key(osm_key: str, car_only: bool, seed: int, lefthand: bool = False) -> str:
     """Generate cache key for SUMO network."""
     return generate_cache_key({
         'type': 'network',
         'osm_key': osm_key,
         'car_only': car_only,
-        'seed': seed
+        'seed': seed,
+        'lefthand': lefthand,
     })
 
 

@@ -39,7 +39,9 @@ def build_worker_error_metrics(error_message: str, worker_idx: Optional[int] = N
     metrics = {
         "worker_error": True,
         "error": error_message,
+        "loss": float("inf"),
         "mae": float("inf"),
+        "std": float("inf"),
         "routing_failures": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
         "teleports": 0,
         "fail_total": WORKER_FAILURE_FAIL_TOTAL_SENTINEL,
@@ -79,6 +81,9 @@ class SimulationConfig:
 
     # Mesoscopic simulation mode for fast GA candidate evaluations
     mesosim: bool = True
+
+    # Routing mode for vehicle route selection ('static', 'pretrip', 'dynamic')
+    routing_mode: str = "static"
 
 
 def _create_worker_temp_dir(
@@ -271,7 +276,7 @@ def run_simulation_worker(
             warmup_time=config.warmup_time,
             simulation_time=config.simulation_time,
             seed=seed, # Deterministic routing inside SUMO
-            use_dynamic_routing=True,
+            routing_mode=config.routing_mode,
             mesosim=config.mesosim,
             extra_additional_files=(
                 [config.vehicle_types_file] if config.vehicle_types_file else []
@@ -294,7 +299,9 @@ def run_simulation_worker(
             trip_stats=trip_stats,
             expected_vehicles=expected_vehicles
         )
+        loss = float(loss_components["loss"])
         mae = float(loss_components["mae"])
+        std = float(loss_components.get("std", 0.0))
 
         routing_failures = int(trip_stats.get("routing_failures", 0) or 0)
         teleports = int(trip_stats.get("teleports", 0) or 0)
@@ -302,7 +309,9 @@ def run_simulation_worker(
 
         # 4. Metrics
         metrics = objective.calculate_metrics(simulated_speeds)
+        metrics["loss"] = loss
         metrics["mae"] = mae
+        metrics["std"] = std
         metrics['routing_failures'] = routing_failures
         metrics['teleports'] = teleports
         metrics['fail_total'] = fail_total
@@ -313,7 +322,6 @@ def run_simulation_worker(
         metrics['avg_trip_duration'] = trip_stats.get('avg_duration', 0.0)
         metrics['avg_waiting_time'] = trip_stats.get('avg_waiting_time', 0.0)
         metrics['worker_id'] = worker_idx
-        metrics['loss'] = mae
 
         # 5. Debug Artifacts
         if config.debug:
@@ -328,7 +336,7 @@ def run_simulation_worker(
             if temp_dir is not None:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             
-        return mae, metrics
+        return loss, metrics
         
     except Exception as e:
         logger.error(f"Worker {worker_idx} failed: {e}")

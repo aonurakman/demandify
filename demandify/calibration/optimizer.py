@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 MAX_EVAL_CACHE_ENTRIES = 10000
 
 
+class PipelineCancelledError(RuntimeError):
+    """Raised when a calibration run is cooperatively cancelled."""
+
+
 class GeneticAlgorithm:
     """Seeded genetic algorithm for demand optimization with parallel evaluation."""
 
@@ -32,7 +36,8 @@ class GeneticAlgorithm:
         self,
         genome_size: int,
         seed: int,
-        bounds: Tuple[int, int] = (0, 100),
+        initial_population: int,
+        bounds: Tuple[int, Optional[int]] = (0, None),
         population_size: int = 50,
         num_generations: int = 20,
         mutation_rate: float = 0.5,
@@ -41,7 +46,7 @@ class GeneticAlgorithm:
         mutation_sigma: int = 20,
         mutation_indpb: float = 0.3,
         num_workers: int = None,
-        init_prob: float = None,
+        init_prob: Optional[float] = None,
         immigrant_rate: float = 0.03,
         elite_top_pct: float = 0.1,
         magnitude_penalty_weight: Optional[float] = None,
@@ -53,6 +58,7 @@ class GeneticAlgorithm:
         od_edge_incidence: Optional[List[List[str]]] = None,
         n_bins: Optional[int] = None,
         topology_guidance: bool = True,
+        cancel_event: Optional[Any] = None,
     ):
         """
         Initialize GA.
@@ -60,7 +66,8 @@ class GeneticAlgorithm:
         Args:
             genome_size: Size of genome (num_od_pairs * num_bins)
             seed: Random seed
-            bounds: (min, max) values for genome elements
+            initial_population: Target initial number of vehicles (controls initialization budget)
+            bounds: (min, max) values for genome elements (max is unconstrained when None)
             population_size: Population size
             num_generations: Number of generations
             mutation_rate: Mutation probability (per individual)
@@ -80,7 +87,17 @@ class GeneticAlgorithm:
             od_edge_incidence: List of observed edge IDs traversed by each OD pair
             n_bins: Number of departure time bins per OD pair
             topology_guidance: Biases mutation using network edge speed discrepancies
+            cancel_event: Optional threading.Event-like object for cooperative cancellation
         """
+        if initial_population is None:
+            raise ValueError(
+                "initial_population must not be None; a positive integer is required."
+            )
+        if not isinstance(initial_population, (int, np.integer)) or initial_population <= 0:
+            raise ValueError(
+                f"initial_population must be a positive integer, got {initial_population!r}"
+            )
+        self.initial_population = int(initial_population)
         self.genome_size = genome_size
         self.seed = seed
         self.bounds = bounds
@@ -104,6 +121,7 @@ class GeneticAlgorithm:
         self.early_stopping = bool(early_stopping)
         self.early_stopped = False
         self.early_stop_generation: Optional[int] = None
+        self.cancel_event = cancel_event
 
         # Topology-guided mutation parameters
         self.od_edge_incidence = od_edge_incidence
@@ -120,14 +138,18 @@ class GeneticAlgorithm:
         self._base_mutation_rate = mutation_rate
         self._mutation_boosted = False
         self.last_best_selection_mode = None
+        self.last_best_loss = None
         self.last_best_mae = None
+        self.last_best_mae_candidate_loss = None
         self.last_best_mae_candidate_mae = None
         self.last_best_mae_candidate_teleports = None
         self.last_best_mae_candidate_failure_rate = None
         self.last_best_mae_candidate_fail_total = None
         self.last_best_mae_candidate_missing_edges = None
         self.last_best_mae_candidate_magnitude = None
+        self.last_best_selected_loss = None
         self.last_best_selected_mae = None
+        self.last_best_selected_std = None
         self.last_best_selected_teleports = None
         self.last_best_selected_failure_rate = None
         self.last_best_selected_fail_total = None
@@ -153,28 +175,35 @@ class GeneticAlgorithm:
 
         self.toolbox = base.Toolbox()
 
-        # Attribute generator (seeded)
-        def gen_attr():
-            if self.init_prob is not None:
-                if self.rng.random() < self.init_prob:
-                    return self.rng.randint(self.bounds[0], self.bounds[1] + 1)
-                else:
-                    return 0
-            else:
-                return self.rng.randint(self.bounds[0], self.bounds[1] + 1)
-
-        self.toolbox.register("attr_int", gen_attr)
-
-        # Individual and population
-        self.toolbox.register(
-            "individual",
-            tools.initRepeat,
-            creator.Individual,
-            self.toolbox.attr_int,
-            n=self.genome_size,
-        )
-
+        # Individual and population generators
+        self.toolbox.register("individual", self._create_individual)
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
+
+    def _sample_demand_genome(
+        self, target_vehicles: int, genome_size: int, alpha: float = 0.35
+    ) -> List[int]:
+        """Sample a non-uniform demand genome respecting target total vehicles.
+
+        Uses Dirichlet-multinomial sampling with concentration alpha to create a
+        realistic, sparse, power-law demand distribution across OD pairs without
+        imposing an artificial upper bound on individual genes.
+        """
+        if target_vehicles <= 0 or genome_size <= 0:
+            return [0] * max(0, genome_size)
+        weights = self.rng.gamma(shape=alpha, scale=1.0, size=genome_size)
+        sum_w = float(np.sum(weights))
+        if sum_w <= 0.0 or not np.isfinite(sum_w):
+            probs = np.full(genome_size, 1.0 / genome_size)
+        else:
+            probs = weights / sum_w
+        counts = self.rng.multinomial(target_vehicles, probs)
+        return [int(c) for c in counts]
+
+    def _create_individual(self) -> list:
+        """Create an individual for Gen 0 with non-uniform demand around initial_population."""
+        target = max(1, int(round(self.initial_population * self.rng.uniform(0.9, 1.1))))
+        genome = self._sample_demand_genome(target, self.genome_size, alpha=0.35)
+        return creator.Individual(genome)
 
     def _compute_genotypic_diversity(self, population) -> float:
         """Compute mean pairwise L2 distance across the population."""
@@ -203,15 +232,12 @@ class GeneticAlgorithm:
             return 0.0
         return float(np.std(fits))
 
-    def _create_immigrant(self) -> list:
-        """Create a random immigrant individual within bounds."""
-        ind = creator.Individual(
-            [
-                int(self.rng.randint(self.bounds[0], self.bounds[1] + 1))
-                for _ in range(self.genome_size)
-            ]
-        )
-        return ind
+    def _create_immigrant(self, target_vehicles: Optional[float] = None) -> list:
+        """Create a random immigrant individual with non-uniform demand matching current scale."""
+        base_mag = target_vehicles if target_vehicles is not None else float(self.initial_population)
+        jittered = max(1, int(round(base_mag * self.rng.uniform(0.8, 1.2))))
+        genome = self._sample_demand_genome(jittered, self.genome_size, alpha=0.35)
+        return creator.Individual(genome)
 
     def _assortative_mate_pairs(self, offspring):
         """Pair dissimilar individuals for crossover (assortative mating)."""
@@ -254,6 +280,16 @@ class GeneticAlgorithm:
             return True
         return bool(metrics.get("error"))
 
+    def _individual_loss(self, individual) -> float:
+        """Get loss (MAE + std) from metrics or fitness with invalid/error protection."""
+        if not individual.fitness.valid or self._has_worker_error(individual):
+            return float("inf")
+        metrics = getattr(individual, "metrics", {}) or {}
+        loss = metrics.get("loss")
+        if loss is not None:
+            return self._safe_float(loss, default=float("inf"))
+        return self._safe_float(individual.fitness.values[0], default=float("inf"))
+
     def _individual_mae(self, individual) -> float:
         """Get MAE from metrics or fitness with invalid/error protection."""
         if not individual.fitness.valid or self._has_worker_error(individual):
@@ -263,6 +299,16 @@ class GeneticAlgorithm:
         if mae is not None:
             return self._safe_float(mae, default=float("inf"))
         return self._safe_float(individual.fitness.values[0], default=float("inf"))
+
+    def _individual_std(self, individual) -> float:
+        """Get error standard deviation from metrics with invalid/error protection."""
+        if not individual.fitness.valid or self._has_worker_error(individual):
+            return float("inf")
+        metrics = getattr(individual, "metrics", {}) or {}
+        std = metrics.get("std")
+        if std is not None:
+            return self._safe_float(std, default=0.0)
+        return 0.0
 
     def _individual_fail_total(self, individual) -> int:
         """Get fail_total (routing failures + teleports)."""
@@ -342,13 +388,14 @@ class GeneticAlgorithm:
         """Deb's feasibility-first ordering.
 
         Feasible candidates (teleports == 0) always precede infeasible candidates.
-        - Among feasible candidates: ranked strictly by pure MAE.
+        - Among feasible candidates: ranked by loss (MAE + std), breaking ties with MAE.
         - Among infeasible candidates: ranked by teleports (fewer is better),
-          then failure total, then MAE.
+          then failure total, then loss, then MAE.
         """
         teleports = self._individual_teleports(individual)
         rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
         fail_total = self._individual_fail_total(individual)
+        loss = self._individual_loss(individual)
         mae = self._individual_mae(individual)
         missing_edges = self._individual_missing_edges(individual)
         magnitude = self._individual_magnitude(individual)
@@ -356,6 +403,7 @@ class GeneticAlgorithm:
         if teleports == 0:
             return (
                 0,
+                loss,
                 mae,
                 fail_total,
                 rate_is_inf,
@@ -370,6 +418,7 @@ class GeneticAlgorithm:
                 fail_total,
                 rate_is_inf,
                 rate_fraction,
+                loss,
                 mae,
                 missing_edges,
                 magnitude,
@@ -421,10 +470,11 @@ class GeneticAlgorithm:
         return rank_by_id
 
     def _selection_sort_key(self, individual, pareto_rank_by_id):
-        """Deterministic selection key inside the MAE elite after Pareto filtering."""
+        """Deterministic selection key inside the elite after Pareto filtering."""
         rate_is_inf, rate_fraction = self._individual_failure_rate_key(individual)
         return (
             pareto_rank_by_id.get(id(individual), 0),
+            self._individual_loss(individual),
             self._individual_mae(individual),
             self._individual_teleports(individual),
             rate_is_inf,
@@ -434,7 +484,7 @@ class GeneticAlgorithm:
         )
 
     def _select_best_candidate(self, candidates, key_by_id):
-        """Pick the best MAE-elite Pareto candidate."""
+        """Pick the best elite Pareto candidate."""
         if not candidates:
             return None
         return min(candidates, key=lambda ind: key_by_id.get(id(ind)))
@@ -444,13 +494,14 @@ class GeneticAlgorithm:
         Build a per-generation parent-selection plan.
 
         Priority:
-            1) Sort full population by MAE
+            1) Sort full population by loss (MAE + std) tie-broken by MAE
             2) Keep the top elite slice defined by elite_top_pct
             3) If possible, keep only zero-teleport elite candidates
             4) Pareto-rank the remaining elite on:
                - (failure_rate, missing_edges, magnitude) if all teleports are zero
                - otherwise (teleports, failure_rate, missing_edges, magnitude)
             5) Break ties by:
+               - lower loss (MAE + std)
                - lower MAE
                - lower teleports
                - lower failure_rate
@@ -551,7 +602,9 @@ class GeneticAlgorithm:
     def _individual_summary(self, individual, mode: Optional[str] = None) -> Dict[str, float]:
         """Build a compact metrics summary for a tracked individual."""
         summary = {
+            "loss": float(self._individual_loss(individual)),
             "mae": float(self._individual_mae(individual)),
+            "std": float(self._individual_std(individual)),
             "teleports": int(self._individual_teleports(individual)),
             "failure_rate": float(self._individual_failure_rate(individual)),
             "fail_total": int(self._individual_fail_total(individual)),
@@ -568,14 +621,14 @@ class GeneticAlgorithm:
         overall_best_ind,
         overall_best_loss: float,
     ):
-        """Update best-MAE tracker from a population snapshot."""
+        """Update best-loss tracker from a population snapshot."""
         for ind in population:
             if not ind.fitness.valid:
                 continue
 
-            mae = self._individual_mae(ind)
-            if mae < overall_best_loss:
-                overall_best_loss = mae
+            loss = self._individual_loss(ind)
+            if loss < overall_best_loss:
+                overall_best_loss = loss
                 overall_best_ind = self._clone_individual_snapshot(ind)
 
         return overall_best_ind, overall_best_loss
@@ -674,6 +727,17 @@ class GeneticAlgorithm:
         ind1[cx1:cx2], ind2[cx1:cx2] = ind2[cx1:cx2], ind1[cx1:cx2]
         return ind1, ind2
 
+    def _is_cancelled(self) -> bool:
+        """Return True when cooperative cancellation has been requested."""
+        return bool(self.cancel_event is not None and self.cancel_event.is_set())
+
+    def _check_cancelled(self, pool: Optional[Any] = None) -> None:
+        """Raise PipelineCancelledError and terminate worker pool if cancelled."""
+        if self._is_cancelled():
+            if pool is not None and hasattr(pool, "terminate"):
+                pool.terminate()
+            raise PipelineCancelledError("Calibration run cancelled by user.")
+
     def optimize(
         self,
         evaluate_func: Callable[[np.ndarray], Union[float, Tuple[float, Dict[str, Any]]]],
@@ -697,6 +761,7 @@ class GeneticAlgorithm:
         Returns:
             (best_genome, best_loss, loss_history, generation_stats)
         """
+        self._check_cancelled()
         logger.info(
             f"Starting GA optimization (pop={self.population_size}, gen={self.num_generations}, workers={self.num_workers})"
         )
@@ -780,6 +845,7 @@ class GeneticAlgorithm:
                 """
                 nonlocal eval_cache_hits, eval_cache_misses
 
+                self._check_cancelled(pool)
                 if not individuals:
                     return 0, 0
 
@@ -816,6 +882,7 @@ class GeneticAlgorithm:
                         ),
                     ):
                         eval_cache[key] = _normalize_eval_result(res)
+                        self._check_cancelled(pool)
 
                 for ind, key in zip(individuals, keys):
                     loss, metrics = eval_cache[key]
@@ -861,6 +928,7 @@ class GeneticAlgorithm:
 
             # Evolution loop
             for gen in range(self.num_generations):
+                self._check_cancelled(pool)
                 # --- Adaptive mutation boost on stagnation ---
                 if generations_without_improvement >= self.stagnation_patience:
                     if not self._mutation_boosted:
@@ -941,8 +1009,10 @@ class GeneticAlgorithm:
                 num_immigrants = max(0, int(self.population_size * self.immigrant_rate))
                 immigrants = []
                 if num_immigrants > 0:
+                    pop_magnitudes = [sum(ind) for ind in population if ind.fitness.valid]
+                    target_mag = float(np.median(pop_magnitudes)) if pop_magnitudes else float(self.initial_population)
                     for _ in range(num_immigrants):
-                        imm = self._create_immigrant()
+                        imm = self._create_immigrant(target_vehicles=target_mag)
                         immigrants.append(imm)
                     invalid_ind.extend(immigrants)
 
@@ -960,6 +1030,8 @@ class GeneticAlgorithm:
                         misses_delta,
                         len(eval_cache),
                     )
+
+                self._check_cancelled(pool)
 
                 # --- Replacement: deterministic crowding or standard elitism ---
                 elites = self._select_survival_elites(population, self.elitism)
@@ -1006,8 +1078,9 @@ class GeneticAlgorithm:
                 # Ensure population size is maintained
                 population = population[: self.population_size]
 
-                # --- Track overall best MAE and best selected candidate ---
-                mae_values = [ind.fitness.values[0] for ind in population]
+                # --- Track overall best loss and best selected candidate ---
+                loss_values = [self._individual_loss(ind) for ind in population]
+                mae_values = [self._individual_mae(ind) for ind in population]
                 (
                     overall_best_ind,
                     overall_best_loss,
@@ -1017,15 +1090,16 @@ class GeneticAlgorithm:
                     overall_best_loss,
                 )
 
-                # Stats use the selected individual's MAE, while mean/std stay population-wide.
-                current_mean = float(np.mean(mae_values))
-                current_std = float(np.std(mae_values))
+                # Stats use the selected individual's loss and MAE, while mean/std stay population-wide.
+                current_mean = float(np.mean(loss_values))
+                current_std = float(np.std(loss_values))
+                current_mean_mae = float(np.mean(mae_values))
 
                 # Aggregate metrics for the generation's selected individual.
                 best_ind_gen, best_gen_state = self._select_generation_representative(population)
                 if best_ind_gen is None:
-                    best_ind_gen = min(zip(population, mae_values), key=lambda x: x[1])[0]
-                    best_gen_state = self._individual_summary(best_ind_gen, mode="mae_fallback")
+                    best_ind_gen = min(zip(population, loss_values), key=lambda x: x[1])[0]
+                    best_gen_state = self._individual_summary(best_ind_gen, mode="loss_fallback")
                 if best_ind_gen is not None and best_gen_state is not None:
                     generation_representatives.append(
                         (self._clone_individual_snapshot(best_ind_gen), dict(best_gen_state))
@@ -1033,7 +1107,9 @@ class GeneticAlgorithm:
                 best_metrics = getattr(best_ind_gen, "metrics", {})
                 best_metrics = dict(best_metrics) if isinstance(best_metrics, dict) else {}
                 best_metrics["selection_mode"] = best_gen_state["mode"]
+                best_metrics["loss"] = best_gen_state["loss"]
                 best_metrics["mae"] = best_gen_state["mae"]
+                best_metrics["std"] = best_gen_state["std"]
                 best_metrics["teleports"] = best_gen_state["teleports"]
                 best_metrics["failure_rate"] = best_gen_state["failure_rate"]
                 best_metrics["fail_total"] = best_gen_state["fail_total"]
@@ -1041,8 +1117,9 @@ class GeneticAlgorithm:
                 best_fail_total = self._individual_fail_total(best_ind_gen)
                 best_teleports = self._individual_teleports(best_ind_gen)
                 best_failure_rate = self._individual_failure_rate(best_ind_gen)
+                best_selected_loss = self._individual_loss(best_ind_gen)
                 best_selected_mae = self._individual_mae(best_ind_gen)
-                current_best = float(best_selected_mae)
+                current_best = float(best_selected_loss)
 
                 # Genome magnitude stats
                 magnitudes = [sum(ind) for ind in population]
@@ -1075,6 +1152,8 @@ class GeneticAlgorithm:
                     "best_loss": current_best,
                     "mean_loss": current_mean,
                     "std_loss": current_std,
+                    "best_mae": float(best_selected_mae),
+                    "mean_mae": current_mean_mae,
                     "best_magnitude": float(best_magnitude),
                     "mean_magnitude": float(mean_magnitude),
                     "best_failure_rate": float(best_failure_rate) if np.isfinite(best_failure_rate) else None,
@@ -1109,13 +1188,14 @@ class GeneticAlgorithm:
 
                 boost_str = " [BOOSTED]" if self._mutation_boosted else ""
                 logger.info(
-                    f"✅ Gen {gen+1}/{self.num_generations}: mae={current_best:.2f}, mean_mae={current_mean:.2f}, "
-                    f"div={genotypic_diversity:.1f}{metric_str}{boost_str}"
+                    f"✅ Gen {gen+1}/{self.num_generations}: loss={current_best:.2f} (mae={best_selected_mae:.2f}), "
+                    f"mean_loss={current_mean:.2f}, div={genotypic_diversity:.1f}{metric_str}{boost_str}"
                 )
 
                 if progress_callback:
                     progress_callback(gen + 1, current_best, current_mean)
 
+                self._check_cancelled(pool)
                 if generation_callback:
                     try:
                         generation_callback(
@@ -1159,7 +1239,8 @@ class GeneticAlgorithm:
             overall_best_loss,
             generation_representatives,
         )
-        best_loss = float(best_selection["mae"])
+        best_loss = float(best_selection["loss"])
+        best_mae = float(best_selection["mae"])
         best_genome = np.array(best_individual)
         best_mae_candidate = (
             self._individual_summary(overall_best_ind)
@@ -1167,25 +1248,31 @@ class GeneticAlgorithm:
             else self._individual_summary(best_individual)
         )
         logger.info(
-            "GA complete: selected mae=%.2f, failure_rate=%.4f, fail_total=%s, magnitude=%.0f | best_mae_candidate mae=%.2f, failure_rate=%.4f, fail_total=%s, magnitude=%.0f",
+            "GA complete: selected loss=%.2f, mae=%.2f, failure_rate=%.4f, fail_total=%s, magnitude=%.0f | best_loss_candidate loss=%.2f, mae=%.2f, failure_rate=%.4f, fail_total=%s, magnitude=%.0f",
+            best_selection["loss"],
             best_selection["mae"],
             best_selection["failure_rate"],
             best_selection["fail_total"],
             best_selection["magnitude"],
+            best_mae_candidate["loss"],
             best_mae_candidate["mae"],
             best_mae_candidate["failure_rate"],
             best_mae_candidate["fail_total"],
             best_mae_candidate["magnitude"],
         )
         self.last_best_selection_mode = best_selection["mode"]
-        self.last_best_mae = float(overall_best_loss)
+        self.last_best_loss = float(overall_best_loss)
+        self.last_best_mae = float(best_mae_candidate["mae"])
+        self.last_best_mae_candidate_loss = float(best_mae_candidate["loss"])
         self.last_best_mae_candidate_mae = float(best_mae_candidate["mae"])
         self.last_best_mae_candidate_teleports = int(best_mae_candidate["teleports"])
         self.last_best_mae_candidate_failure_rate = float(best_mae_candidate["failure_rate"])
         self.last_best_mae_candidate_fail_total = int(best_mae_candidate["fail_total"])
         self.last_best_mae_candidate_missing_edges = int(best_mae_candidate["missing_edges"])
         self.last_best_mae_candidate_magnitude = float(best_mae_candidate["magnitude"])
+        self.last_best_selected_loss = float(best_selection["loss"])
         self.last_best_selected_mae = float(best_selection["mae"])
+        self.last_best_selected_std = float(best_selection.get("std", 0.0))
         self.last_best_selected_teleports = int(best_selection["teleports"])
         self.last_best_selected_failure_rate = float(best_selection["failure_rate"])
         self.last_best_selected_fail_total = int(best_selection["fail_total"])
@@ -1271,7 +1358,7 @@ class GeneticAlgorithm:
         return mu_per_gene
 
     def _bounded_mutation(self, individual, mu, sigma, indpb, mu_per_gene=None):
-        """Gaussian mutation with lower-bound clipping only (no upper cap)."""
+        """Mutation with non-negative lower bound and 3-5% heavy-tailed macro leaps."""
         for i in range(len(individual)):
             if self.rng.random() < indpb:
                 gene_mu = mu
@@ -1281,7 +1368,16 @@ class GeneticAlgorithm:
                         # 70% guided towards physical gradient, 30% exploratory zero-mean
                         if self.rng.random() >= 0.3:
                             gene_mu = target_mu
-                individual[i] += int(self.rng.normal(gene_mu, sigma))
-                # Keep demand non-negative while allowing exploration above init bounds.
+
+                # 4% probability of a macro leap, 96% fine local tuning
+                if self.rng.random() < 0.04:
+                    step = int(round(self.rng.normal(gene_mu, sigma * 4.0)))
+                else:
+                    step = int(round(self.rng.normal(gene_mu, sigma)))
+
+                individual[i] += step
+                # Keep demand non-negative while allowing exploration with no upper cap.
                 individual[i] = max(self.bounds[0], individual[i])
         return (individual,)
+
+

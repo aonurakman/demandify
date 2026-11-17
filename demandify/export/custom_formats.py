@@ -1,10 +1,11 @@
 import csv
+from heapq import heappop, heappush
 import shutil
 import logging
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.network import SUMONetwork
@@ -20,6 +21,7 @@ class URBDataExporter:
     <run_id>/
         <run_id>/           # Subdirectory matching the scenario ID
             agents.csv          # Agent definitions (id, origin_idx, dest_idx, time, kind)
+            demand_routes.csv   # Per-agent route choice set (agent_id, source_id, route_id, probability, free_flow_time, edges)
             od_<run_id>.txt    # Dictionary mapping indices to Origin/Destination Edge IDs
             <run_id>.net.xml   # SUMO Network
             <run_id>.rou.xml   # RouteRL/JanuX-compatible network graph copy
@@ -36,7 +38,13 @@ class URBDataExporter:
         self.target_dir = output_dir / run_id
         self.target_dir.mkdir(parents=True, exist_ok=True)
         
-    def export(self, network_file: Path, routes_file: Path, min_connection_paths: int = 1):
+    def export(
+        self,
+        network_file: Path,
+        routes_file: Path,
+        min_connection_paths: int = 1,
+        vehroutes_file: Optional[Path] = None,
+    ):
         """Main export workflow."""
         logger.debug(f"Starting URB data export to {self.target_dir}")
         
@@ -45,8 +53,13 @@ class URBDataExporter:
             if min_connection_paths < 1:
                 raise ValueError("min_connection_paths must be at least 1")
 
+            if vehroutes_file is None:
+                candidate_vr = Path(routes_file).parent / "vehroutes.xml"
+                if candidate_vr.exists():
+                    vehroutes_file = candidate_vr
+
             # 1. Parse trips/routes and validate compatibility before writing files
-            agents, origins, destinations, od_pairs = self._parse_routes(routes_file)
+            agents, origins, destinations, od_pairs, raw_trips = self._parse_routes(routes_file)
             self._validate_od_pairs(network_file, od_pairs, min_connection_paths)
 
             # 2. Copy Network and RouteRL graph companion with new names
@@ -69,6 +82,9 @@ class URBDataExporter:
             
             # 5. Write od_<id>.txt
             self._write_od_txt(origins, destinations)
+
+            # 6. Write demand_routes.csv
+            self._write_demand_routes_csv(network_file, raw_trips, vehroutes_file)
             
             logger.debug("URB data export completed successfully")
             
@@ -96,7 +112,7 @@ class URBDataExporter:
 
     def _parse_routes(
         self, routes_file: Path
-    ) -> Tuple[List[Dict], List[str], List[str], List[Tuple[str, str]]]:
+    ) -> Tuple[List[Dict], List[str], List[str], List[Tuple[str, str]], List[Dict]]:
         """
         Parse .rou.xml to extract trips.
         Returns:
@@ -104,23 +120,15 @@ class URBDataExporter:
             origins: List of unique origin edge IDs
             destinations: List of unique destination edge IDs
             od_pairs: Sorted unique demanded OD edge pairs
+            raw_trips: List of raw trip dicts preserving source_id and optional route edges
         """
-        agents = []
         unique_origins = set()
         unique_destinations = set()
-        
-        # We need to map edges to indices later, so we collect them first
-        # But wait, we iterate once.
-        # Let's collect raw data first
         raw_trips = []
         
         try:
             tree = ET.parse(routes_file)
             root = tree.getroot()
-            
-            # Parse <trip> (source) or <vehicle> (routed)
-            # Since we use dynamic routing, we might only have trips.xml with <trip> elements
-            # Or we might have a route file. We try both.
             
             # 1. Look for <trip> elements
             for i, trip in enumerate(root.findall('trip')):
@@ -137,15 +145,25 @@ class URBDataExporter:
                         'origin_edge': origin,
                         'dest_edge': dest,
                         'start_time': int(depart),
-                        'kind': 'Human'
+                        'kind': 'Human',
+                        'edges': None,
                     })
 
             # 2. Look for <vehicle> elements (if provided a routed file)
             for i, vehicle in enumerate(root.findall('vehicle')):
                 depart = float(vehicle.get('depart', 0))
                 route = vehicle.find('route')
+                if route is None:
+                    route_dist = vehicle.find('routeDistribution')
+                    if route_dist is not None:
+                        dist_routes = route_dist.findall('route')
+                        if dist_routes:
+                            route = dist_routes[-1]
                 if route is not None:
-                    edges = route.get('edges', '').strip().split()
+                    edges = [
+                        e for e in route.get('edges', '').strip().split()
+                        if not e.startswith(':')
+                    ]
                     if edges:
                         origin = edges[0]
                         dest = edges[-1]
@@ -158,7 +176,8 @@ class URBDataExporter:
                             'origin_edge': origin,
                             'dest_edge': dest,
                             'start_time': int(depart),
-                            'kind': 'Human'
+                            'kind': 'Human',
+                            'edges': edges,
                         })
                         
         except Exception as e:
@@ -191,7 +210,7 @@ class URBDataExporter:
             }
         )
 
-        return final_agents, sorted_origins, sorted_destinations, od_pairs
+        return final_agents, sorted_origins, sorted_destinations, od_pairs, raw_trips
 
     def _validate_od_pairs(
         self,
@@ -248,3 +267,157 @@ class URBDataExporter:
         
         with open(path, 'w') as f:
             f.write(content)
+
+    @staticmethod
+    def _extract_edge_free_flow_times(network_file: Path) -> Dict[str, float]:
+        """Compute per-edge free-flow traversal time (length / speed in seconds) from .net.xml."""
+        edge_fft: Dict[str, float] = {}
+        try:
+            tree = ET.parse(network_file)
+            root = tree.getroot()
+            for edge in root.findall("edge"):
+                edge_id = edge.get("id")
+                if not edge_id or edge_id.startswith(":"):
+                    continue
+                lane = edge.find("lane")
+                if lane is None:
+                    continue
+                length = float(lane.get("length", 0.0))
+                speed = max(float(lane.get("speed", 13.89)), 0.1)
+                edge_fft[edge_id] = length / speed
+        except Exception as e:
+            logger.warning(f"Failed to extract edge free-flow times from {network_file}: {e}")
+        return edge_fft
+
+    @staticmethod
+    def _parse_vehroutes(vehroutes_file: Optional[Path]) -> Dict[str, List[str]]:
+        """Parse SUMO vehroute-output XML into a map of vehicle_id -> edge sequence."""
+        if vehroutes_file is None or not Path(vehroutes_file).exists():
+            return {}
+        sim_routes: Dict[str, List[str]] = {}
+        try:
+            tree = ET.parse(vehroutes_file)
+            root = tree.getroot()
+            for vehicle in root.findall("vehicle"):
+                vid = vehicle.get("id")
+                if not vid:
+                    continue
+                route_elem = vehicle.find("route")
+                if route_elem is None:
+                    route_dist = vehicle.find("routeDistribution")
+                    if route_dist is not None:
+                        dist_routes = route_dist.findall("route")
+                        if dist_routes:
+                            route_elem = dist_routes[-1]
+                if route_elem is None:
+                    continue
+                edges = [
+                    e for e in route_elem.get("edges", "").strip().split()
+                    if not e.startswith(":")
+                ]
+                if edges:
+                    sim_routes[vid] = edges
+        except Exception as e:
+            logger.warning(f"Failed to parse vehroutes file {vehroutes_file}: {e}")
+        return sim_routes
+
+    @staticmethod
+    def _find_shortest_fft_path(
+        adjacency: Dict[str, Tuple[str, ...]],
+        edge_fft: Dict[str, float],
+        origin: str,
+        destination: str,
+    ) -> List[str]:
+        """Find minimum free-flow travel-time path from origin to destination using Dijkstra."""
+        if origin == destination:
+            return [origin]
+
+        start_cost = float(edge_fft.get(origin, 1.0))
+        best_cost: Dict[str, float] = {origin: start_cost}
+        predecessor: Dict[str, Optional[str]] = {origin: None}
+        heap: List[Tuple[float, str]] = [(start_cost, origin)]
+
+        while heap:
+            cost, current = heappop(heap)
+            if current == destination:
+                break
+            if cost > best_cost.get(current, float("inf")):
+                continue
+            for neighbor in adjacency.get(current, ()):
+                step_cost = float(edge_fft.get(neighbor, 1.0))
+                new_cost = cost + step_cost
+                if new_cost < best_cost.get(neighbor, float("inf")):
+                    best_cost[neighbor] = new_cost
+                    predecessor[neighbor] = current
+                    heappush(heap, (new_cost, neighbor))
+
+        if destination not in predecessor:
+            return []
+
+        path: List[str] = []
+        curr: Optional[str] = destination
+        while curr is not None:
+            path.append(curr)
+            curr = predecessor[curr]
+        path.reverse()
+        return path
+
+    def _write_demand_routes_csv(
+        self,
+        network_file: Path,
+        raw_trips: List[Dict],
+        vehroutes_file: Optional[Path] = None,
+    ) -> None:
+        """Write demand_routes.csv associating each agent with its winning route."""
+        path = self.target_dir / "demand_routes.csv"
+        fieldnames = [
+            "agent_id",
+            "source_id",
+            "route_id",
+            "probability",
+            "free_flow_time",
+            "edges",
+        ]
+
+        edge_fft = self._extract_edge_free_flow_times(network_file)
+        sim_routes = self._parse_vehroutes(vehroutes_file)
+        network = SUMONetwork(network_file)
+        adjacency = {
+            edge_id: tuple(sorted(neighbors))
+            for edge_id, neighbors in network.adjacency.items()
+        }
+        fallback_cache: Dict[Tuple[str, str], List[str]] = {}
+
+        rows = []
+        for agent_id, trip in enumerate(raw_trips):
+            source_id = str(trip["id"])
+            origin = str(trip["origin_edge"])
+            dest = str(trip["dest_edge"])
+
+            route_edges = sim_routes.get(source_id) or trip.get("edges")
+            if not route_edges or route_edges[0] != origin or route_edges[-1] != dest:
+                cache_key = (origin, dest)
+                if cache_key not in fallback_cache:
+                    fallback_path = self._find_shortest_fft_path(
+                        adjacency, edge_fft, origin, dest
+                    )
+                    if not fallback_path:
+                        fallback_path = [origin, dest] if origin != dest else [origin]
+                    fallback_cache[cache_key] = fallback_path
+                route_edges = fallback_cache[cache_key]
+
+            fft = sum(float(edge_fft.get(edge_id, 0.0)) for edge_id in route_edges)
+            rows.append({
+                "agent_id": agent_id,
+                "source_id": source_id,
+                "route_id": 0,
+                "probability": 1.0,
+                "free_flow_time": fft,
+                "edges": " ".join(route_edges),
+            })
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+

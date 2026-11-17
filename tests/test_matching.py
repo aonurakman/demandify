@@ -56,3 +56,29 @@ def test_match_traffic_data_debug_log_is_opt_in_and_run_local(monkeypatch, tmp_p
     assert debug_log_path.exists()
     content = debug_log_path.read_text(encoding="utf-8")
     assert "MATCHING SESSION STARTED" in content
+
+
+def test_deduplicate_observed_edges_merges_multiple_segments():
+    from demandify.sumo.matching import deduplicate_observed_edges
+    import pytest
+
+    raw = pd.DataFrame({
+        "edge_id": ["e1", "e1", "e2"],
+        "segment_id": ["s1", "s2", "s3"],
+        "current_speed": [20.0, 40.0, 30.0],
+        "freeflow_speed": [40.0, 50.0, 50.0],
+        "sumo_freeflow_speed_kmh": [40.0, 50.0, 50.0],
+        "match_confidence": [0.8, 0.2, 0.9],
+    })
+
+    deduped = deduplicate_observed_edges(raw)
+    assert len(deduped) == 2
+    assert set(deduped["edge_id"]) == {"e1", "e2"}
+
+    e1_row = deduped[deduped["edge_id"] == "e1"].iloc[0]
+    # Weighted average: 0.8 * 20 + 0.2 * 40 = 16 + 8 = 24.0
+    assert e1_row["current_speed"] == pytest.approx(24.0)
+    # Highest confidence segment_id was picked
+    assert e1_row["segment_id"] == "s1"
+    assert e1_row["match_confidence"] == pytest.approx(0.8)
+

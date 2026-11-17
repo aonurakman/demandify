@@ -38,7 +38,8 @@ class SUMOSimulation:
         warmup_time: int = 300,  # 5 minutes
         simulation_time: int = 900,  # 15 minutes
         seed: int = None,  # For deterministic routing
-        use_dynamic_routing: bool = True,  # If True, vehicle_file is trips.xml
+        use_dynamic_routing: Optional[bool] = None,  # Legacy toggle
+        routing_mode: str = "static",
         debug: bool = False,
         extra_additional_files: Optional[List[Path]] = None,
         mesosim: bool = False,
@@ -53,7 +54,8 @@ class SUMOSimulation:
             warmup_time: Warmup period in seconds
             simulation_time: Total simulation time in seconds
             seed: Random seed for deterministic routing (required for dynamic routing)
-            use_dynamic_routing: If True, SUMO will route trips dynamically
+            use_dynamic_routing: Legacy boolean; maps to routing_mode if set
+            routing_mode: Routing paradigm ('static', 'pretrip', 'dynamic')
             debug: If True, preserve intermediate files (tripinfo, etc.)
             extra_additional_files: Optional list of additional SUMO files (e.g.
                 vehicle_types.xml for capacity derating) appended to the
@@ -66,12 +68,26 @@ class SUMOSimulation:
         self.warmup_time = warmup_time
         self.simulation_time = simulation_time
         self.seed = seed
-        self.use_dynamic_routing = use_dynamic_routing
+
+        # Resolve routing_mode with backward compatibility for use_dynamic_routing
+        if use_dynamic_routing is not None:
+            if not use_dynamic_routing:
+                routing_mode = "static"
+            elif routing_mode == "static":
+                routing_mode = "dynamic"
+
+        mode_clean = str(routing_mode).lower().strip()
+        if mode_clean not in ("static", "pretrip", "dynamic"):
+            raise ValueError(
+                f"Unknown routing_mode: '{routing_mode}'. Expected 'static', 'pretrip', or 'dynamic'."
+            )
+        self.routing_mode = mode_clean
+        self.use_dynamic_routing = (self.routing_mode != "static")
         self.debug = debug
         self.extra_additional_files: List[Path] = list(extra_additional_files or [])
         self.mesosim = bool(mesosim)
 
-        if use_dynamic_routing and seed is None:
+        if self.use_dynamic_routing and seed is None:
             logger.warning("Dynamic routing enabled but no seed provided - results may not be reproducible")
 
     @staticmethod
@@ -99,7 +115,8 @@ class SUMOSimulation:
         self,
         output_dir: Path = None,
         edge_data_file: Path = None,
-        expected_vehicles: int = None
+        expected_vehicles: int = None,
+        vehroute_file: Path = None,
     ) -> Tuple[EdgeSpeedSnapshot, Dict[str, float]]:
         """
         Run SUMO simulation and extract edge statistics.
@@ -108,6 +125,7 @@ class SUMOSimulation:
             output_dir: Directory for simulation outputs (temp if None)
             edge_data_file: Output file for edge statistics XML
             expected_vehicles: Number of vehicles in trips.xml (for failure tracking)
+            vehroute_file: Optional output file to save simulated vehicle routes XML
         
         Returns:
             Tuple of (edge_stats, trip_stats)
@@ -129,8 +147,15 @@ class SUMOSimulation:
             edge_output = output_dir / "edge_data.xml"
             tripinfo_output = output_dir / "tripinfo.xml"
             statistic_output = output_dir / "statistics.xml"
+            vehroute_output = (output_dir / "vehroutes.xml") if vehroute_file is not None else None
             
-            self._create_config(config_file, edge_output, tripinfo_output, statistic_output)
+            self._create_config(
+                config_file,
+                edge_output,
+                tripinfo_output,
+                statistic_output,
+                vehroute_output=vehroute_output,
+            )
             
             # Run SUMO
             logger.debug("Running SUMO simulation")
@@ -141,10 +166,17 @@ class SUMOSimulation:
                 "--no-warnings",
                 "--no-step-log",
                 "--duration-log.disable",
-                "--ignore-route-errors"  # Skip vehicles with no valid route
+                "--ignore-route-errors",  # Skip vehicles with no valid route
+                "--ignore-junction-blocker", "15"  # Clear deadlocked junction boxes (InTAS practice)
             ]
             if self.mesosim:
-                cmd.extend(["--mesosim", "true", "--meso-junction-control", "true"])
+                cmd.extend([
+                    "--mesosim", "true",
+                    "--meso-lane-queue", "true",
+                    "--meso-junction-control", "true",
+                    "--meso-junction-control.limited", "true",
+                    "--meso-tls-penalty", "0.5",
+                ])
             
             result = subprocess.run(
                 cmd,
@@ -192,11 +224,22 @@ class SUMOSimulation:
             # Copy edge data if requested
             if edge_data_file:
                 shutil.copy(edge_output, edge_data_file)
+
+            # Copy vehroute data if requested
+            if vehroute_file is not None and vehroute_output is not None and vehroute_output.exists():
+                if Path(vehroute_file).resolve() != vehroute_output.resolve():
+                    shutil.copy(vehroute_output, vehroute_file)
             
             # Clean up tripinfo/stats to prevent bloat (unless debug)
             if not self.debug:
                 if tripinfo_output.exists(): tripinfo_output.unlink()
                 if statistic_output.exists(): statistic_output.unlink()
+                if (
+                    vehroute_output is not None
+                    and vehroute_output.exists()
+                    and (vehroute_file is None or Path(vehroute_file).resolve() != vehroute_output.resolve())
+                ):
+                    vehroute_output.unlink()
             
             return edge_stats, trip_stats
             
@@ -208,7 +251,14 @@ class SUMOSimulation:
             if cleanup:
                 shutil.rmtree(output_dir, ignore_errors=True)
     
-    def _create_config(self, config_file: Path, edge_output: Path, tripinfo_output: Path, statistic_output: Path):
+    def _create_config(
+        self,
+        config_file: Path,
+        edge_output: Path,
+        tripinfo_output: Path,
+        statistic_output: Path,
+        vehroute_output: Optional[Path] = None,
+    ):
         """Create SUMO configuration file with tripinfo for failure tracking."""
         output_dir = config_file.parent.resolve()
         additional_file = output_dir / "additional.xml"
@@ -217,6 +267,7 @@ class SUMOSimulation:
         edge_output = edge_output.resolve()
         tripinfo_output = tripinfo_output.resolve()
         statistic_output = statistic_output.resolve()
+        vehroute_output_resolved = vehroute_output.resolve() if vehroute_output is not None else None
         network_path = self.network_file.resolve() if self.network_file else None
         vehicle_path = self.vehicle_file.resolve() if self.vehicle_file else None
         
@@ -234,11 +285,16 @@ class SUMOSimulation:
                     return str(path)
 
         # 1. Create additional.xml
+        # Aggregate edgeData over the post-warmup measurement window so SUMO
+        # computes the true space-mean speed across all vehicles in the window
+        # without diluting signal platoons with empty 60-second bins.
+        measurement_duration = max(60, int(self.simulation_time - self.warmup_time))
         add_root = ET.Element('additional')
         ET.SubElement(add_root, 'edgeData', {
             'id': 'edge_data_0',
             'file': make_relative(edge_output),
-            'freq': '60',            # Output every 60 seconds
+            'begin': str(int(self.warmup_time)),
+            'freq': str(measurement_duration),
             'excludeEmpty': 'false'  # Include edges with no traffic
         })
         
@@ -272,14 +328,22 @@ class SUMOSimulation:
         # Processing
         processing_elem = ET.SubElement(root, 'processing')
         ET.SubElement(processing_elem, 'ignore-route-errors').set('value', 'true')
+        ET.SubElement(processing_elem, 'ignore-junction-blocker').set('value', '15')
         
-        # Routing configuration (for dynamic routing)
-        if self.use_dynamic_routing:
+        # Routing configuration
+        if self.routing_mode == "pretrip":
             routing_elem = ET.SubElement(root, 'routing')
-            # Disable dynamic rerouting during simulation (use initial routes only)
-            ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '0')
-            # Use Dijkstra algorithm for initial routing
+            # Pre-trip dynamic routing: live traffic weights at depart, 0 periodic rerouting
+            ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '1.0')
+            ET.SubElement(routing_elem, 'device.rerouting.period').set('value', '0')
             ET.SubElement(routing_elem, 'routing-algorithm').set('value', 'dijkstra')
+        elif self.routing_mode == "dynamic":
+            routing_elem = ET.SubElement(root, 'routing')
+            # Grounded dynamic rerouting (legacy: 50% fleet participation, 300s period)
+            ET.SubElement(routing_elem, 'device.rerouting.probability').set('value', '0.50')
+            ET.SubElement(routing_elem, 'device.rerouting.period').set('value', '300')
+            ET.SubElement(routing_elem, 'routing-algorithm').set('value', 'dijkstra')
+        # static mode omits <routing> element: SUMO uses free-flow shortest path
         
         # Random (seed for deterministic behavior)
         if self.seed is not None:
@@ -290,6 +354,9 @@ class SUMOSimulation:
         output_elem = ET.SubElement(root, 'output')
         ET.SubElement(output_elem, 'tripinfo-output').set('value', make_relative(tripinfo_output))
         ET.SubElement(output_elem, 'statistic-output').set('value', make_relative(statistic_output))
+        if vehroute_output_resolved is not None:
+            ET.SubElement(output_elem, 'vehroute-output').set('value', make_relative(vehroute_output_resolved))
+            ET.SubElement(output_elem, 'vehroute-output.write-unfinished').set('value', 'true')
         
         # Write config
         tree = ET.ElementTree(root)

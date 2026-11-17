@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from demandify import __version__
 from demandify.sumo.studio_service import (
     list_studio_sources,
+    resolve_source_duration_minutes,
     resolve_source_paths,
     StudioNetworkManager,
     parse_demand_dataframe,
@@ -120,12 +121,13 @@ async def load_studio_network(
         raise HTTPException(status_code=400, detail=str(e))
 
     mgr = _get_network_manager(net_file)
+    duration_minutes = resolve_source_duration_minutes(source_type, source_id)
     od_pairs: List[Dict[str, Any]] = []
 
     if demand_file and demand_file.exists():
         try:
             df = pd.read_csv(demand_file)
-            od_pairs = parse_demand_dataframe(df, window_minutes=15)
+            od_pairs = parse_demand_dataframe(df, window_minutes=duration_minutes)
         except Exception as e:
             logger.warning(f"Error parsing demand file {demand_file}: {e}")
 
@@ -152,7 +154,7 @@ async def load_studio_network(
             "total_vehs_h": total_vehs_h,
             "total_vehs_min": round(total_vehs_h / 60.0, 2),
             "total_network_edges": network_geojson["edge_count"],
-            "duration_minutes": 60,
+            "duration_minutes": duration_minutes,
         },
     }
 

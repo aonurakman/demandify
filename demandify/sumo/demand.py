@@ -256,7 +256,9 @@ class DemandGenerator:
         
         obs_set = {str(e) for e in observed_edge_ids} if observed_edge_ids else set()
         target_sample_count = (
-            min(3 * max_od_pairs, max_od_pairs + 80) if obs_set else max_od_pairs
+            max(max_od_pairs + max(1, int(round(0.25 * max_od_pairs))), max_od_pairs + 50)
+            if (obs_set and max_od_pairs > 0)
+            else max_od_pairs
         )
 
         # Build valid OD pairs one at a time
@@ -441,6 +443,78 @@ class DemandGenerator:
                     logger.info("%s", self._format_od_progress(len(valid_pairs), target_sample_count))
                     last_progress_log_time = now
                     last_logged_found = len(valid_pairs)
+
+            if obs_set:
+                # Precompute traversed observed edges for each candidate pair
+                cand_traversed = {}
+                covered_edges: Set[str] = set()
+                for pair in valid_pairs:
+                    path = self.find_shortest_path(pair[0], pair[1])
+                    traversed = set(path) & obs_set
+                    cand_traversed[pair] = traversed
+                    covered_edges.update(traversed)
+
+                # Targeted commuter corridor discovery for observed edges not yet covered
+                uncovered_obs = [e for e in sorted(obs_set) if e not in covered_edges]
+                if uncovered_obs:
+                    commuter_candidates: List[Tuple[str, str]] = []
+                    commuter_set = set(valid_pairs_set)
+
+                    for target in uncovered_obs:
+                        ox, oy = self.network.get_edge_centroid(target)
+                        pair_found = False
+
+                        # 1. Target as origin (commuter trip from residential area to distant destination)
+                        for d in all_edges:
+                            if d == target or (target, d) in commuter_set:
+                                continue
+                            dx, dy = self.network.get_edge_centroid(d)
+                            dist = math.hypot(dx - ox, dy - oy)
+                            if dist >= current_min_dist:
+                                path = self.find_shortest_path(target, d)
+                                if path and (current_min_dist == 0.0 or len(path) >= 10):
+                                    commuter_candidates.append((target, d))
+                                    commuter_set.add((target, d))
+                                    pair_found = True
+                                    break
+
+                        # 2. Target as destination (commuter trip returning to residential area)
+                        if not pair_found:
+                            dx, dy = self.network.get_edge_centroid(target)
+                            for o in all_edges:
+                                if o == target or (o, target) in commuter_set:
+                                    continue
+                                ox, oy = self.network.get_edge_centroid(o)
+                                dist = math.hypot(dx - ox, dy - oy)
+                                if dist >= current_min_dist:
+                                    path = self.find_shortest_path(o, target)
+                                    if path and (current_min_dist == 0.0 or len(path) >= 10):
+                                        commuter_candidates.append((o, target))
+                                        commuter_set.add((o, target))
+                                        pair_found = True
+                                        break
+
+                    if commuter_candidates:
+                        val_results = self._validate_candidate_pairs(
+                            commuter_candidates,
+                            min_connection_paths=min_connection_paths,
+                            pool=pool,
+                        )
+                        added_commuters = 0
+                        for c_pair in commuter_candidates:
+                            if val_results.get(c_pair, False) and c_pair not in valid_pairs_set:
+                                valid_pairs.append(c_pair)
+                                valid_pairs_set.add(c_pair)
+                                c_path = self.find_shortest_path(c_pair[0], c_pair[1])
+                                c_traversed = set(c_path) & obs_set
+                                cand_traversed[c_pair] = c_traversed
+                                covered_edges.update(c_traversed)
+                                added_commuters += 1
+                        if added_commuters > 0:
+                            logger.debug(
+                                "Discovered %d full-distance commuter corridors for previously uncovered observed edges",
+                                added_commuters,
+                            )
         finally:
             if pool is not None:
                 pool.close()
@@ -456,39 +530,34 @@ class DemandGenerator:
             logger.warning(f"Stopped after {consecutive_failures} consecutive failures. "
                           f"Created {len(valid_pairs)} pairs (target was {target_sample_count})")
 
-        if obs_set and len(valid_pairs) > max_od_pairs:
-            # Precompute traversed observed edges for each candidate pair
-            cand_traversed: Dict[Tuple[str, str], Set[str]] = {}
-            for pair in valid_pairs:
-                path = self.find_shortest_path(pair[0], pair[1])
-                cand_traversed[pair] = set(path) & obs_set
+        if obs_set:
+            if len(valid_pairs) > max_od_pairs:
+                selected_pairs: List[Tuple[str, str]] = []
+                selected_covered: Set[str] = set()
+                indexed_remaining = list(enumerate(valid_pairs))
 
-            selected_pairs: List[Tuple[str, str]] = []
-            covered_edges: Set[str] = set()
-            indexed_remaining = list(enumerate(valid_pairs))
+                while len(selected_pairs) < max_od_pairs and indexed_remaining:
+                    best_item = max(
+                        indexed_remaining,
+                        key=lambda item: (
+                            len(cand_traversed[item[1]] - selected_covered),
+                            len(cand_traversed[item[1]]),
+                            -item[0],
+                        ),
+                    )
+                    selected_pairs.append(best_item[1])
+                    selected_covered.update(cand_traversed[best_item[1]])
+                    indexed_remaining.remove(best_item)
 
-            while len(selected_pairs) < max_od_pairs and indexed_remaining:
-                best_item = max(
-                    indexed_remaining,
-                    key=lambda item: (
-                        len(cand_traversed[item[1]] - covered_edges),
-                        len(cand_traversed[item[1]]),
-                        -item[0],
-                    ),
+                logger.info(
+                    "Coverage-guided OD selection: selected %d pairs covering %d / %d observed edges "
+                    "(from candidate pool of %d)",
+                    len(selected_pairs),
+                    len(selected_covered),
+                    len(obs_set),
+                    len(valid_pairs),
                 )
-                selected_pairs.append(best_item[1])
-                covered_edges.update(cand_traversed[best_item[1]])
-                indexed_remaining.remove(best_item)
-
-            logger.info(
-                "Coverage-guided OD selection: selected %d pairs covering %d / %d observed edges "
-                "(from candidate pool of %d)",
-                len(selected_pairs),
-                len(covered_edges),
-                len(obs_set),
-                len(valid_pairs),
-            )
-            valid_pairs = selected_pairs
+                valid_pairs = selected_pairs
         elif len(valid_pairs) > max_od_pairs:
             valid_pairs = valid_pairs[:max_od_pairs]
         

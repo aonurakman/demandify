@@ -51,6 +51,7 @@ def test_concurrent_run_logging_isolation(tmp_path):
 
     # Cleanup run B
     remove_run_logging(dir_b, "pipeline.log")
+    logger.propagate = True
 
 
 def test_console_handler_never_duplicated(tmp_path):
@@ -66,3 +67,4 @@ def test_console_handler_never_duplicated(tmp_path):
     # Clean up file handlers
     remove_run_logging(tmp_path / "run_1")
     remove_run_logging(tmp_path / "run_2")
+    logger.propagate = True

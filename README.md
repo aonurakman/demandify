@@ -32,7 +32,7 @@ Three integrated web tools are accessible via the top navigation bar:
 - 🧭 **Unified navigation**: Easily switch between Scenario Calibrator, Dataset Builder, and Demand Studio
 - 🎯 **Seeded & reproducible**: Same seed = identical results for same congestion and bbox
 - 🚗 **Car-only SUMO networks**: Automatic OSM → SUMO conversion with car filtering, clean networks
-- 🧬 **Genetic algorithm**: Calibrates demand against observed congestion with intervalwise MAE scoring, MAE-elite Pareto selection, teleport filtering, immigrants, assortative mating, deterministic crowding, and adaptive mutation boost
+- 🧬 **Genetic algorithm**: Calibrates demand against observed congestion with Upper-Band Mean Error ($\mu + \sigma$) scoring, Pareto elite selection, teleport filtering, commuter corridor discovery, dynamic rerouting, and adaptive mutation boost
 - 💾 **Smart caching**: Content-addressed caching for fast re-runs (traffic snapshots bucketed to 5-minute windows)
 - 📊 **Beautiful reports**: HTML reports with visualizations and statistics
 - ⌨️ **CLI native**: Live in the terminal? No problem.
@@ -172,6 +172,8 @@ demandify run --import krakow_v1 --name krakow_remote
 | `--mesosim` / `--no-mesosim` | Flag | on | Mesoscopic simulation during GA candidate evaluation (final run is microscopic) |
 | `--topology-guidance` / `--no-topology-guidance` | Flag | on | Use network topology and speed discrepancies to guide GA mutations |
 | `--sensor-coverage-od` / `--no-sensor-coverage-od` | Flag | on | Greedy set-cover during OD selection to maximize sensor edge coverage |
+| `--lefthand` / `--righthand` | Flag | auto | Force left-hand (or right-hand) traffic network conversion (auto-detected from coordinates by default) |
+| `--routing-mode` | String | static | Vehicle routing mode (`static`, `pretrip`, `dynamic`; `dynamic` recommended for unconstrained demand) |
 
 \* `bbox` is required in create mode. In import mode, use `--import` and do not pass `bbox`.
 

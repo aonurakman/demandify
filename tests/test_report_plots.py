@@ -91,6 +91,7 @@ def test_report_generates_with_generation_stats(
     # Check all expected plots exist
     assert (tmp_path / "plots" / "loss_plot.png").exists()
     assert (tmp_path / "plots" / "speed_comparison.png").exists()
+    assert (tmp_path / "plots" / "speed_comparison_heatmap.png").exists()
     assert (tmp_path / "plots" / "failures_plot.png").exists()
     assert (tmp_path / "plots" / "magnitude_plot.png").exists()
 
@@ -102,7 +103,7 @@ def test_report_generates_with_generation_stats(
     assert "GA Population Statistics" in html
     assert "Failures" in html
     assert "Genome Magnitude" in html
-    assert "MAE Convergence" in html
+    assert "Loss Convergence" in html
 
 
 def test_report_generates_without_generation_stats(
@@ -119,6 +120,7 @@ def test_report_generates_without_generation_stats(
     assert report_path.exists()
     assert (tmp_path / "plots" / "loss_plot.png").exists()
     assert (tmp_path / "plots" / "speed_comparison.png").exists()
+    assert (tmp_path / "plots" / "speed_comparison_heatmap.png").exists()
 
     # Extra plots should NOT exist
     assert not (tmp_path / "plots" / "failures_plot.png").exists()
@@ -141,6 +143,14 @@ def test_speed_comparison_includes_stats(
     df = pd.read_csv(csv_path)
     assert 'status' in df.columns
     assert (df['status'] == 'freeflow_fallback').sum() == 1  # e4 missing
+
+
+def test_speed_comparison_heatmap_generates(tmp_path, observed_edges, simulated_speeds):
+    """Discrete 2D speed comparison heatmap is generated."""
+    gen = ReportGenerator(tmp_path)
+    plot_path = gen._create_speed_comparison_heatmap(observed_edges, simulated_speeds)
+    assert plot_path == "plots/speed_comparison_heatmap.png"
+    assert (tmp_path / plot_path).exists()
 
 
 def test_speed_comparison_uses_full_window_mean_when_interval_traces_exist(tmp_path):
@@ -371,6 +381,7 @@ def test_pipeline_metadata_separates_final_mae_and_optimization_result(tmp_path,
     assert metadata["calibration_config"]["requested_parallel_workers"] is None
     assert metadata["output_files"]["observed_speed_heatmap_png"] == "plots/network_observed_speed_heatmap.png"
     assert metadata["output_files"]["simulated_speed_heatmap_png"] == "plots/network_simulated_speed_heatmap.png"
+    assert metadata["output_files"]["speed_error_heatmap_png"] == "plots/network_speed_error_heatmap.png"
     assert metadata["output_files"]["selected_od_pairs_png"] == "plots/network_selected_od_pairs.png"
 
     rerun_cmd = metadata["reproducibility"]["rerun_cli_command"]
@@ -469,3 +480,43 @@ def test_pipeline_export_results_handles_empty_loss_history(tmp_path, monkeypatc
     )
 
     assert metadata["results"]["loss_history"] == []
+    assert "dimensionless speed-ratio" in metadata["results"]["quality_metrics"]["description"]
+    assert metadata["results"]["quality_metrics"]["mae"] == pytest.approx(12.34, abs=1e-4)
+
+
+def test_rerun_cli_command_includes_capacity_factor_and_feature_flags(tmp_path):
+    from demandify.pipeline import CalibrationPipeline
+
+    pipeline = CalibrationPipeline(
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        window_minutes=15,
+        seed=42,
+        output_dir=tmp_path / "run_flags",
+        run_id="flags_test",
+        effective_capacity_factor=0.85,
+        mesosim=False,
+        topology_guidance=False,
+        sensor_coverage_od=False,
+    )
+    cmd = pipeline._build_rerun_cli_command()
+    assert "--capacity-factor 0.85" in cmd
+    assert "--no-mesosim" in cmd
+    assert "--no-topology-guidance" in cmd
+    assert "--no-sensor-coverage-od" in cmd
+
+
+def test_report_renders_zero_mae_without_falsy_fallback(tmp_path, observed_edges, simulated_speeds):
+    gen = ReportGenerator(tmp_path)
+    meta = {
+        "run_info": {"timestamp": "2026-01-01T00:00:00", "bbox_coordinates": {}, "seed": 42},
+        "simulation_config": {"window_minutes": 15},
+        "calibration_config": {"ga_population": 10, "ga_generations": 2},
+        "results": {
+            "final_loss_mae": 0.0,
+            "final_active_mae": 0.0,
+            "quality_metrics": {"matched_edges": 5, "total_observed_edges": 5},
+        },
+    }
+    html = gen._build_html("plots/loss_plot.png", "plots/speed_comparison.png", pd.DataFrame(), meta, observed_edges)
+    assert "0.0000" in html
+    assert "Loss Convergence" in html

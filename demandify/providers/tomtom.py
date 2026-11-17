@@ -368,8 +368,9 @@ class TomTomProvider(TrafficProvider):
                     geometry = [(c["longitude"], c["latitude"]) for c in coords]
                     current_speed = segment.get("currentSpeed", 0)
                     freeflow_speed = segment.get("freeFlowSpeed", current_speed)
+                    seg_hash = hashlib.sha1(repr(geometry).encode("utf-8")).hexdigest()[:16]
                     return {
-                        "segment_id": segment.get("frc", "") + "_" + str(hash(tuple(geometry[0] if geometry else (0, 0)))),
+                        "segment_id": f"{segment.get('frc', '')}_{seg_hash}",
                         "geometry": geometry,
                         "current_speed": float(current_speed),
                         "freeflow_speed": float(freeflow_speed),

@@ -183,3 +183,42 @@ def test_fetch_via_tiles_logs_drop_reason_summary(monkeypatch):
         assert "missing_speed_property=3" in summary_logs[0]
     finally:
         asyncio.run(provider.close())
+
+
+def test_flow_segment_fallback_produces_deterministic_segment_id(monkeypatch):
+    class FakeResp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "flowSegmentData": {
+                    "frc": "FRC3",
+                    "currentSpeed": 28,
+                    "freeFlowSpeed": 45,
+                    "confidence": 0.9,
+                    "coordinates": {
+                        "coordinate": [
+                            {"longitude": 4.30, "latitude": 52.07},
+                            {"longitude": 4.31, "latitude": 52.08},
+                        ]
+                    },
+                }
+            }
+
+    async def run_fetch():
+        provider = TomTomProvider("dummy")
+
+        async def fake_get(*_args, **_kwargs):
+            return FakeResp()
+
+        monkeypatch.setattr(provider.client, "get", fake_get)
+        try:
+            return await provider._fetch_segment_at_point(52.07, 4.30)
+        finally:
+            await provider.close()
+
+    seg1 = asyncio.run(run_fetch())
+    seg2 = asyncio.run(run_fetch())
+    assert seg1["segment_id"] == seg2["segment_id"]
+    assert seg1["segment_id"].startswith("FRC3_")

@@ -42,6 +42,7 @@ _RUN_DEFAULTS_FALLBACK: Dict[str, Any] = {
     "mesosim": True,
     "topology_guidance": True,
     "sensor_coverage_od": True,
+    "routing_mode": "static",
 }
 
 
@@ -180,6 +181,15 @@ def _normalize_run_defaults(raw: Any) -> Dict[str, Any]:
         merged.get("sensor_coverage_od"),
         _RUN_DEFAULTS_FALLBACK["sensor_coverage_od"],
     )
+    merged["effective_capacity_factor"] = float(
+        merged.get("effective_capacity_factor", 1.0)
+    )
+    routing_mode = str(
+        merged.get("routing_mode", _RUN_DEFAULTS_FALLBACK["routing_mode"])
+    ).lower().strip()
+    merged["routing_mode"] = (
+        routing_mode if routing_mode in {"static", "pretrip", "dynamic"} else "static"
+    )
     return merged
 
 
@@ -231,6 +241,7 @@ class DemandifyConfig(BaseSettings):
     default_warmup_minutes: int = _RUN_DEFAULTS["warmup_minutes"]
     default_step_length: float = _RUN_DEFAULTS["step_length"]
     default_traffic_tile_zoom: int = _RUN_DEFAULTS["traffic_tile_zoom"]
+    default_routing_mode: str = _RUN_DEFAULTS.get("routing_mode", "static")
 
     # Calibration defaults
     default_ga_population: int = _RUN_DEFAULTS["ga_population"]

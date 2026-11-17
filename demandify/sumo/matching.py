@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Sequence
 import logging
 import math
+import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, Point
 from rtree import index as rtree_index
@@ -346,10 +347,80 @@ class EdgeMatcher:
             cols = [c for c in preferred_cols if c in result_df.columns] + [
                 c for c in result_df.columns if c not in preferred_cols
             ]
-            return result_df[cols]
+            return deduplicate_observed_edges(result_df[cols])
         else:
             logger.warning("No matches - returning empty DataFrame")
             return pd.DataFrame(columns=[
                 'edge_id', 'segment_id', 'current_speed',
                 'freeflow_speed', 'sumo_freeflow_speed_kmh', 'timestamp', 'match_confidence'
             ])
+
+
+def deduplicate_observed_edges(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse multiple traffic segments matched to the same SUMO edge_id into one row.
+
+    Numeric speed columns are combined via confidence-weighted average so each
+    SUMO edge has a single consistent target speed.
+    """
+    if df is None or df.empty or "edge_id" not in df.columns:
+        return df
+
+    df_clean = df.copy()
+    df_clean["edge_id"] = df_clean["edge_id"].astype(str)
+    if not df_clean["edge_id"].duplicated().any():
+        return df_clean.reset_index(drop=True)
+
+    weight_col = (
+        "match_confidence"
+        if "match_confidence" in df_clean.columns
+        else ("match_score" if "match_score" in df_clean.columns else None)
+    )
+
+    rows = []
+    for edge_id, group in df_clean.groupby("edge_id", sort=False):
+        if len(group) == 1:
+            rows.append(group.iloc[0].to_dict())
+            continue
+
+        if weight_col is not None:
+            weights = pd.to_numeric(group[weight_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            best_idx = int(weights.argmax())
+        else:
+            weights = np.ones(len(group), dtype=float)
+            best_idx = 0
+
+        if np.sum(weights) <= 0:
+            weights = np.ones(len(group), dtype=float)
+
+        base = group.iloc[best_idx].to_dict()
+        base["edge_id"] = str(edge_id)
+
+        for col in ("current_speed", "freeflow_speed", "sumo_freeflow_speed_kmh"):
+            if col in group.columns:
+                vals = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
+                valid_mask = np.isfinite(vals) & (vals > 0.0 if col != "current_speed" else vals >= 0.0)
+                if np.any(valid_mask):
+                    w = weights[valid_mask]
+                    if np.sum(w) <= 0:
+                        w = np.ones(np.sum(valid_mask), dtype=float)
+                    base[col] = float(np.average(vals[valid_mask], weights=w))
+
+        for col in ("match_confidence", "match_score"):
+            if col in group.columns:
+                vals = pd.to_numeric(group[col], errors="coerce").dropna()
+                if not vals.empty:
+                    base[col] = float(vals.max())
+
+        if "sumo_freeflow_speed_kmh" in base and "current_speed" in base:
+            try:
+                ff_val = float(base["sumo_freeflow_speed_kmh"])
+                obs_val = float(base["current_speed"])
+                if np.isfinite(ff_val) and np.isfinite(obs_val):
+                    base["sumo_freeflow_speed_kmh"] = max(ff_val, obs_val, 1.0)
+            except (TypeError, ValueError):
+                pass
+
+        rows.append(base)
+
+    return pd.DataFrame(rows, columns=df_clean.columns)
+

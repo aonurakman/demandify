@@ -27,5 +27,6 @@
   "effective_capacity_factor": 1.0,
   "mesosim": true,
   "topology_guidance": true,
-  "sensor_coverage_od": true
+  "sensor_coverage_od": true,
+  "routing_mode": "static"
 }

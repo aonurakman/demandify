@@ -19,8 +19,9 @@ def write_sumocfg(
     step_length: float = 1.0,
     seed: Optional[int] = 42,
     additional_files: Optional[List[Path]] = None,
+    routing_mode: str = "static",
 ) -> None:
-    """Write a dynamic-routing SUMO scenario configuration file."""
+    """Write a SUMO scenario configuration file matching the calibration routing mode."""
     import os
     import xml.etree.ElementTree as ET
 
@@ -69,11 +70,21 @@ def write_sumocfg(
     # Processing
     processing_elem = ET.SubElement(root, "processing")
     ET.SubElement(processing_elem, "ignore-route-errors").set("value", "true")
+    ET.SubElement(processing_elem, "ignore-junction-blocker").set("value", "15")
 
-    # Routing configuration for dynamic routing
-    routing_elem = ET.SubElement(root, "routing")
-    ET.SubElement(routing_elem, "device.rerouting.probability").set("value", "0")
-    ET.SubElement(routing_elem, "routing-algorithm").set("value", "dijkstra")
+    # Routing configuration
+    mode_clean = str(routing_mode).lower().strip()
+    if mode_clean == "pretrip":
+        routing_elem = ET.SubElement(root, "routing")
+        ET.SubElement(routing_elem, "device.rerouting.probability").set("value", "1.0")
+        ET.SubElement(routing_elem, "device.rerouting.period").set("value", "0")
+        ET.SubElement(routing_elem, "routing-algorithm").set("value", "dijkstra")
+    elif mode_clean == "dynamic":
+        routing_elem = ET.SubElement(root, "routing")
+        ET.SubElement(routing_elem, "device.rerouting.probability").set("value", "0.50")
+        ET.SubElement(routing_elem, "device.rerouting.period").set("value", "300")
+        ET.SubElement(routing_elem, "routing-algorithm").set("value", "dijkstra")
+    # static mode omits <routing> element: SUMO uses free-flow shortest path
 
     # Seed for reproducibility
     if seed is not None:
@@ -171,7 +182,8 @@ class ScenarioExporter:
         run_info = run_metadata.get('run_info', {})
         seed = run_info.get('sumo_seed', run_info.get('seed', 42))
 
-        # Generate sumocfg with dynamic routing configuration
+        # Generate sumocfg matching calibrated routing mode
+        routing_mode = run_info.get('routing_mode', 'static')
         write_sumocfg(
             network_file=final_net,
             trips_file=final_trips,  # Pass trips.xml instead of routes
@@ -179,7 +191,8 @@ class ScenarioExporter:
             simulation_time=run_metadata.get('simulation_config', {}).get('window_minutes', 15) * 60 + 
                           run_metadata.get('simulation_config', {}).get('warmup_minutes', 5) * 60,
             step_length=run_metadata.get('simulation_config', {}).get('step_length_seconds', 1.0),
-            seed=seed
+            seed=seed,
+            routing_mode=routing_mode,
         )
 
         # Save metadata
@@ -198,6 +211,7 @@ class ScenarioExporter:
         step_length: float = 1.0,
         seed: int = 42,
         additional_files: Optional[List[Path]] = None,
+        routing_mode: str = "static",
     ):
         """Backward-compatible wrapper around shared SUMO config writer."""
         write_sumocfg(
@@ -208,6 +222,7 @@ class ScenarioExporter:
             step_length=step_length,
             seed=seed,
             additional_files=additional_files,
+            routing_mode=routing_mode,
         )
     
     def _save_metadata(self, metadata: Dict):

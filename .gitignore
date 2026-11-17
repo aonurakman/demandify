@@ -68,6 +68,7 @@ htmlcov/
 Thumbs.db
 
 .agent/
+AGENTS.md
 
 # Agent/Dev stray files
 pyproject.toml.bak

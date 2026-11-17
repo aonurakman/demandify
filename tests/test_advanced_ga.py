@@ -44,7 +44,7 @@ class TestGAAdvancedParams:
     """Test that advanced parameters are properly accepted and stored."""
 
     def test_default_advanced_params(self):
-        ga = GeneticAlgorithm(genome_size=10, seed=42)
+        ga = GeneticAlgorithm(genome_size=10, seed=42, initial_population=100)
         assert ga.immigrant_rate == 0.03
         assert ga.elite_top_pct == 0.1
         assert ga.stagnation_patience == 20
@@ -56,6 +56,7 @@ class TestGAAdvancedParams:
         ga = GeneticAlgorithm(
             genome_size=10,
             seed=42,
+            initial_population=100,
             immigrant_rate=0.05,
             elite_top_pct=0.2,
             stagnation_patience=10,
@@ -69,6 +70,14 @@ class TestGAAdvancedParams:
         assert ga.stagnation_boost == 2.0
         assert ga.assortative_mating is False
         assert ga.deterministic_crowding is False
+
+    def test_initial_population_validation(self):
+        with pytest.raises(ValueError, match="initial_population must not be None"):
+            GeneticAlgorithm(genome_size=10, seed=42, initial_population=None)
+        with pytest.raises(ValueError, match="initial_population must be a positive integer"):
+            GeneticAlgorithm(genome_size=10, seed=42, initial_population=0)
+        with pytest.raises(ValueError, match="initial_population must be a positive integer"):
+            GeneticAlgorithm(genome_size=10, seed=42, initial_population=-50)
 
     def test_optimize_signature_removes_unused_early_stopping_args(self):
         params = inspect.signature(GeneticAlgorithm.optimize).parameters
@@ -85,14 +94,14 @@ class TestDiversityMetrics:
     """Test genotypic and phenotypic diversity computation."""
 
     def test_genotypic_diversity_identical_population(self):
-        ga = GeneticAlgorithm(genome_size=5, seed=42, population_size=4)
+        ga = GeneticAlgorithm(genome_size=5, seed=42, initial_population=100, population_size=4)
         # All identical individuals -> zero diversity
         pop = [creator.Individual([1, 2, 3, 4, 5]) for _ in range(4)]
         diversity = ga._compute_genotypic_diversity(pop)
         assert diversity == 0.0
 
     def test_genotypic_diversity_different_population(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=3)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=3)
         pop = [
             creator.Individual([0, 0, 0]),
             creator.Individual([10, 10, 10]),
@@ -102,7 +111,7 @@ class TestDiversityMetrics:
         assert diversity > 0.0
 
     def test_phenotypic_diversity(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=3)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=3)
         pop = [
             creator.Individual([1, 2, 3]),
             creator.Individual([4, 5, 6]),
@@ -114,7 +123,7 @@ class TestDiversityMetrics:
         assert diversity > 0.0
 
     def test_phenotypic_diversity_identical_fitness(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=3)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=3)
         pop = [creator.Individual([1, 2, 3]) for _ in range(3)]
         for ind in pop:
             ind.fitness.values = (5.0,)
@@ -130,32 +139,37 @@ class TestDiversityMetrics:
 class TestImmigrants:
     """Test random immigrant injection."""
 
-    def test_create_immigrant_correct_size(self):
-        ga = GeneticAlgorithm(genome_size=20, seed=42, bounds=(0, 50))
+    def test_create_immigrant_correct_size_and_non_negative(self):
+        ga = GeneticAlgorithm(genome_size=20, seed=42, initial_population=100)
         imm = ga._create_immigrant()
         assert len(imm) == 20
-        # All values should be within bounds
-        assert all(0 <= v <= 50 for v in imm)
+        # All values should be non-negative
+        assert all(v >= 0 for v in imm)
+        # Sum should be within 20% scale jitter around initial_population
+        assert 80 <= sum(imm) <= 120
 
     def test_immigrant_count_in_generation(self):
         """Verify correct number of immigrants based on rate."""
-        GeneticAlgorithm(genome_size=5, seed=42, population_size=20, immigrant_rate=0.1)
+        GeneticAlgorithm(genome_size=5, seed=42, initial_population=100, population_size=20, immigrant_rate=0.1)
         expected_immigrants = int(20 * 0.1)
         assert expected_immigrants == 2
 
-    def test_immigrants_still_respect_init_bounds(self):
-        """Immigrants remain bounded even when mutation upper cap is removed."""
-        ga = GeneticAlgorithm(genome_size=10, seed=42, bounds=(0, 1))
-        for _ in range(100):
-            imm = ga._create_immigrant()
-            assert all(0 <= v <= 1 for v in imm)
+    def test_immigrants_scale_to_current_population_magnitude(self):
+        """Immigrants scale to the provided population median magnitude with jitter."""
+        ga = GeneticAlgorithm(genome_size=10, seed=42, initial_population=500)
+        for _ in range(50):
+            imm = ga._create_immigrant(target_vehicles=200.0)
+            assert len(imm) == 10
+            assert all(v >= 0 for v in imm)
+            # Jitter is 0.8 to 1.2 -> sum should be between 160 and 240
+            assert 160 <= sum(imm) <= 240
 
 
 class TestMutationBounds:
-    """Test lower-only mutation clipping behavior."""
+    """Test lower-only mutation clipping and heavy-tailed step behavior."""
 
     def test_mutation_can_exceed_upper_init_bound(self):
-        ga = GeneticAlgorithm(genome_size=1, seed=42, bounds=(0, 1))
+        ga = GeneticAlgorithm(genome_size=1, seed=42, initial_population=10, bounds=(0, 1))
         ind = creator.Individual([1])
 
         # Deterministic +5 jump: with upper clipping this would stay at 1.
@@ -163,12 +177,41 @@ class TestMutationBounds:
         assert ind[0] == 6
 
     def test_mutation_still_clips_to_non_negative(self):
-        ga = GeneticAlgorithm(genome_size=1, seed=42, bounds=(0, 10))
+        ga = GeneticAlgorithm(genome_size=1, seed=42, initial_population=10, bounds=(0, 10))
         ind = creator.Individual([0])
 
-        # Deterministic -5 jump should be clipped to lower bound 0.
-        ga._bounded_mutation(ind, mu=-5, sigma=0, indpb=1.0)
+        # Deterministic -100 jump: should be clipped to 0 (bounds[0]).
+        ga._bounded_mutation(ind, mu=-100, sigma=0, indpb=1.0)
         assert ind[0] == 0
+
+    def test_mutation_macro_jump_frequency(self):
+        """Verify ~3-5% macro leaps occur while majority of steps are fine local steps."""
+        ga = GeneticAlgorithm(genome_size=1, seed=42, initial_population=1000, mutation_sigma=2)
+        total = 5000
+        macro_jumps = 0
+        for _ in range(total):
+            ind = creator.Individual([100])
+            ga._bounded_mutation(ind, mu=0, sigma=2, indpb=1.0)
+            delta = abs(ind[0] - 100)
+            # For sigma=2, delta >= 8 has probability < 0.0001 under pure Gaussian,
+            # but under 4*sigma (sigma=8) it has probability ~32%.
+            # With a 4% macro jump rate, ~1.3% of draws exceed 8.
+            if delta >= 8:
+                macro_jumps += 1
+        rate = macro_jumps / total
+        assert 0.008 <= rate <= 0.035
+
+    def test_create_individual_power_law_distribution(self):
+        """Verify Gen 0 initialization creates a non-uniform power-law distribution."""
+        ga = GeneticAlgorithm(genome_size=100, seed=42, initial_population=1000)
+        ind = ga._create_individual()
+        assert len(ind) == 100
+        # Sum matches target within 10% jitter
+        assert 900 <= sum(ind) <= 1100
+        # Sparsity: some ODs are zero
+        assert any(v == 0 for v in ind)
+        # Concentration: major corridors receive heavy volume (> 20 trips)
+        assert any(v > 20 for v in ind)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +258,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=5,
             elite_top_pct=0.4,  # n = 2
         )
@@ -237,6 +281,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=5,
             elite_top_pct=0.8,  # n = 4
         )
@@ -258,6 +303,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=4,
             elite_top_pct=1.0,
         )
@@ -277,6 +323,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=5,
             elite_top_pct=0.8,  # n = 4
         )
@@ -298,6 +345,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=4,
             elite_top_pct=1.0,
         )
@@ -328,6 +376,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=4,
             elite_top_pct=1.0,
         )
@@ -345,6 +394,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=5,
             elite_top_pct=0.8,  # n = 4
             elitism=2,
@@ -360,7 +410,7 @@ class TestParentSelection:
         assert elites == [a, b]
 
     def test_invalidate_individual_clears_stale_attrs(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=1)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=1)
         ind = creator.Individual([1, 2, 3])
         ind.fitness.values = (5.0,)
         ind.metrics = {"routing_failures": 1}
@@ -374,6 +424,7 @@ class TestParentSelection:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=4,
             elite_top_pct=0.5,  # n = 2
         )
@@ -391,7 +442,7 @@ class TestParentSelection:
         assert plan["candidate_pool"] == [valid_a, valid_b]
 
     def test_identity_exclusion_keeps_non_elite_duplicate_genomes(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4, elitism=1)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=4, elitism=1)
         elite = self._make_ind([1, 1, 1], 1.0, 0)
         duplicate_non_elite = self._make_ind([1, 1, 1], 2.0, 0)
         other_a = self._make_ind([2, 2, 2], 3.0, 0)
@@ -409,7 +460,7 @@ class TestParentSelection:
 
     def test_deterministic_crowding_prefers_staged_key_on_equal_mae(self):
         """When MAE is tied, child with fewer teleports/failures replaces closest incumbent."""
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=3, elitism=1, deterministic_crowding=True)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=3, elitism=1, deterministic_crowding=True)
         incumbent = self._make_ind([1, 1, 1], 1.0, 2, teleports=2)
         child = self._make_ind([1, 1, 2], 1.0, 0, teleports=0)
 
@@ -422,7 +473,7 @@ class TestSelectedBestReturn:
     """Test MAE-elite-based final best selection behavior."""
 
     def test_prefers_zero_teleport_selected_candidate_when_available(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4, elite_top_pct=0.5)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=4, elite_top_pct=0.5)
         mae_best = creator.Individual([1, 1, 1])
         mae_best.fitness.values = (0.5,)
         mae_best.metrics = {"mae": 0.5, "teleports": 1, "fail_total": 2, "total_vehicles": 3}
@@ -496,7 +547,7 @@ class TestSelectedBestReturn:
         assert selected_state["mae"] == 0.6
 
     def test_global_mae_elite_blocks_failure_first_cross_generation_inversion(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4, elite_top_pct=0.25)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=4, elite_top_pct=0.25)
         early_safe = creator.Individual([5, 5, 5])
         early_safe.fitness.values = (24.64,)
         early_safe.metrics = {"mae": 24.64, "teleports": 0, "fail_total": 15, "total_vehicles": 1513}
@@ -532,7 +583,7 @@ class TestSelectedBestReturn:
         assert selected_state["mae"] == pytest.approx(23.79)
 
     def test_falls_back_to_mae_when_no_selected_snapshot_exists(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=2)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=2)
         mae_best = creator.Individual([1, 1, 1])
         mae_best.fitness.values = (0.5,)
         mae_best.metrics = {"mae": 0.5, "teleports": 0, "fail_total": 3, "total_vehicles": 3}
@@ -556,6 +607,7 @@ class TestSelectedBestReturn:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=4,
             num_generations=1,
             num_workers=1,
@@ -583,6 +635,7 @@ class TestSelectedBestReturn:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=6,
             num_generations=3,
             num_workers=1,
@@ -623,6 +676,7 @@ class TestSelectedBestReturn:
         ga = GeneticAlgorithm(
             genome_size=1,
             seed=42,
+            initial_population=1,
             bounds=(0, 0),
             population_size=4,
             num_generations=2,
@@ -639,7 +693,7 @@ class TestSelectedBestReturn:
 
         ga.optimize(evaluate)
 
-        # All individuals are always genome [0], so worker evaluation should run once.
+        # All individuals are always genome [1], so worker evaluation should run once.
         assert call_counter["count"] == 1
         assert ga.last_eval_cache_misses == 1
         assert ga.last_eval_cache_hits == 11
@@ -661,9 +715,9 @@ class TestSelectedBestReturn:
             return loss, metrics
 
         ga = GeneticAlgorithm(
-            genome_size=1,
+            genome_size=5,
             seed=42,
-            bounds=(0, 9),
+            initial_population=100,
             population_size=6,
             num_generations=0,
             num_workers=1,
@@ -689,7 +743,7 @@ class TestAssortativeMating:
     """Test assortative mating pairing."""
 
     def test_assortative_pairs_dissimilar(self):
-        ga = GeneticAlgorithm(genome_size=3, seed=42, population_size=4)
+        ga = GeneticAlgorithm(genome_size=3, seed=42, initial_population=100, population_size=4)
         offspring = [
             creator.Individual([1, 1, 1]),  # sum=3 (smallest)
             creator.Individual([5, 5, 5]),  # sum=15
@@ -715,6 +769,7 @@ class TestStagnationBoost:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             mutation_sigma=10,
             mutation_rate=0.5,
             stagnation_patience=3,
@@ -734,6 +789,7 @@ class TestStagnationBoost:
         ga = GeneticAlgorithm(
             genome_size=3,
             seed=42,
+            initial_population=100,
             population_size=1,
             num_generations=2,
             mutation_rate=1.0,
@@ -920,7 +976,7 @@ class TestTopologyGuidedMutation:
     """Test topology-guided mutation and incidence computation."""
 
     def test_default_topology_guidance_params(self):
-        ga = GeneticAlgorithm(genome_size=10, seed=42)
+        ga = GeneticAlgorithm(genome_size=10, seed=42, initial_population=100)
         assert ga.topology_guidance is True
         assert ga.od_edge_incidence is None
         assert ga.n_bins == 1
@@ -982,6 +1038,7 @@ class TestTopologyGuidedMutation:
         ga = GeneticAlgorithm(
             genome_size=4,
             seed=42,
+            initial_population=100,
             mutation_sigma=10,
             od_edge_incidence=od_incidence,
             n_bins=2,
@@ -1005,11 +1062,11 @@ class TestTopologyGuidedMutation:
         assert mu_vector is not None
         assert len(mu_vector) == 4
         # OD 0 bins: e1 has delta = +0.40 -> mu = +4.0
-        assert mu_vector[0] == 4.0
-        assert mu_vector[1] == 4.0
+        assert mu_vector[0] == pytest.approx(4.0)
+        assert mu_vector[1] == pytest.approx(4.0)
         # OD 1 bins: e2 has delta = -0.60 -> mu = -6.0
-        assert mu_vector[2] == -6.0
-        assert mu_vector[3] == -6.0
+        assert mu_vector[2] == pytest.approx(-6.0)
+        assert mu_vector[3] == pytest.approx(-6.0)
 
     def test_deadband_and_disabled_topology_guidance(self):
         # Discrepancy inside deadband (< 0.05) should produce mu = 0
@@ -1017,6 +1074,7 @@ class TestTopologyGuidedMutation:
         ga = GeneticAlgorithm(
             genome_size=2,
             seed=42,
+            initial_population=100,
             mutation_sigma=10,
             od_edge_incidence=od_incidence,
             n_bins=2,
@@ -1034,13 +1092,14 @@ class TestTopologyGuidedMutation:
         ga_disabled = GeneticAlgorithm(
             genome_size=2,
             seed=42,
+            initial_population=100,
             od_edge_incidence=od_incidence,
             topology_guidance=False,
         )
         assert ga_disabled._compute_topology_guidance_vector(population) is None
 
     def test_guided_mutation_shifts_offspring(self):
-        ga = GeneticAlgorithm(genome_size=2, seed=123, mutation_sigma=10, bounds=(0, 100))
+        ga = GeneticAlgorithm(genome_size=2, seed=123, initial_population=100, mutation_sigma=10, bounds=(0, 100))
         # Gene 0 guided positive (+8.0), Gene 1 guided negative (-8.0)
         mu_per_gene = [8.0, -8.0]
         shifts_0 = []

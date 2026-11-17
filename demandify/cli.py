@@ -206,6 +206,8 @@ async def cmd_run(args):
                 mesosim=getattr(args, "mesosim", False),
                 topology_guidance=getattr(args, "topology_guidance", True),
                 sensor_coverage_od=getattr(args, "sensor_coverage_od", True),
+                lefthand=getattr(args, "lefthand", None),
+                routing_mode=getattr(args, "routing_mode", "static"),
                 offline_dataset=(
                     resolved_import_dataset.dataset_id if resolved_import_dataset else None
                 ),
@@ -552,6 +554,31 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Use greedy marginal set-cover during OD selection to maximize coverage of observed "
             "sensor edges without creating unnatural micro-trips. (default: enabled)"
+        ),
+    )
+    run_parser.add_argument(
+        "--lefthand",
+        dest="lefthand",
+        action="store_true",
+        default=None,
+        help="Force left-hand traffic network conversion (e.g., UK, Japan, Australia). Defaults to auto-detect from coordinates.",
+    )
+    run_parser.add_argument(
+        "--righthand",
+        dest="lefthand",
+        action="store_false",
+        help="Force right-hand traffic network conversion (disables auto-detection).",
+    )
+    run_parser.add_argument(
+        "--routing-mode",
+        dest="routing_mode",
+        choices=["static", "pretrip", "dynamic"],
+        default=run_defaults.get("routing_mode", "static"),
+        help=(
+            "Vehicle routing behavior in SUMO. "
+            "'static' (default): Pure static shortest path based on free-flow speed; no rerouting device. "
+            "'pretrip': Pre-trip dynamic routing on live traffic at departure; zero mid-trip rerouting. "
+            "'dynamic': Dynamic mid-trip rerouting (legacy: 50%% fleet participation, 300s period)."
         ),
     )
     run_parser.add_argument(

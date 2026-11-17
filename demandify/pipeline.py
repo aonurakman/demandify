@@ -20,17 +20,19 @@ from demandify.config import get_config
 from demandify.providers.tomtom import TomTomProvider
 from demandify.providers.osm import OSMFetcher
 from demandify.sumo.network import (
+    apply_road_hierarchy_speed_derating,
     compute_effective_freeflow_kmh,
     convert_osm_to_sumo,
+    is_lefthand_traffic,
     SUMONetwork,
     tau_from_capacity_factor,
     write_vehicle_types_xml,
 )
-from demandify.sumo.matching import EdgeMatcher
+from demandify.sumo.matching import EdgeMatcher, deduplicate_observed_edges
 from demandify.sumo.demand import DemandGenerator
 from demandify.sumo.simulation import SUMOSimulation
 from demandify.calibration.objective import EdgeSpeedObjective
-from demandify.calibration.optimizer import GeneticAlgorithm
+from demandify.calibration.optimizer import GeneticAlgorithm, PipelineCancelledError
 from demandify.calibration.worker import (
     SimulationConfig,
     evaluate_for_ga,
@@ -111,6 +113,9 @@ class CalibrationPipeline:
         mesosim: bool = True,
         topology_guidance: bool = True,
         sensor_coverage_od: bool = True,
+        lefthand: Optional[bool] = None,
+        cancel_event: Optional[Any] = None,
+        routing_mode: str = "static",
     ):
         """
         Initialize pipeline.
@@ -137,7 +142,7 @@ class CalibrationPipeline:
                 for an OD pair to be eligible during sampling. Use 1 for
                 reachability-only behavior.
             bin_minutes: Duration of each demand time bin in minutes
-            initial_population: Target initial number of vehicles (controls GA init bounds)
+            initial_population: Target initial number of vehicles (controls GA initial vehicle budget)
             offline_dataset: Optional offline dataset id or name to import (source:name or name)
             save_offline_dataset: Persist preparation artifacts as a reusable offline dataset
             save_offline_dataset_name: Dataset name for saved offline bundle
@@ -209,6 +214,14 @@ class CalibrationPipeline:
         self.mesosim = bool(mesosim)
         self.topology_guidance = bool(topology_guidance)
         self.sensor_coverage_od = bool(sensor_coverage_od)
+        mode_clean = str(routing_mode).lower().strip()
+        if mode_clean not in ("static", "pretrip", "dynamic"):
+            raise ValueError(
+                f"Unknown routing_mode: '{routing_mode}'. Expected 'static', 'pretrip', or 'dynamic'."
+            )
+        self.routing_mode = mode_clean
+        self.lefthand = bool(lefthand) if lefthand is not None else None
+        self.cancel_event = cancel_event
         self.save_offline_dataset = bool(save_offline_dataset)
         self.save_offline_dataset_name = (
             save_offline_dataset_name.strip() if save_offline_dataset_name else None
@@ -271,6 +284,11 @@ class CalibrationPipeline:
             self.run_id,
             self.min_connection_paths,
         )
+
+    def _check_cancelled(self) -> None:
+        """Raise PipelineCancelledError if cooperative cancellation was requested."""
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise PipelineCancelledError("Calibration run cancelled by user.")
 
     def _report_progress(self, stage: int, name: str, msg: str, level: str = "info"):
         """Report progress via callback if available."""
@@ -373,10 +391,9 @@ class CalibrationPipeline:
 
         measurement_intervals = getattr(simulated_speeds, "measurement_intervals", 0) or 0
         interval_speeds = getattr(simulated_speeds, "interval_speeds", None)
-        if not isinstance(interval_speeds, dict) or int(measurement_intervals) <= 0:
-            return edge_speeds
+        has_intervals = isinstance(interval_speeds, dict) and int(measurement_intervals) > 0
+        measurement_intervals = int(measurement_intervals) if has_intervals else 0
 
-        measurement_intervals = int(measurement_intervals)
         for _, row in observed_edges.iterrows():
             edge_id = str(row.get("edge_id"))
             if not edge_id:
@@ -390,15 +407,28 @@ class CalibrationPipeline:
             if not np.isfinite(fallback_speed):
                 fallback_speed = 50.0
 
-            edge_interval_speeds = interval_speeds.get(edge_id, {})
-            if edge_interval_speeds:
-                filled = [
-                    edge_interval_speeds.get(interval_idx, fallback_speed)
-                    for interval_idx in range(measurement_intervals)
-                ]
-                edge_speeds[edge_id] = float(np.mean(filled))
-            else:
-                edge_speeds[edge_id] = fallback_speed
+            try:
+                obs_speed = float(row.get("current_speed", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                obs_speed = 0.0
+
+            def _clamp(val: float) -> float:
+                if obs_speed <= fallback_speed and val > fallback_speed:
+                    return fallback_speed
+                return val
+
+            if has_intervals:
+                edge_interval_speeds = interval_speeds.get(edge_id, {})
+                if edge_interval_speeds:
+                    filled = [
+                        _clamp(float(edge_interval_speeds.get(interval_idx, fallback_speed)))
+                        for interval_idx in range(measurement_intervals)
+                    ]
+                    edge_speeds[edge_id] = float(np.mean(filled))
+                else:
+                    edge_speeds[edge_id] = fallback_speed
+            elif edge_id in edge_speeds:
+                edge_speeds[edge_id] = _clamp(float(edge_speeds[edge_id]))
 
         return edge_speeds
 
@@ -407,7 +437,7 @@ class CalibrationPipeline:
         observed_edges: Optional[pd.DataFrame],
         network: SUMONetwork,
     ) -> pd.DataFrame:
-        """Ensure observed edges include the matched SUMO edge free-flow speed in km/h."""
+        """Ensure observed edges are deduplicated by edge_id and include SUMO free-flow speed in km/h."""
         if observed_edges is None:
             return pd.DataFrame()
         if observed_edges.empty:
@@ -416,7 +446,7 @@ class CalibrationPipeline:
                 enriched["sumo_freeflow_speed_kmh"] = pd.Series(dtype=float)
             return enriched
 
-        enriched = observed_edges.copy()
+        enriched = deduplicate_observed_edges(observed_edges.copy())
         if "edge_id" not in enriched.columns:
             enriched["sumo_freeflow_speed_kmh"] = pd.Series([50.0] * len(enriched), dtype=float)
             return enriched
@@ -475,12 +505,14 @@ class CalibrationPipeline:
             current_run_id.reset(token)
 
     async def _prepare_internal(self) -> Dict:
+        self._check_cancelled()
         if self.offline_dataset is not None:
             return await self._prepare_from_offline_dataset()
 
         self._report_progress(0, "Initializing", "Starting preparation phase")
 
         # Stage 1: Fetch traffic data
+        self._check_cancelled()
         self._report_progress(1, "Fetching Traffic Data", "Connecting to TomTom API...")
         traffic_df = await self._fetch_traffic_data()
 
@@ -492,6 +524,7 @@ class CalibrationPipeline:
         )
 
         # Stage 2: Fetch OSM data
+        self._check_cancelled()
         self._report_progress(2, "Download OSM", "Downloading OpenStreetMap data...")
         osm_cache_path = await self._fetch_osm_data()
         osm_file = self.output_dir / "data" / "map.osm"
@@ -499,6 +532,7 @@ class CalibrationPipeline:
         self._report_progress(2, "Download OSM", "✓ OSM data downloaded")
 
         # Stage 3: Build SUMO network
+        self._check_cancelled()
         self._report_progress(3, "Building Network", "Converting map to SUMO network...")
         # Build/Get from cache using original OSM path (key based)
         network_cache_path = await asyncio.to_thread(self._build_sumo_network, osm_cache_path)
@@ -523,9 +557,13 @@ class CalibrationPipeline:
                 logger.warning(f"Failed to delete OSM file: {e}")
 
         # Stage 4: Map matching
+        self._check_cancelled()
         self._report_progress(4, "Matching Traffic", "Matching traffic data to road network...")
         observed_edges = await asyncio.to_thread(
             self._match_traffic_to_edges, traffic_df, network_file
+        )
+        await asyncio.to_thread(
+            apply_road_hierarchy_speed_derating, network_file, observed_edges
         )
 
         # Save observed edges
@@ -548,6 +586,7 @@ class CalibrationPipeline:
 
     async def _prepare_from_offline_dataset(self) -> Dict:
         """Prepare context by importing artifacts from a bundled offline dataset."""
+        self._check_cancelled()
         if self.offline_dataset is None:
             raise RuntimeError("Offline dataset is not configured")
 
@@ -559,6 +598,7 @@ class CalibrationPipeline:
         )
 
         # Stage 1: Import traffic data
+        self._check_cancelled()
         self._report_progress(1, "Import Dataset", "Loading offline traffic snapshot...")
         copied = copy_offline_dataset_to_output(ds, self.output_dir)
         traffic_data_file = copied["data/traffic_data_raw.csv"]
@@ -576,6 +616,7 @@ class CalibrationPipeline:
         )
 
         # Stage 2/3: Import network artifacts
+        self._check_cancelled()
         self._report_progress(2, "Import Dataset", "Loading offline SUMO network...")
         network_file = copied["sumo/network.net.xml"]
         osm_file = copied.get("data/map.osm", self.output_dir / "data" / "map.osm")
@@ -589,10 +630,14 @@ class CalibrationPipeline:
         self._report_progress(3, "Import Dataset", "✓ SUMO network imported")
 
         # Stage 4: Import observed edge mapping
+        self._check_cancelled()
         self._report_progress(4, "Import Dataset", "Loading offline matched observed edges...")
         observed_edges_file = copied["data/observed_edges.csv"]
         observed_edges = pd.read_csv(observed_edges_file)
         observed_edges = self._ensure_observed_edges_sumo_freeflow(observed_edges, net)
+        await asyncio.to_thread(
+            apply_road_hierarchy_speed_derating, network_file, observed_edges
+        )
         observed_edges.to_csv(observed_edges_file, index=False)
         await self._write_network_plot(network_file, observed_edges=observed_edges)
         self._report_progress(
@@ -641,6 +686,7 @@ class CalibrationPipeline:
             current_run_id.reset(token)
 
     def _calibrate_internal(self, context: Dict) -> Dict:
+        self._check_cancelled()
         self._report_progress(5, "Init Demand", "Starting calibration phase")
 
         # Unpack context
@@ -656,10 +702,12 @@ class CalibrationPipeline:
             raise NoTrafficDataError(error_msg)
 
         # Stage 5: Initialize demand model
+        self._check_cancelled()
         self._report_progress(5, "Init Demand", "Initializing demand generation...")
         demand_gen, od_pairs, departure_bins = self._initialize_demand(
             network_file, observed_edges=observed_edges
         )
+        self._check_cancelled()
         try:
             self._write_od_selection_plot(network_file, od_pairs)
         except Exception as e:
@@ -667,6 +715,7 @@ class CalibrationPipeline:
         self._report_progress(5, "Init Demand", f"✓ Created {len(od_pairs)} OD pairs")
 
         # Stage 6: Calibrate demand
+        self._check_cancelled()
         self._report_progress(
             6,
             "Calibrating Demand",
@@ -675,13 +724,15 @@ class CalibrationPipeline:
         best_genome, best_loss, loss_history, generation_stats = self._calibrate_demand(
             demand_gen, od_pairs, departure_bins, observed_edges, network_file
         )
+        self._check_cancelled()
         self._report_progress(
             6,
             "Calibrating Demand",
-            f"✓ Complete: mae={best_loss:.2f}",
+            f"✓ Complete: loss={best_loss:.2f}",
         )
 
         # Stage 7: Generate final demand files
+        self._check_cancelled()
         self._report_progress(7, "Generating Demand", "Creating final trip files...")
         demand_csv, trips_file = self._generate_final_demand(
             demand_gen, best_genome, od_pairs, departure_bins, network_file
@@ -689,6 +740,7 @@ class CalibrationPipeline:
         self._report_progress(7, "Generating Demand", "✓ Files created")
 
         # Stage 8: Export scenario and report
+        self._check_cancelled()
         self._report_progress(
             8, "Exporting Results", "Running final simulation and generating reports..."
         )
@@ -700,6 +752,7 @@ class CalibrationPipeline:
             trips_file,
             simulation_seed=final_sim_seed,
         )
+        self._check_cancelled()
 
         # Calculate final metrics
         if len(observed_edges) > 0:
@@ -736,6 +789,7 @@ class CalibrationPipeline:
                 "total_edges": 0,
             }
 
+        self._check_cancelled()
         metadata = self._export_results(
             network_file,
             demand_csv,
@@ -772,8 +826,10 @@ class CalibrationPipeline:
         """
         token = current_run_id.set(self.run_id)
         try:
+            self._check_cancelled()
             # Phase 1: Prepare
             context = await self.prepare()
+            self._check_cancelled()
 
             # Confirmation hook
             if confirm_callback:
@@ -799,10 +855,15 @@ class CalibrationPipeline:
                     logger.info("🚫 Run aborted by user.")
                     return None
 
+            self._check_cancelled()
             await self._maybe_save_offline_dataset(context)
+            self._check_cancelled()
 
             # Phase 2: Calibrate (run in thread to avoid blocking the event loop)
             return await asyncio.to_thread(self.calibrate, context)
+        except PipelineCancelledError:
+            logger.info("🚫 Run cancelled by user.")
+            return None
         finally:
             current_run_id.reset(token)
             remove_run_logging(self.output_dir / "logs", "pipeline.log")
@@ -1019,11 +1080,20 @@ class CalibrationPipeline:
         finally:
             await fetcher.close()
 
+    def _is_lefthand_network(self) -> bool:
+        """Resolve whether network should be compiled with left-hand traffic rules."""
+        if self.lefthand is not None:
+            return self.lefthand
+        lat = (self.bbox[1] + self.bbox[3]) / 2.0
+        lon = (self.bbox[0] + self.bbox[2]) / 2.0
+        return is_lefthand_traffic(lat, lon)
+
     def _build_sumo_network(self, osm_file: Path) -> Path:
         """Build SUMO network from OSM."""
+        is_left = self._is_lefthand_network()
         cache_key_bbox = bbox_key(*self.bbox)
         cache_key_osm = osm_key(cache_key_bbox)
-        cache_key_net = network_key(cache_key_osm, car_only=True, seed=self.seed)
+        cache_key_net = network_key(cache_key_osm, car_only=True, seed=self.seed, lefthand=is_left)
         self.network_cache_key = cache_key_net
         network_file = self.cache_manager.get_network_path(cache_key_net)
 
@@ -1032,7 +1102,7 @@ class CalibrationPipeline:
             return network_file
 
         network_file, metadata = convert_osm_to_sumo(
-            osm_file, network_file, car_only=True, seed=self.seed
+            osm_file, network_file, car_only=True, seed=self.seed, lefthand=is_left
         )
 
         return network_file
@@ -1043,8 +1113,9 @@ class CalibrationPipeline:
         cache_key_match = None
         observed_edges_cache = None
         if self.traffic_bucket:
+            is_left = self._is_lefthand_network()
             net_key = self.network_cache_key or network_key(
-                osm_key(cache_key_bbox), car_only=True, seed=self.seed
+                osm_key(cache_key_bbox), car_only=True, seed=self.seed, lefthand=is_left
             )
             cache_key_match = matching_key(cache_key_bbox, net_key, "tomtom", self.traffic_bucket)
             observed_edges_cache = self.cache_manager.get_matching_path(cache_key_match)
@@ -1186,23 +1257,15 @@ class CalibrationPipeline:
             seed=self.seed,
             vehicle_types_file=vehicle_types_file,
             mesosim=self.mesosim,
+            routing_mode=self.routing_mode,
         )
 
         # Run GA
         genome_size = len(od_pairs) * len(departure_bins)
-        # Dynamic Bounds & Init Prob Logic
-        avg_trips_per_gene = self.initial_population / max(1, genome_size)
-        upper_bound = max(1, int(avg_trips_per_gene * 2))
-        bounds = (0, upper_bound)
-
-        avg_val_if_active = (bounds[0] + bounds[1]) / 2.0
-        init_prob = None
-        if avg_trips_per_gene < avg_val_if_active:
-            init_prob = avg_trips_per_gene / max(0.1, avg_val_if_active)
-            init_prob = min(1.0, max(0.001, init_prob))  # Clamp
+        bounds = (0, None)
 
         logger.debug(
-            f"Dynamic GA Initialization: Target {self.initial_population} vehicles -> Bounds {bounds} (Avg {avg_trips_per_gene:.2f}/gene)"
+            f"Non-uniform Dirichlet GA Initialization: Target {self.initial_population} vehicles across {genome_size} genes (uncapped)"
         )
         logger.debug(
             f"GA mutation sigma: using user-configured sigma={self.ga_mutation_sigma}"
@@ -1225,6 +1288,7 @@ class CalibrationPipeline:
         ga = GeneticAlgorithm(
             genome_size=genome_size,
             seed=self.seed,
+            initial_population=self.initial_population,
             bounds=bounds,
             population_size=self.ga_population,
             num_generations=self.ga_generations,
@@ -1234,7 +1298,6 @@ class CalibrationPipeline:
             mutation_sigma=self.ga_mutation_sigma,
             mutation_indpb=self.ga_mutation_indpb,
             num_workers=self.parallel_workers or self.config.default_parallel_workers,
-            init_prob=init_prob,
             immigrant_rate=self.ga_immigrant_rate,
             elite_top_pct=self.ga_elite_top_pct,
             stagnation_patience=self.ga_stagnation_patience,
@@ -1245,6 +1308,7 @@ class CalibrationPipeline:
             od_edge_incidence=od_edge_incidence,
             n_bins=len(departure_bins),
             topology_guidance=self.topology_guidance,
+            cancel_event=self.cancel_event,
         )
 
         # Start optimization
@@ -1284,13 +1348,17 @@ class CalibrationPipeline:
             generation_callback=generation_checkpoint_callback,
         )
         selected_mode = getattr(ga, "last_best_selection_mode", None) or "mae_elite_pareto"
+        selected_loss = getattr(ga, "last_best_selected_loss", best_loss)
         selected_mae = getattr(ga, "last_best_selected_mae", best_loss)
+        selected_std = getattr(ga, "last_best_selected_std", 0.0)
         selected_teleports = getattr(ga, "last_best_selected_teleports", None)
         selected_failure_rate = getattr(ga, "last_best_selected_failure_rate", None)
         selected_fail_total = getattr(ga, "last_best_selected_fail_total", None)
         selected_missing_edges = getattr(ga, "last_best_selected_missing_edges", None)
         selected_magnitude = getattr(ga, "last_best_selected_magnitude", None)
+        best_loss_val = getattr(ga, "last_best_loss", best_loss)
         best_mae = getattr(ga, "last_best_mae", best_loss)
+        best_mae_candidate_loss = getattr(ga, "last_best_mae_candidate_loss", best_loss_val)
         best_mae_candidate_mae = getattr(ga, "last_best_mae_candidate_mae", best_mae)
         best_mae_candidate_teleports = getattr(ga, "last_best_mae_candidate_teleports", None)
         best_mae_candidate_failure_rate = getattr(
@@ -1311,7 +1379,9 @@ class CalibrationPipeline:
 
         self._last_optimization_result = {
             "selected_mode": selected_mode,
+            "selected_loss": _normalize_float(selected_loss),
             "selected_mae": _normalize_float(selected_mae),
+            "selected_std": _normalize_float(selected_std),
             "selected_teleports": (
                 int(selected_teleports) if selected_teleports is not None else None
             ),
@@ -1323,7 +1393,9 @@ class CalibrationPipeline:
                 int(selected_missing_edges) if selected_missing_edges is not None else None
             ),
             "selected_magnitude": _normalize_float(selected_magnitude),
+            "best_loss": _normalize_float(best_loss_val),
             "best_mae": _normalize_float(best_mae),
+            "best_mae_candidate_loss": _normalize_float(best_mae_candidate_loss),
             "best_mae_candidate_mae": _normalize_float(best_mae_candidate_mae),
             "best_mae_candidate_teleports": (
                 int(best_mae_candidate_teleports)
@@ -1342,7 +1414,7 @@ class CalibrationPipeline:
                 else None
             ),
             "best_mae_candidate_magnitude": _normalize_float(best_mae_candidate_magnitude),
-            "loss_history_metric": "selected MAE per generation",
+            "loss_history_metric": "selected loss (MAE + std) per generation",
             "early_stopped": bool(getattr(ga, "early_stopped", False)),
             "early_stop_generation": (
                 int(getattr(ga, "early_stop_generation", 0))
@@ -1352,8 +1424,9 @@ class CalibrationPipeline:
         }
 
         logger.info(
-            "✅ Calibration complete: selected_mae=%.2f, best_mae_candidate=%.2f, vehicles=%s",
+            "✅ Calibration complete: selected_loss=%.2f (mae=%.2f), best_mae_candidate=%.2f, vehicles=%s",
             best_loss,
+            _normalize_float(selected_mae) if _normalize_float(selected_mae) is not None else float("inf"),
             _normalize_float(best_mae_candidate_mae)
             if _normalize_float(best_mae_candidate_mae) is not None
             else float("inf"),
@@ -1406,6 +1479,7 @@ class CalibrationPipeline:
                 simulation_time=(self.window_minutes + self.warmup_minutes) * 60,
                 step_length=self.step_length,
                 seed=latest_seed,
+                routing_mode=self.routing_mode,
             )
 
             latest_meta = {
@@ -1413,6 +1487,7 @@ class CalibrationPipeline:
                     "timestamp": datetime.now().isoformat(),
                     "seed": self.seed,
                     "sumo_seed": latest_seed,
+                    "routing_mode": self.routing_mode,
                 },
                 "simulation_config": {
                     "window_minutes": self.window_minutes,
@@ -1421,7 +1496,8 @@ class CalibrationPipeline:
                 },
                 "latest_selected": {
                     "generation": int(generation),
-                    "selected_mae": float(best_loss),
+                    "selected_loss": float((best_metrics or {}).get("loss", best_loss)),
+                    "selected_mae": float((best_metrics or {}).get("mae", best_loss)),
                     "selected_teleports": int(best_metrics.get("teleports", 0) or 0),
                     "selected_failure_rate": float(best_metrics.get("failure_rate", 0.0) or 0.0),
                     "selected_fail_total": int(best_metrics.get("fail_total", 0) or 0),
@@ -1480,8 +1556,8 @@ class CalibrationPipeline:
 
             checkpoint_meta = {
                 "generation": int(generation),
-                "best_mae": float(best_loss),
-                "best_loss": float(best_loss),
+                "best_mae": float((best_metrics or {}).get("mae", best_loss)),
+                "best_loss": float((best_metrics or {}).get("loss", best_loss)),
                 "trip_count": int(np.sum(best_genome)),
                 "min_connection_paths": int(self.min_connection_paths),
                 "timestamp": datetime.now().isoformat(),
@@ -1539,7 +1615,7 @@ class CalibrationPipeline:
             warmup_time=self.warmup_minutes * 60,
             simulation_time=(self.warmup_minutes + self.window_minutes) * 60,
             seed=seed_to_use,
-            use_dynamic_routing=True,
+            routing_mode=self.routing_mode,
             extra_additional_files=extra_additional,
         )
 
@@ -1547,7 +1623,10 @@ class CalibrationPipeline:
         sumo_dir = self.output_dir / "sumo"
         sumo_dir.mkdir(parents=True, exist_ok=True)
 
-        simulated_speeds, _ = sim.run(output_dir=sumo_dir)  # Ignore routing_failures for final sim
+        simulated_speeds, _ = sim.run(
+            output_dir=sumo_dir,
+            vehroute_file=sumo_dir / "vehroutes.xml",
+        )  # Ignore routing_failures for final sim
         return simulated_speeds
 
     @staticmethod
@@ -1597,6 +1676,21 @@ class CalibrationPipeline:
             title="Simulated Edge Speeds",
             vmin=shared_vmin,
             vmax=shared_vmax,
+        )
+
+        # Plot absolute speed error |simulated - observed| for observed edges
+        speed_errors = {
+            edge_id: abs(simulated_edge_speeds[edge_id] - obs_speed)
+            for edge_id, obs_speed in observed_edge_speeds.items()
+            if edge_id in simulated_edge_speeds
+        }
+        plot_edge_speed_heatmap(
+            network_file=network_file,
+            output_file=plots_dir / "network_speed_error_heatmap.png",
+            edge_speeds=speed_errors,
+            title="Speed Absolute Error |Simulated - Observed|",
+            colorbar_label="Absolute speed error |sim - obs| (km/h)",
+            vmin=0.0,
         )
 
     def _write_od_selection_plot(
@@ -1664,6 +1758,10 @@ class CalibrationPipeline:
             str(self.initial_population),
             ]
         )
+        if self.effective_capacity_factor != 1.0:
+            cmd_parts.extend(
+                ["--capacity-factor", self._format_cli_value(self.effective_capacity_factor)]
+            )
         if self.offline_dataset is None:
             cmd_parts.extend(["--tile-zoom", str(self.traffic_tile_zoom)])
 
@@ -1675,6 +1773,18 @@ class CalibrationPipeline:
             cmd_parts.append("--no-deterministic-crowding")
         if self.ga_early_stopping:
             cmd_parts.append("--early-stopping")
+        if not self.mesosim:
+            cmd_parts.append("--no-mesosim")
+        if not self.topology_guidance:
+            cmd_parts.append("--no-topology-guidance")
+        if not self.sensor_coverage_od:
+            cmd_parts.append("--no-sensor-coverage-od")
+        if self.lefthand is True:
+            cmd_parts.append("--lefthand")
+        elif self.lefthand is False:
+            cmd_parts.append("--righthand")
+        if self.routing_mode != "static":
+            cmd_parts.extend(["--routing-mode", self.routing_mode])
         if self.run_id:
             cmd_parts.extend(["--name", str(self.run_id)])
 
@@ -1715,7 +1825,7 @@ class CalibrationPipeline:
                 },
                 "seed": self.seed,
                 "sumo_seed": final_sim_seed if final_sim_seed is not None else self.seed,
-                "routing_mode": "dynamic",  # NEW: Indicate dynamic routing
+                "routing_mode": self.routing_mode,
             },
             "simulation_config": {
                 "window_minutes": self.window_minutes,
@@ -1770,15 +1880,28 @@ class CalibrationPipeline:
                     else None
                 ),
                 "loss_history": loss_history_export,
-                "loss_history_label": "selected MAE per generation",
+                "loss_history_label": self._last_optimization_result.get(
+                    "loss_history_metric",
+                    "selected loss (MAE + std) per generation",
+                ),
                 "optimization_result": {
                     "selected_mode": self._last_optimization_result.get(
                         "selected_mode", "mae_elite_pareto"
+                    ),
+                    "selected_loss": (
+                        round(self._last_optimization_result["selected_loss"], 2)
+                        if self._last_optimization_result.get("selected_loss") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
                     ),
                     "selected_mae": (
                         round(self._last_optimization_result["selected_mae"], 2)
                         if self._last_optimization_result.get("selected_mae") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "selected_std": (
+                        round(self._last_optimization_result["selected_std"], 2)
+                        if self._last_optimization_result.get("selected_std") is not None
+                        else None
                     ),
                     "selected_teleports": self._last_optimization_result.get("selected_teleports"),
                     "selected_failure_rate": (
@@ -1797,9 +1920,19 @@ class CalibrationPipeline:
                         if self._last_optimization_result.get("selected_magnitude") is not None
                         else None
                     ),
+                    "best_loss": (
+                        round(self._last_optimization_result["best_loss"], 2)
+                        if self._last_optimization_result.get("best_loss") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
                     "best_mae": (
                         round(self._last_optimization_result["best_mae"], 2)
                         if self._last_optimization_result.get("best_mae") is not None
+                        else (round(best_loss, 2) if best_loss != float("inf") else None)
+                    ),
+                    "best_mae_candidate_loss": (
+                        round(self._last_optimization_result["best_mae_candidate_loss"], 2)
+                        if self._last_optimization_result.get("best_mae_candidate_loss") is not None
                         else (round(best_loss, 2) if best_loss != float("inf") else None)
                     ),
                     "best_mae_candidate_mae": (
@@ -1836,19 +1969,29 @@ class CalibrationPipeline:
                     ),
                     "loss_history_metric": self._last_optimization_result.get(
                         "loss_history_metric",
-                        "selected MAE per generation",
+                        "selected loss (MAE + std) per generation",
                     ),
                     "early_stopped": self._last_optimization_result.get("early_stopped", False),
                     "early_stop_generation": self._last_optimization_result.get("early_stop_generation"),
                 },
                 "quality_metrics": {
-                    "mae_kmh": (
-                        round(quality_metrics["mae"], 2)
+                    "loss": (
+                        round(quality_metrics["loss"], 4)
+                        if quality_metrics.get("loss") is not None and np.isfinite(quality_metrics["loss"])
+                        else None
+                    ),
+                    "mae": (
+                        round(quality_metrics["mae"], 4)
                         if quality_metrics.get("mae") is not None and np.isfinite(quality_metrics["mae"])
                         else None
                     ),
-                    "mse_kmh2": (
-                        round(quality_metrics["mse"], 2)
+                    "std": (
+                        round(quality_metrics["std"], 4)
+                        if quality_metrics.get("std") is not None and np.isfinite(quality_metrics["std"])
+                        else None
+                    ),
+                    "mse": (
+                        round(quality_metrics["mse"], 4)
                         if quality_metrics.get("mse") is not None and np.isfinite(quality_metrics["mse"])
                         else None
                     ),
@@ -1863,7 +2006,7 @@ class CalibrationPipeline:
                         if quality_metrics["total_edges"] > 0
                         else 0
                     ),
-                    "description": "MAE (Mean Absolute Error) shows average speed error in km/h - lower is better. Match rate here means simulation coverage: the % of observed segments that received a simulated speed during the measurement window.",
+                    "description": "MAE (Mean Absolute Error) shows dimensionless speed-ratio error (|sim - obs| / freeflow) - lower is better. Match rate here means simulation coverage: the % of observed segments that received a simulated speed during the measurement window.",
                 },
             },
             "user_inputs": {
@@ -1909,6 +2052,10 @@ class CalibrationPipeline:
                 "min_connection_paths": self.min_connection_paths,
                 "bin_minutes": self.bin_minutes,
                 "initial_population": self.initial_population,
+                "effective_capacity_factor": self.effective_capacity_factor,
+                "mesosim": self.mesosim,
+                "topology_guidance": self.topology_guidance,
+                "sensor_coverage_od": self.sensor_coverage_od,
                 "save_offline_dataset": self.save_offline_dataset,
                 "save_offline_dataset_name": self.save_offline_dataset_name,
                 "saved_offline_dataset": self.saved_offline_dataset,
@@ -1956,6 +2103,7 @@ class CalibrationPipeline:
                 "traffic_data_raw_csv": "data/traffic_data_raw.csv",
                 "observed_speed_heatmap_png": "plots/network_observed_speed_heatmap.png",
                 "simulated_speed_heatmap_png": "plots/network_simulated_speed_heatmap.png",
+                "speed_error_heatmap_png": "plots/network_speed_error_heatmap.png",
                 "selected_od_pairs_png": "plots/network_selected_od_pairs.png",
                 "report_html": "report.html",
                 "metadata_json": "run_meta.json",
